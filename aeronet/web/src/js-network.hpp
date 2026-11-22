@@ -7,9 +7,9 @@ namespace aeronet::internal {
 class Page;
 
 // Adds to 'natives', the object of the native helpers of the prelude (see PreludeSource()), those of its network and
-// text APIs: loadNetwork() runs their part of the prelude (NetworkPreludeSource()); request(), requestSync() and
-// cancelRequest() serve fetch(), XMLHttpRequest and navigator.sendBeacon(); decode(), decodeUtf8() and encodeUtf8()
-// serve TextDecoder, TextEncoder and the bodies; parseUrl() serves URL. Returns false on memory exhaustion, the
+// text APIs (LazyPrelude::Network): request(), requestSync() and cancelRequest() serve fetch(), XMLHttpRequest and
+// navigator.sendBeacon(); decode(), decodeUtf8() and encodeUtf8() serve TextDecoder, TextEncoder and the bodies;
+// parseUrl() serves URL. Returns false on memory exhaustion, the
 // exception pending.
 [[nodiscard]] bool InstallNetwork(JSContext* pCtx, JSValueConst natives) noexcept;
 

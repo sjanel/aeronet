@@ -7,6 +7,7 @@
 #include <expected>
 #include <limits>
 #include <new>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -130,6 +131,39 @@ TEST(WebRuntimeTest, NavigateIsStoppedByItsTimeout) {
   EXPECT_TRUE(page.uncaughtErrors().empty());
 }
 
+// The error of the timeout stops the script that inserted a script stopped by it, which cannot catch it: whatever the
+// insertion that started the inserted script, the loop would run on past the timeout otherwise. Likewise for the error
+// of a listener whose conversion (to report it) runs past the timeout.
+TEST(WebRuntimeTest, ScriptsInsertingScriptsAreStoppedByTheTimeout) {
+  WebClient client;
+  for (const std::string_view statement : {
+           "document.body.appendChild(script('for (;;) {}'))",
+           "try { document.body.append(script('for (;;) {}')) } catch { window.caught = 1 }",
+           "document.body.replaceChild(script('for (;;) {}'), document.body.firstChild)",
+           "document.body.appendChild(script('')).text = 'for (;;) {}'",
+           "document.body.appendChild(script('')).insertAdjacentText('beforeend', 'for (;;) {}')",
+           "document.body.appendChild(script('')).insertAdjacentHTML('beforeend', 'for (;;) {}')",
+           "document.body.appendChild(script('')).innerHTML = 'for (;;) {}'",
+           "document.body.appendChild(script('')).appendChild(document.createTextNode('')).data = 'for (;;) {}'",
+           "try { document.body.dispatchEvent(new Event('throw')) } catch { window.caught = 1 }",
+       }) {
+    const auto start = std::chrono::steady_clock::now();
+    WebPage page = Load(client,
+                        "<p></p><script>const script = text => Object.assign(document.createElement('script'), {text});"
+                        "document.body.addEventListener('throw', () => { throw { toString() { for (;;) {} } } });"
+                        "for (;;) { " +
+                            std::string(statement) + " }</script><script>window.after = 1</script>",
+                        {.timeout = std::chrono::milliseconds{100}});
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds{5}) << statement;
+    EXPECT_EQ(page.stopReason(), StopReason::TimedOut) << statement;
+    EXPECT_EQ(test::Eval(page, "[window.caught, window.after]"), "[null,null]") << statement;
+    // Also in evaluate().
+    const auto result = page.evaluate("for (;;) { " + std::string(statement) + " }", std::chrono::milliseconds{50});
+    ASSERT_FALSE(result.has_value()) << statement;
+    EXPECT_EQ(result.error(), "The script ran longer than its timeout of 50 ms") << statement;
+  }
+}
+
 TEST(WebRuntimeTest, EndlessMicrotasksAreStoppedByTheTimeout) {
   WebClient client;
   WebPage page = Load(client, "<script>(function loop() { Promise.resolve().then(loop); })()</script>",
@@ -168,6 +202,36 @@ TEST(WebRuntimeTest, MemoryLimitTooLowForThePageSetup) {
     }
   }
   EXPECT_GT(failures, 10);
+}
+
+// At the end of the stack, the first use of a lazy part of the prelude fails with the RangeError of a stack overflow,
+// and works at a smaller depth: a failed setup leaves nothing behind.
+TEST(WebRuntimeTest, LazyPartsAtTheEndOfTheStack) {
+  WebClient client;
+  // The first page compiles the parts, without limits.
+  WebPage first = LoadEmpty(client);
+  EXPECT_EQ(test::Eval(first, "[typeof URL, typeof matchMedia, typeof Intl]"), R"(["function","function","object"])");
+  for (const std::string_view probe : {
+           "document.body.getBoundingClientRect().width",
+           "typeof matchMedia",
+           "(1234.5).toLocaleString()",
+           "'\u00e9'.localeCompare('f')",
+           "navigator.sendBeacon('/beacon')",
+           "new Date(0).toLocaleString()",
+           "new Date(0).toLocaleDateString()",
+           "new Date(0).toLocaleTimeString()",
+       }) {
+    WebPage page = LoadEmpty(client);
+    const std::string script = "const probe = () => " + std::string(probe) +
+                               "; let failures = 0;"
+                               "const recurse = n => { try { return recurse(n + 1); } catch (e) {"
+                               "try { return probe(); } catch (inner) { ++failures; throw inner; } } };"
+                               "[recurse(0), failures > 0]";
+    const std::string result = test::Eval(page, script);
+    EXPECT_TRUE(result.ends_with(",true]")) << probe << ": " << result;
+    // The part is set up for the next uses.
+    EXPECT_FALSE(test::Eval(page, probe).empty()) << probe;
+  }
 }
 
 constexpr std::string_view kRecursionOfDepth3 = "(function depth(n) { return n === 0 ? 0 : 1 + depth(n - 1); })(3)";
@@ -235,6 +299,13 @@ TEST(WebRuntimeTest, NativeMemoryOfTheDomIsBounded) {
            "document.createComment('x')",
            "document.createTextNode('').data = big",
            "document.body.setAttribute('a' + i, big)",
+           "document.createElementNS('http://www.w3.org/2000/svg', 'svg')",
+           "document.createDocumentFragment()",
+           "document.body.cloneNode()",
+           // A copy of a growing tree: the copies are counted, with their descendants.
+           "document.body.appendChild(document.body.cloneNode(true))",
+           "document.createDocumentFragment().cloneNode()",
+           "document.firstChild.cloneNode()",
        }) {
     WebPage page = LoadEmpty(client);
     EXPECT_TRUE(RunsOutOfMemory(page, "const big = 'x'.repeat(1 << 16); for (let i = 0;; ++i) " + std::string(grow)))
@@ -244,6 +315,8 @@ TEST(WebRuntimeTest, NativeMemoryOfTheDomIsBounded) {
 
 // The arrays returned by the bindings are bounded by the heap: a script keeping them runs out of memory in the middle
 // of one, which is freed (QuickJS asserts that no value leaks when the runtime is freed), and the next scripts run.
+// They are kept by a local of a function, freed when the error leaves it: kept by a global, they would leave the next
+// script too little memory to compile, depending on where the limit was reached.
 TEST(WebRuntimeTest, ArraysOfTheBindingsRunOutOfMemory) {
   WebClient client(WebClientConfig{.maxScriptMemory = kSmallMemory});
   for (const std::string_view array : {
@@ -260,8 +333,10 @@ TEST(WebRuntimeTest, ArraysOfTheBindingsRunOutOfMemory) {
                          "document.body.firstChild; for (let i = 0; i < 2048; ++i) first.setAttribute('a' + i, ''); 0"),
               "0");
     // Kept in a list of small links, so that the arrays of the bindings take the memory.
-    EXPECT_TRUE(RunsOutOfMemory(page, "var kept = null; for (;;) kept = [kept, " + std::string(array) + "]")) << array;
-    EXPECT_EQ(test::Eval(page, "kept = null; document.querySelectorAll('i').length"), "4096") << array;
+    EXPECT_TRUE(
+        RunsOutOfMemory(page, "(() => { let kept = null; for (;;) kept = [kept, " + std::string(array) + "] })()"))
+        << array;
+    EXPECT_EQ(test::Eval(page, "document.querySelectorAll('i').length"), "4096") << array;
   }
 }
 
@@ -281,6 +356,9 @@ TEST(WebRuntimeTest, ArrayBindingsOnEachAllocationFailure) {
            "document.body.firstChild.getAttributeNames()",
        }) {
     const std::string script = std::string(array) + ".length";
+    // QuickJS-ng creates a native method on its first use, and drops it for good when that creation fails (see the
+    // ROADMAP): used once before, as it is not what this test checks.
+    ASSERT_FALSE(test::Eval(page, script).empty()) << array;
     for (const bool realloc : {false, true}) {
       for (int successfulAllocs = 0;; ++successfulAllocs) {
         ASSERT_LT(successfulAllocs, 10000) << array;
@@ -306,6 +384,50 @@ TEST(WebRuntimeTest, ArrayBindingsOnEachAllocationFailure) {
         }
       }
     }
+  }
+}
+
+// The setup of an HTML element interface (with its parent for the audio one) that runs out of memory leaves nothing
+// behind: once memory is available, the next lookup sets it up, whatever allocation failed. The heap is filled to just
+// below its limit by a list of small objects before the first lookup, from more of them (no memory left for the lookup)
+// to fewer (the whole setup fits).
+TEST(WebRuntimeTest, HtmlInterfacesOutOfMemory) {
+  WebClient client(WebClientConfig{.maxScriptMemory = kSmallMemory});
+  const std::string setup = "var div = document.createElement('div'); var audio = document.createElement('audio'); 0";
+  // Each page is set up the same way: the first one compiles the prelude.
+  const auto newPage = [&] {
+    WebPage page = LoadEmpty(client);
+    EXPECT_EQ(test::Eval(page, setup), "0");
+    return page;
+  };
+  static_cast<void>(newPage());
+  // The objects, freed when the script returns or fails.
+  const auto fillThen = [](int count, std::string_view expression) {
+    return "(() => { let head = null; for (let i = 0; i < " + std::to_string(count) +
+           "; ++i) head = {next: head}; return " + std::string(expression) + "; })()";
+  };
+  // The largest number of objects that fit.
+  int fits = 0;
+  int tooMany = 1 << 20;
+  while (tooMany - fits > 1) {
+    const int count = std::midpoint(fits, tooMany);
+    WebPage page = newPage();
+    (page.evaluate(fillThen(count, "0")) ? fits : tooMany) = count;
+  }
+  for (const std::string_view probe : {"div instanceof HTMLDivElement", "audio instanceof HTMLAudioElement"}) {
+    int failures = 0;
+    for (int count = fits, successes = 0; successes < 16; --count) {
+      ASSERT_GT(count, 0) << probe;
+      WebPage page = newPage();
+      if (page.evaluate(fillThen(count, probe))) {
+        ++successes;
+        continue;
+      }
+      ++failures;
+      successes = 0;
+      EXPECT_EQ(test::Eval(page, probe), "true") << probe << " after a failure with " << count << " objects";
+    }
+    EXPECT_GT(failures, 1) << probe;
   }
 }
 
@@ -348,6 +470,8 @@ TEST(WebRuntimeTest, DenseHtmlBeyondTheEstimateFailsTheNextChanges) {
   EXPECT_TRUE(RunsOutOfMemory(page, "document.body.innerHTML = '<i a b c d e f>'.repeat(4096)"));
   EXPECT_EQ(test::Eval(page, "document.querySelectorAll('i').length"), "4096");
   EXPECT_TRUE(RunsOutOfMemory(page, "document.createElement('p')"));
+  EXPECT_TRUE(RunsOutOfMemory(page, "document.createTextNode('t')"));
+  EXPECT_TRUE(RunsOutOfMemory(page, "document.createComment('c')"));
   WebPage adjacent = LoadEmpty(client);
   EXPECT_TRUE(
       RunsOutOfMemory(adjacent, "document.body.insertAdjacentHTML('beforeend', '<i a b c d e f>'.repeat(4096))"));
@@ -377,10 +501,13 @@ TEST(WebRuntimeTest, DocumentWriteIsBounded) {
   ASSERT_EQ(page.uncaughtErrors().size(), 1U);
   EXPECT_TRUE(page.uncaughtErrors()[0].starts_with("InternalError: out of memory")) << page.uncaughtErrors()[0];
   // Also when written in several arguments.
-  WebPage arguments = Load(client, "<p><script>const s = 'x'.repeat(1024); for (;;) document.write(s, s)</script></p>");
-  ASSERT_EQ(arguments.uncaughtErrors().size(), 1U);
-  EXPECT_TRUE(arguments.uncaughtErrors()[0].starts_with("InternalError: out of memory"))
-      << arguments.uncaughtErrors()[0];
+  for (const std::string_view write : {"write", "writeln"}) {
+    WebPage arguments = Load(client, "<p><script>const s = 'x'.repeat(1024); for (;;) document." + std::string(write) +
+                                         "(s, s)</script></p>");
+    ASSERT_EQ(arguments.uncaughtErrors().size(), 1U) << write;
+    EXPECT_TRUE(arguments.uncaughtErrors()[0].starts_with("InternalError: out of memory"))
+        << write << ": " << arguments.uncaughtErrors()[0];
+  }
   // Its nodes, once parsed, beyond the estimate.
   WebPage dense = Load(client, "<p><script>for (;;) document.write('<i a b c d e f>')</script></p>");
   ASSERT_EQ(dense.uncaughtErrors().size(), 2U);
@@ -512,4 +639,5 @@ TEST(WebRuntimeTest, EveryScalarFieldOfTheConfigRoundTrips) {
 #endif
 
 }  // namespace
+
 }  // namespace aeronet

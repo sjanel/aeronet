@@ -1012,7 +1012,7 @@ TEST(TlsContextTest, ChangedInputFileCoversEveryFileInput) {
     test::WriteFile(path, content);
     return path;
   };
-  const std::filesystem::path inputFiles[] = {
+  const std::filesystem::path inputFiles[]{
       filePath("cert.pem", certificates.wildcard.first),
       filePath("key.pem", certificates.wildcard.second),
       filePath("ocsp.der", MakeSuccessfulOcspResponseDer()),

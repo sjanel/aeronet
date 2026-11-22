@@ -25,18 +25,9 @@ constexpr std::string_view kPage =
     "<noscript><p id=\"hidden\">no js</p></noscript>"
     "<svg><foreignObject id=\"fo\"></foreignObject></svg></body></html>";
 
-class WebDomTest : public ::testing::Test {
+class WebDomTest : public test::PageTest {
  protected:
-  // The JSON result of 'script', which must not throw.
-  std::string eval(std::string_view script) { return test::Eval(page, script); }
-
-  // The name of the error thrown by 'script'.
-  std::string errorName(std::string_view script) {
-    return eval("(() => { try { " + std::string(script) + "; return 'no error'; } catch (e) { return e.name; } })()");
-  }
-
-  WebClient client;
-  WebPage page{test::Navigate(client, test::PageUrl(gServer, kPage))};
+  WebDomTest() : PageTest(test::PageUrl(gServer, kPage)) {}
 };
 
 TEST_F(WebDomTest, WrapperIdentityAndExpandos) {
@@ -120,9 +111,10 @@ TEST_F(WebDomTest, TextAndCommentNodes) {
 
 TEST_F(WebDomTest, TextContent) {
   EXPECT_EQ(eval("document.getElementById('root').textContent"), R"("oneboldtwo")");
+  // The text of a document fragment is that of its descendants, as for an element.
   EXPECT_EQ(eval("[document.textContent, document.firstChild.textContent, "
                  "document.getElementById('tpl').content.textContent]"),
-            R"([null,null,""])");
+            R"([null,null,"in templatetext"])");
   EXPECT_EQ(eval("const root = document.getElementById('root'); root.textContent = '<b>x</b>';"
                  "[root.innerHTML, root.childNodes.length, document.getElementById('first')]"),
             R"(["&lt;b&gt;x&lt;/b&gt;",1,null])");
@@ -213,6 +205,21 @@ TEST_F(WebDomTest, ChildrenOfTheDocument) {
   EXPECT_EQ(errorName("html.remove(); document.insertBefore(document.createElement('p'), doctype)"),
             R"("HierarchyRequestError")");
   EXPECT_EQ(eval("[...document.childNodes].map(node => node.nodeType)"), "[8,10]");
+  // A fragment brings its elements: two are one too many, none (only comments) can always be inserted.
+  EXPECT_EQ(
+      errorName("html.remove(); const two = document.createDocumentFragment();"
+                "two.append(document.createElement('a'), document.createElement('b')); document.appendChild(two)"),
+      R"("HierarchyRequestError")");
+  EXPECT_EQ(eval("const comments = document.createDocumentFragment(); comments.append(document.createComment('d'));"
+                 "document.appendChild(comments); [...document.childNodes].map(node => node.nodeType)"),
+            "[8,10,8]");
+  // The doctype goes before the element, even when other nodes separate them.
+  EXPECT_EQ(eval("document.removeChild(doctype); document.insertBefore(doctype, document.lastChild) === doctype && "
+                 "document.childNodes[1] === doctype"),
+            "true");
+  EXPECT_EQ(errorName("document.removeChild(doctype); document.insertBefore(html, document.firstChild);"
+                      "document.insertBefore(doctype, document.lastChild)"),
+            R"("HierarchyRequestError")");
 }
 
 TEST_F(WebDomTest, Attributes) {
@@ -350,7 +357,7 @@ TEST_F(WebDomTest, ConversionErrorsPropagate) {
       () => element.insertAdjacentText(boom, ''), () => element.insertAdjacentText('beforeend', boom),
       () => document.getElementById(boom), () => document.createElement(boom), () => document.createTextNode(boom),
       () => document.createComment(boom), () => document.cookie = boom, () => document.write(boom),
-      () => document.writeln('a', boom),
+      () => document.write('a', boom), () => document.writeln(boom), () => document.writeln('a', boom),
     ].map((call, index) => { try { call(); return index + ': no error'; } catch (e) { return e.message; } })
      .filter(message => message !== 'boom'))"),
             "[]");
@@ -367,6 +374,12 @@ TEST_F(WebDomTest, WrongArguments) {
   EXPECT_EQ(errorName("document.body.insertAdjacentElement('afterbegin', document.documentElement)"),
             R"("HierarchyRequestError")");
   EXPECT_EQ(eval("document.createElement('p').insertAdjacentElement('afterend', document.createElement('i'))"), "null");
+  // The code of a timer is converted, and its delay, when it is set.
+  for (const std::string_view timer : {"setTimeout", "setInterval"}) {
+    const std::string name(timer);
+    EXPECT_EQ(errorName(name + "({ toString() { throw new RangeError() } })"), R"("RangeError")");
+    EXPECT_EQ(errorName(name + "(() => {}, { valueOf() { throw new RangeError() } })"), R"("RangeError")");
+  }
 }
 
 TEST_F(WebDomTest, PreludeElementHelpers) {
@@ -491,6 +504,239 @@ TEST_F(WebDomTest, ChangesOfTheDocumentFromCppAreVisible) {
 TEST_F(WebDomTest, DocumentWriteOutsideOfAParserScriptIsIgnored) {
   EXPECT_EQ(eval("document.write('<p id=written>'); document.writeln('x'); document.getElementById('written')"),
             "null");
+}
+
+TEST_F(WebDomTest, CloneNode) {
+  // A shallow copy has the attributes, not the children; a deep one has both. Each copy is a node of its own.
+  EXPECT_EQ(
+      eval("const root = document.getElementById('root'); const shallow = root.cloneNode();"
+           "const deep = root.cloneNode(true); root.custom = 1;"
+           "[shallow.id, shallow.className, shallow.childNodes.length, shallow.parentNode, deep.innerHTML,"
+           "deep !== root, deep.custom, deep.firstChild !== root.firstChild, deep instanceof HTMLDivElement]"),
+      R"(["root","a b",0,null,"<p id=\"first\">one<!--note--><b>bold</b></p><p id=\"second\" class=\"b\">two</p>",)"
+      R"(true,null,true,true])");
+  EXPECT_EQ(eval("[root.cloneNode(false).childNodes.length, root.cloneNode(0).id]"), R"([0,"root"])");
+  // Changing the copy leaves the original.
+  EXPECT_EQ(eval("deep.firstChild.remove(); deep.setAttribute('id', 'copy');"
+                 "[root.children.length, root.id, deep.children.length, document.getElementById('copy')]"),
+            R"([2,"root",1,null])");
+  // The contents of a template are copied by a deep copy only.
+  EXPECT_EQ(eval("const tpl = document.getElementById('tpl');"
+                 "[tpl.cloneNode().content.childNodes.length, tpl.cloneNode(true).innerHTML,"
+                 "tpl.cloneNode(true).content !== tpl.content]"),
+            R"([0,"<i>in template</i>text",true])");
+  EXPECT_EQ(eval("const nested = document.createElement('template'); nested.innerHTML = '<b><template><u>x</u>"
+                 "</template></b>'; nested.cloneNode(true).content.firstChild.firstChild.content.firstChild.outerHTML"),
+            R"("<u>x</u>")");
+  // Text, comment, fragment and doctype nodes.
+  EXPECT_EQ(eval("const p = document.getElementById('first'); const text = p.firstChild.cloneNode();"
+                 "const comment = p.childNodes[1].cloneNode(); const fragment = tpl.content.cloneNode(true);"
+                 "const doctype = document.firstChild.cloneNode();"
+                 "[text.data, text.parentNode, comment.data, fragment.nodeType, fragment.childNodes.length,"
+                 "doctype.nodeType, doctype !== document.firstChild, tpl.content.cloneNode().childNodes.length]"),
+            R"(["one",null,"note",11,2,10,true,0])");
+  EXPECT_EQ(errorName("document.cloneNode()"), R"("NotSupportedError")");
+}
+
+TEST_F(WebDomTest, DocumentFragments) {
+  EXPECT_EQ(eval("const fragment = document.createDocumentFragment();"
+                 "fragment.append('a', document.createElement('i'), document.createElement('b'));"
+                 "[fragment instanceof DocumentFragment, fragment.nodeType, fragment.nodeName, fragment.parentNode,"
+                 "fragment.childNodes.length, fragment.children.length, fragment.firstElementChild.tagName,"
+                 "fragment.querySelector('b').tagName, fragment.querySelectorAll('*').length, fragment.textContent,"
+                 "fragment.isConnected, fragment.ownerDocument === document]"),
+            R"([true,11,"#document-fragment",null,3,2,"I","B",2,"a",false,true])");
+  // Inserting a fragment moves its children.
+  EXPECT_EQ(eval("document.body.appendChild(fragment) === fragment"), "true");
+  EXPECT_EQ(
+      eval("[fragment.childNodes.length, document.body.lastElementChild.tagName, document.body.lastChild.isConnected]"),
+      R"([0,"B",true])");
+  EXPECT_EQ(eval("fragment.textContent = 'text'; [fragment.childNodes.length, fragment.firstChild.data]"),
+            R"([1,"text"])");
+  EXPECT_EQ(eval("fragment.replaceChildren(); fragment.prepend('p'); fragment.textContent"), R"("p")");
+  EXPECT_EQ(eval("document.getElementById('tpl').content instanceof DocumentFragment"), "true");
+}
+
+TEST_F(WebDomTest, MatchesAndClosest) {
+  EXPECT_EQ(eval("const b = document.querySelector('b');"
+                 "[b.matches('b'), b.matches('#first > b'), b.matches('i, #root b'), b.matches('p'),"
+                 "b.webkitMatchesSelector('div b')]"),
+            "[true,true,true,false,true]");
+  EXPECT_EQ(eval("[b.closest('b') === b, b.closest('p').id, b.closest('.a').id, b.closest('section'),"
+                 "b.closest('body').tagName]"),
+            R"([true,"first","root",null,"BODY"])");
+  // closest() stops at the root of the tree: a detached element has no ancestor.
+  EXPECT_EQ(eval("const detached = document.createElement('div'); detached.innerHTML = '<p><i></i></p>';"
+                 "[detached.querySelector('i').closest('div') === detached, detached.closest('body')]"),
+            "[true,null]");
+  EXPECT_EQ(errorName("b.matches('[')"), R"("SyntaxError")");
+  EXPECT_EQ(errorName("b.closest({ toString() { throw new RangeError('selector'); } })"), R"("RangeError")");
+  EXPECT_EQ(errorName("b.closest('a >')"), R"("SyntaxError")");
+  EXPECT_EQ(errorName("b.matches()"), R"("TypeError")");
+}
+
+TEST_F(WebDomTest, CreateElementNs) {
+  EXPECT_EQ(eval("const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');"
+                 "svg.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'circle'));"
+                 "[svg.namespaceURI, svg.localName, svg instanceof SVGElement, svg instanceof HTMLElement,"
+                 "svg.firstChild instanceof SVGElement, svg.outerHTML]"),
+            R"(["http://www.w3.org/2000/svg","svg",true,false,true,"<svg><circle></circle></svg>"])");
+  EXPECT_EQ(eval("const div = document.createElementNS('http://www.w3.org/1999/xhtml', 'div');"
+                 "[div.namespaceURI, div instanceof HTMLDivElement, document.body.namespaceURI,"
+                 "document.getElementById('fo').namespaceURI]"),
+            R"(["http://www.w3.org/1999/xhtml",true,"http://www.w3.org/1999/xhtml","http://www.w3.org/2000/svg"])");
+  EXPECT_EQ(eval("const plain = document.createElementNS(null, 'item'); const other = document.createElementNS("
+                 "undefined, 'x'); const prefixed = document.createElementNS('urn:x', 'p:item');"
+                 "[plain.namespaceURI, other.namespaceURI, plain instanceof HTMLElement, plain instanceof Element,"
+                 "prefixed.namespaceURI, prefixed.localName]"),
+            R"([null,null,false,true,"urn:x","item"])");
+  // A copy keeps the qualified name: its prefix, and the case of the SVG names of the parser.
+  EXPECT_EQ(eval("const copy = prefixed.cloneNode(); const fo = document.getElementById('fo').cloneNode(true);"
+                 "[prefixed.tagName, copy.tagName, copy.localName, copy.namespaceURI, fo.tagName, fo.localName]"),
+            R"(["p:item","p:item","item","urn:x","foreignObject","foreignObject"])");
+  EXPECT_EQ(errorName("document.createElementNS('urn:x', '1a')"), R"("InvalidCharacterError")");
+  EXPECT_EQ(errorName("document.createElementNS('urn:x', 'a:b:c')"), R"("InvalidCharacterError")");
+  EXPECT_EQ(errorName("document.createElementNS('urn:x', '1:a')"), R"("InvalidCharacterError")");
+  EXPECT_EQ(errorName("document.createElementNS(null, 'p:item')"), R"("NamespaceError")");
+  EXPECT_EQ(errorName("document.createElementNS('urn:x')"), R"("TypeError")");
+  EXPECT_EQ(errorName("document.createElementNS({ toString() { throw new RangeError(); } }, 'a')"), R"("RangeError")");
+  EXPECT_EQ(errorName("document.createElementNS(null, { toString() { throw new RangeError(); } })"), R"("RangeError")");
+}
+
+// The interface of a tag recognizes its elements (instanceof): they all have the prototype of HTMLElement, so that a
+// property lookup does not cross another prototype.
+TEST_F(WebDomTest, HtmlElementInterfaces) {
+  EXPECT_EQ(eval("const names = ['HTMLMediaElement', 'HTMLAnchorElement', 'HTMLAudioElement', 'HTMLBodyElement',"
+                 "'HTMLButtonElement', 'HTMLCanvasElement', 'HTMLDivElement', 'HTMLFormElement', 'HTMLHeadElement',"
+                 "'HTMLHeadingElement', 'HTMLHtmlElement', 'HTMLIFrameElement', 'HTMLImageElement', 'HTMLInputElement',"
+                 "'HTMLLabelElement', 'HTMLLIElement', 'HTMLLinkElement', 'HTMLMetaElement', 'HTMLOListElement',"
+                 "'HTMLOptionElement', 'HTMLParagraphElement', 'HTMLPreElement', 'HTMLScriptElement',"
+                 "'HTMLSelectElement', 'HTMLSpanElement', 'HTMLStyleElement', 'HTMLTableElement',"
+                 "'HTMLTableCellElement', 'HTMLTableRowElement', 'HTMLTableSectionElement', 'HTMLTemplateElement',"
+                 "'HTMLTextAreaElement', 'HTMLTitleElement', 'HTMLUListElement', 'HTMLVideoElement'];"
+                 "const tags = ['a', 'audio', 'body', 'button', 'canvas', 'div', 'form', 'head', 'h1', 'h6', 'html',"
+                 "'iframe', 'img', 'input', 'label', 'li', 'link', 'meta', 'ol', 'option', 'p', 'pre', 'script',"
+                 "'select', 'span', 'style', 'table', 'td', 'th', 'tr', 'thead', 'tbody', 'tfoot', 'template',"
+                 "'textarea', 'title', 'ul', 'video', 'section', 'my-element'];"
+                 "tags.map(tag => names.filter(name => document.createElement(tag) instanceof window[name]).join('+')"
+                 "|| '-').join()"),
+            R"("HTMLAnchorElement,HTMLMediaElement+HTMLAudioElement,HTMLBodyElement,HTMLButtonElement,)"
+            R"(HTMLCanvasElement,HTMLDivElement,HTMLFormElement,HTMLHeadElement,HTMLHeadingElement,HTMLHeadingElement,)"
+            R"(HTMLHtmlElement,HTMLIFrameElement,HTMLImageElement,HTMLInputElement,HTMLLabelElement,HTMLLIElement,)"
+            R"(HTMLLinkElement,HTMLMetaElement,HTMLOListElement,HTMLOptionElement,HTMLParagraphElement,HTMLPreElement,)"
+            R"(HTMLScriptElement,HTMLSelectElement,HTMLSpanElement,HTMLStyleElement,HTMLTableElement,)"
+            R"(HTMLTableCellElement,HTMLTableCellElement,HTMLTableRowElement,HTMLTableSectionElement,)"
+            R"(HTMLTableSectionElement,HTMLTableSectionElement,HTMLTemplateElement,HTMLTextAreaElement,)"
+            R"(HTMLTitleElement,HTMLUListElement,HTMLMediaElement+HTMLVideoElement,-,-")");
+  EXPECT_EQ(eval("const div = document.createElement('div');"
+                 "[Object.getPrototypeOf(div) === HTMLElement.prototype, div instanceof HTMLElement,"
+                 "Object.getPrototypeOf(HTMLDivElement.prototype) === HTMLElement.prototype,"
+                 "Object.getPrototypeOf(HTMLAudioElement.prototype) === HTMLMediaElement.prototype,"
+                 "HTMLDivElement.prototype.constructor === HTMLDivElement, HTMLDivElement.name,"
+                 "HTMLDivElement === window.HTMLDivElement, 'HTMLSpanElement' in window,"
+                 "Object.hasOwn(window, 'HTMLDivElement'), 'HTMLNopeElement' in window,"
+                 "document.createElementNS('http://www.w3.org/2000/svg', 'a') instanceof HTMLAnchorElement,"
+                 "document.body.firstChild instanceof HTMLDivElement, 1 instanceof HTMLDivElement,"
+                 "({}) instanceof HTMLDivElement, HTMLDivElement[Symbol.hasInstance]()]"),
+            R"([true,true,true,true,true,"HTMLDivElement",true,true,false,false,false,true,false,false,false])");
+  // The headings of each level; the nodes other than elements are no HTML elements.
+  EXPECT_EQ(eval("[['h2', 'h3', 'h4', 'h5'].every(tag => document.createElement(tag) instanceof HTMLHeadingElement),"
+                 "document.createTextNode('p') instanceof HTMLParagraphElement]"),
+            "[true,false]");
+  EXPECT_EQ(errorName("new HTMLDivElement()"), R"("TypeError")");
+  // A script can replace an interface, as any global, before its first lookup too; other names are not interfaces.
+  EXPECT_EQ(eval("window.HTMLIFrameElement = 'mine'; HTMLTableElement = 'assigned';"
+                 "[HTMLIFrameElement, HTMLTableElement, Object.hasOwn(window, 'HTMLTableElement'), typeof HTMLElements,"
+                 "typeof HTMLFooElement, 'HTMLElementX' in window, typeof HTML]"),
+            R"(["mine","assigned",true,"undefined","undefined",false,"undefined"])");
+  // The text of the scripts, anchors, options and titles; on another element, a property of its own.
+  EXPECT_EQ(eval("const script = document.createElement('script'); script.text = 'let x = 1';"
+                 "const other = document.createElement('div'); const before = other.text; other.text = 'own';"
+                 "[script.text, script.textContent, document.querySelector('title').text, before, other.text,"
+                 "other.textContent, Object.hasOwn(other, 'text')]"),
+            R"(["let x = 1","let x = 1"," The \n title ",null,"own","",true])");
+  EXPECT_EQ(eval("const link = document.createElement('a'); link.text = 'link'; const option = document.createElement("
+                 "'option'); option.text = 'choice'; [link.textContent, option.text, option.textContent]"),
+            R"(["link","choice","choice"])");
+  EXPECT_EQ(errorName("Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'text').set.call({}, 1)"),
+            R"("TypeError")");
+}
+
+TEST_F(WebDomTest, DocumentPositions) {
+  EXPECT_EQ(
+      eval("const first = document.getElementById('first'); const second = document.getElementById('second');"
+           "const b = first.querySelector('b');"
+           "[first.compareDocumentPosition(second), second.compareDocumentPosition(first),"
+           "first.compareDocumentPosition(b), b.compareDocumentPosition(first), b.compareDocumentPosition(second),"
+           "first.compareDocumentPosition(first)]"),
+      "[4,2,20,10,4,0]");
+  EXPECT_EQ(eval("const detached = document.createElement('div');"
+                 "[detached.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_DISCONNECTED,"
+                 "Node.DOCUMENT_POSITION_CONTAINED_BY, first.DOCUMENT_POSITION_FOLLOWING]"),
+            "[1,16,4]");
+  // Two disconnected nodes: one precedes the other, in an order of the implementation, the same both ways.
+  EXPECT_EQ(eval("const other = document.createElement('div');"
+                 "[detached.compareDocumentPosition(other), other.compareDocumentPosition(detached)].sort()"),
+            "[35,37]");
+  // Nodes of the same depth under different parents (the text of each paragraph).
+  EXPECT_EQ(eval("[first.firstChild.compareDocumentPosition(second.firstChild),"
+                 "second.firstChild.compareDocumentPosition(first.firstChild)]"),
+            "[4,2]");
+  EXPECT_EQ(eval("[b.getRootNode() === document, detached.getRootNode() === detached, b.isSameNode(b),"
+                 "b.isSameNode(first), b.isSameNode()]"),
+            "[true,true,true,false,false]");
+  EXPECT_EQ(errorName("b.compareDocumentPosition({})"), R"("TypeError")");
+}
+
+TEST_F(WebDomTest, NoLayout) {
+  EXPECT_EQ(eval("const root = document.getElementById('root'); const rect = root.getBoundingClientRect();"
+                 "[rect instanceof DOMRect, rect.width, rect.height, rect.top, JSON.stringify(rect),"
+                 "root.getClientRects().length, root.offsetWidth, root.offsetHeight, root.offsetParent,"
+                 "root.clientWidth, root.scrollHeight, root.scrollTop]"),
+            R"([true,0,0,0,"{\"x\":0,\"y\":0,\"width\":0,\"height\":0,\"top\":0,\"right\":0,\"bottom\":0,\"left\":0}",)"
+            R"(0,0,0,null,0,0,0])");
+  EXPECT_EQ(eval("root.scrollTop = 50; root.scrollIntoView(); root.focus(); window.scrollTo(0, 100);"
+                 "[root.scrollTop, scrollY, innerWidth, innerHeight, devicePixelRatio, screen.width,"
+                 "screen.orientation.type]"),
+            R"([0,0,1280,720,1,1280,"landscape-primary"])");
+  // The orientation never changes: its listeners are accepted, never called.
+  EXPECT_EQ(eval("const onChange = () => {}; screen.orientation.addEventListener('change', onChange);"
+                 "screen.orientation.removeEventListener('change', onChange); screen.orientation.angle"),
+            "0");
+  EXPECT_EQ(eval("const r = new DOMRect(1, 2, -3, 4); r.width = 5; const ro = DOMRectReadOnly.fromRect({x: 1, y: 2});"
+                 "ro.x = 9; [r.left, r.right, r.width, r.bottom, ro.x, ro.y, ro.width]"),
+            "[1,6,5,6,1,2,0]");
+}
+
+TEST_F(WebDomTest, ComputedStyleIsTheInlineStyle) {
+  EXPECT_EQ(eval("const div = document.createElement('div');"
+                 "div.setAttribute('style', 'display: none; Background-Color:red;;bad');"
+                 "div.style.color = 'blue'; const style = getComputedStyle(div);"
+                 "[style.display, style.getPropertyValue('background-color'), style.backgroundColor, style.color,"
+                 "style.position, style instanceof CSSStyleDeclaration]"),
+            R"(["none","red","red","blue","",true])");
+  // The properties that no declaration sets are '', as for an element that is not rendered; the methods are found.
+  EXPECT_EQ(eval("[style.transitionDuration.split(',').length, style['z-index'], 'opacity' in style,"
+                 "typeof style.getPropertyValue, style[Symbol.iterator], style.cssText.includes('display: none')]"),
+            R"([1,"",false,"function",null,true])");
+  EXPECT_EQ(errorName("getComputedStyle(document)"), R"("TypeError")");
+}
+
+TEST_F(WebDomTest, MediaQueries) {
+  EXPECT_EQ(eval("['(min-width: 768px)', '(max-width: 600px)', '(min-width: 80em)', '(width >= 40rem)',"
+                 "'(width < 1280px)', '(height <= 720px)', 'screen and (min-width: 1024px)', 'print',"
+                 "'not print', 'only screen', '(orientation: landscape)', '(orientation: portrait)',"
+                 "'(prefers-color-scheme: dark)', '(prefers-color-scheme: light)',"
+                 "'(prefers-reduced-motion: reduce)', '(hover: hover)', '(pointer: coarse)', '(any-pointer)',"
+                 "'(unknown-feature)', 'print, (min-width: 1px)', '', '(min-width: abc)']"
+                 ".map(query => matchMedia(query).matches)"),
+            "[true,false,true,true,false,true,true,false,true,true,true,false,false,true,false,true,false,true,"
+            "false,true,true,false]");
+  EXPECT_EQ(eval("const list = matchMedia('(min-width: 1px)'); let changes = 0; list.addListener(() => ++changes);"
+                 "list.addEventListener('change', () => ++changes); list.dispatchEvent(new Event('change'));"
+                 "[list.media, list instanceof MediaQueryList, list instanceof EventTarget, list.onchange, changes]"),
+            R"json(["(min-width: 1px)",true,true,null,2])json");
+  EXPECT_EQ(errorName("matchMedia()"), R"("TypeError")");
 }
 
 }  // namespace

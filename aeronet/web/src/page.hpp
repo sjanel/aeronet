@@ -2,6 +2,7 @@
 
 #include <quickjs.h>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <expected>
@@ -13,6 +14,7 @@
 
 #include "aeronet/css-selector.hpp"
 #include "aeronet/html-document.hpp"
+#include "aeronet/html-element.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -23,7 +25,9 @@
 #include "aeronet/web-page.hpp"
 #include "document-url.hpp"
 #include "html-node-ops.hpp"
+#include "js-dom.hpp"
 #include "js-engine.hpp"
+#include "js-prelude.hpp"
 #include "memory-budget.hpp"
 #include "rejection-tracker.hpp"
 #include "request-queue.hpp"
@@ -157,11 +161,59 @@ class Page {
   // JS_EXCEPTION on memory exhaustion of the JavaScript heap, std::bad_alloc on that of the C++ code.
   [[nodiscard]] JSValue wrap(lxb_dom_node* pNode);
 
-  // Keeps a reference on 'wrapper', a new wrapper, until the page dies: a node always has the same wrapper.
-  void keepWrapper(JSValueConst wrapper) { _wrappers.keep(wrapper); }
+  // Keeps a reference on 'value' until the page dies: a new node wrapper (a node always has the same wrapper), the
+  // globals of a lazy part of the prelude.
+  void keep(JSValueConst value) { _kept.keep(value); }
+
+  // The atom of Symbol.hasInstance, a well-known symbol: a predefined atom of QuickJS-ng, never freed. Read at the
+  // setup of the page, before a script can replace the global Symbol.
+  [[nodiscard]] JSAtom hasInstanceAtom() const noexcept { return _hasInstanceAtom; }
+
+  // The object of the globals of the lazy part 'part' of the prelude, run on its first use in the page (see
+  // LazyPrelude), kept until the page dies. JS_EXCEPTION, the exception pending, on memory or stack exhaustion.
+  [[nodiscard]] JSValue lazyPart(LazyPrelude part);
+
+  // The object of the lazy globals, in the prototype chain of the window (see InstallWindow()): the globals set up on
+  // their first read are defined on it.
+  [[nodiscard]] JSValueConst lazyGlobals() const noexcept { return _lazyGlobals.get(); }
+  void setLazyGlobals(JsValue lazyGlobals) noexcept { _lazyGlobals = std::move(lazyGlobals); }
 
   // A script changed the tree or an attribute: the selector of run() is checked again after the task.
   void touchDom() noexcept { _selector.touch(); }
+
+  // Whether pNode is in the document (DOM "connected").
+  [[nodiscard]] bool connected(const lxb_dom_node* pNode) const noexcept;
+
+  // pElement was created by a script (createElement(), createElementNS()): a script element runs once connected.
+  void elementCreated(lxb_dom_node* pElement) { _scripts.elementCreated(pElement); }
+
+  // Whether a script element created by a script has not started: cloneNode() reports its copies to nodeCloned() only
+  // then.
+  [[nodiscard]] bool hasCreatedScripts() const noexcept { return _scripts.hasCreated(); }
+
+  // pCopy was cloned from pSource by a script (cloneNode(), each node of a deep copy).
+  void nodeCloned(const lxb_dom_node* pSource, lxb_dom_node* pCopy) { _scripts.cloned(pSource, pCopy); }
+
+  // A script inserted the nodes from pFirst to pEnd (excluded, null for after the last one), siblings: the tree
+  // changed, and the scripts that scripts created among them and their descendants start once connected (HTML "prepare
+  // the script element"), also their parent when it is such a script ("a node is inserted into the script element"),
+  // after them. An inline script runs now, before this returns, an external one is fetched and run as a task. Returns
+  // false when an uncatchable error (the deadline, memory exhaustion) stopped an inline one: the error is pending, for
+  // the native function that inserted the nodes to fail with it, so that it stops the script that called it too.
+  [[nodiscard]] bool nodesInserted(lxb_dom_node* pFirst, lxb_dom_node* pEnd) {
+    touchDom();
+    return !_scripts.hasCreated() || startInsertedScripts(pFirst, pEnd);
+  }
+
+  // A script changed the children, the text or the src of pElement: a script element created by a script, connected,
+  // starts if it has not yet (it was empty when inserted). Returns false as nodesInserted().
+  [[nodiscard]] bool scriptChanged(lxb_dom_node* pElement) {
+    return !_scripts.hasCreated() || !_scripts.isCreated(pElement) || startScript(pElement);
+  }
+
+  // Whether the deadline stopped a script (see JsEngine::interrupted()): a native function that caught its error (the
+  // conversion of a value) fails with ThrowInterrupted() instead, so that the scripts stop.
+  [[nodiscard]] bool interrupted() const noexcept { return _engine.interrupted(); }
 
   // Appends 'html', followed by a line feed for 'newLine' (writeln()), to the output of document.write() of the
   // running script, inserted after it when it ends. Ignored outside of a script run by the page loop. Returns false,
@@ -234,7 +286,39 @@ class Page {
   // The navigation of navigateTo() to 'url', resolved from 'input' (empty when invalid).
   bool startNavigation(std::string_view url, std::string_view input);
 
-  void runScript(lxb_dom_node* pScript);
+  // The URL of the src attribute of 'script', resolved: empty when invalid, or empty itself (an error, not the URL of
+  // the document: HTML "prepare the script element"). Valid until the next resolution.
+  [[nodiscard]] std::string_view scriptUrl(const HtmlElement& script);
+
+  // Runs pScript, a classic script of the parser, fetched first if external, followed by the output of its
+  // document.write() calls.
+  void runParserScript(lxb_dom_node* pScript);
+
+  // Runs 'script', an external script inserted by a script (a task), within the WebClientConfig::maxRequests of the
+  // document.
+  void runInsertedScript(const ScriptQueue::InsertedScript& script);
+
+  // Fetches pScript from 'url' (empty: an error) with its 'charset' attribute and 'credentials', and runs it: its error
+  // event when it cannot be fetched, else its load event after it ran, and after the output of its document.write()
+  // calls for a 'parserInserted' one.
+  void runExternalScript(lxb_dom_node* pScript, std::string_view url, std::string_view charset,
+                         RequestCredentials credentials, bool parserInserted);
+
+  // Counts the code of _code, of the script 'name' (its URL, or "inline"), in WebClientConfig::maxScriptBytes. Returns
+  // false, with the error reported, when it exceeds it: the script does not run.
+  [[nodiscard]] bool admitCode(std::string_view name);
+
+  // Runs _code, the code of pScript, as the running script named 'filename' (null-terminated): a 'parserInserted' one
+  // is the writer of document.write(). Its errors are reported, but for an uncatchable error of a 'nested' script (an
+  // inline script inserted by a script), left pending (see nodesInserted()): returns false then.
+  [[nodiscard]] bool runCode(lxb_dom_node* pScript, const char* filename, bool parserInserted, bool nested);
+
+  // See nodesInserted().
+  [[nodiscard]] bool startInsertedScripts(lxb_dom_node* pFirst, lxb_dom_node* pEnd);
+
+  // Starts pScript, created by a script, if connected and runnable (see ScriptQueue::start()). Returns false as
+  // nodesInserted().
+  [[nodiscard]] bool startScript(lxb_dom_node* pScript);
 
   // Runs 'code' (null-terminated at its size) as a classic script named 'filename', from the bytecode of the script
   // cache of the session when it has it, else compiled (and cached when large enough). Returns its completion value,
@@ -294,15 +378,20 @@ class Page {
   SelectorWatch _selector;
   lxb_dom_node* _pDocumentNode;
   JSClassID _firstNodeClass{};
+  JSAtom _hasInstanceAtom{};  // see hasInstanceAtom()
   http::StatusCode _status;
   StopReason _stopReason{StopReason::StateReached};
   ReadyState _readyState{ReadyState::Loading};
 
   // Last: destroyed first, with every JavaScript value, before the document whose nodes the wrappers point to.
   JsEngine _engine;
-  JsValues _wrappers{_engine.context()};
-  JsValue _location;  // window.location
-  JsValue _dispatch;  // the dispatch function of the prelude
+  JsValues _kept{_engine.context()};  // see keep()
+  JsValue _location;                  // window.location
+  JsValue _dispatch;                  // the dispatch function of the prelude
+  JsValue _natives;                   // the native helpers of the prelude, the first argument of its lazy parts
+  JsValue _shared;                    // the helpers of the prelude for its lazy parts, their second argument
+  JsValue _lazyGlobals;               // see lazyGlobals()
+  std::array<JSValue, kNbLazyPreludes> _lazyParts = UndefinedValues<kNbLazyPreludes>();  // kept in _kept once run
   TimerQueue _timers;
   RequestQueue _requests{_engine.context(), _memory};
   RejectionTracker _rejections{_engine.context()};

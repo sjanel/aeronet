@@ -18,7 +18,7 @@ namespace aeronet::internal {
 namespace {
 
 // The forbidden request-header names of the Fetch Standard, lower-case, but for the prefixes and the method overrides.
-constexpr std::string_view kForbiddenRequestHeaders[] = {
+constexpr std::string_view kForbiddenRequestHeaders[]{
     "accept-charset",
     "accept-encoding",
     "access-control-request-headers",
@@ -43,10 +43,10 @@ constexpr std::string_view kForbiddenRequestHeaders[] = {
 };
 
 // The headers that override the method of a request for some servers.
-constexpr std::string_view kMethodOverrideHeaders[] = {"x-http-method", "x-http-method-override", "x-method-override"};
+constexpr std::string_view kMethodOverrideHeaders[]{"x-http-method", "x-http-method-override", "x-method-override"};
 
 // The response headers that a script can read from another origin without Access-Control-Expose-Headers.
-constexpr std::string_view kSafelistedResponseHeaders[] = {
+constexpr std::string_view kSafelistedResponseHeaders[]{
     "cache-control", "content-language", "content-length", "content-type", "expires", "last-modified", "pragma",
 };
 
@@ -88,20 +88,25 @@ constexpr bool IsSimpleRange(std::string_view value) noexcept {
   if (!value.starts_with("bytes=")) {
     return false;
   }
+
   value.remove_prefix(std::string_view("bytes=").size());
+
   const auto dash = value.find('-');
   if (dash == 0 || dash == std::string_view::npos) {
     return false;
   }
+
   const std::string_view start = value.substr(0, dash);
   const std::string_view end = value.substr(dash + 1);
   if (!std::ranges::all_of(start, IsDigit) || !std::ranges::all_of(end, IsDigit)) {
     return false;
   }
+
   // Without leading zeros, a longer number is a larger one.
   const auto significant = [](std::string_view digits) {
     return digits.substr(std::min(digits.find_first_not_of('0'), digits.size()));
   };
+
   const std::string_view first = significant(start);
   const std::string_view last = significant(end);
   return end.empty() || first.size() < last.size() || (first.size() == last.size() && first <= last);

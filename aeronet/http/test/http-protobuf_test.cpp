@@ -668,7 +668,7 @@ TEST(MakeProtoResponse, SingleAllocation) {
     std::string_view extraHeaders;
     ProtoFormat format;
   };
-  static constexpr Case kCases[] = {
+  static constexpr Case kCases[]{
       {http::GET, "", ProtoFormat::Binary},
       {http::GET, "Accept: application/protobuf\r\n", ProtoFormat::Binary},
       {http::HEAD, "Accept: application/protobuf\r\n", ProtoFormat::Binary},

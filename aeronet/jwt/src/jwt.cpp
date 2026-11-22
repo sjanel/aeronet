@@ -147,7 +147,7 @@ char* AppendJsonString(std::string_view str, char* pInsertPtr) {
 template <class Buf>
 [[nodiscard]] bool DecodeSegment(std::string_view b64, Buf& out) {
   assert(out.empty());
-  out.ensureAvailableCapacity(B64UrlMaxDecodedLen(b64.size()));
+  out.reserve(B64UrlMaxDecodedLen(b64.size()));
   std::size_t outLen = B64UrlDecode(b64, out.data());
   if (outLen + 1UL == 0) {
     return false;

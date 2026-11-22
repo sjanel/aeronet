@@ -3061,7 +3061,7 @@ TEST_F(HttpResponseTest, EmbeddedPayloadSurvivesHeadEditsCopiesAndMoves) {
   };
 
   // Covers both the trivially relocatable alternatives (memcpy) and the others (move + destroy, e.g. SSO std::string).
-  const BodyCase cases[] = {
+  const BodyCase cases[]{
       {[](HttpResponse& resp) { resp.body(std::string("short")); }, "short", false},
       {[&longBody](HttpResponse& resp) { resp.body(std::string(longBody)); }, longBody, false},
       {[](HttpResponse& resp) { resp.bodyStatic("static body"); }, "static body", false},
@@ -3182,7 +3182,7 @@ TEST_F(HttpResponseTest, CopyAssignmentBetweenAllBodyKinds) {
 
   // No body, inline body, then every external payload kind: short (SSO) and long std::string, static view, vector,
   // file.
-  const BodyCase cases[] = {
+  const BodyCase cases[]{
       {[](HttpResponse&) {}, "", false},
       {[](HttpResponse& resp) { resp.body("inline"); }, "inline", false},
       {[](HttpResponse& resp) { resp.body(std::string("short")); }, "short", false},

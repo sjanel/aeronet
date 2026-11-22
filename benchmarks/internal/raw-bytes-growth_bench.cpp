@@ -61,7 +61,7 @@ BENCHMARK(BM_Append)
 
 void BM_ResponseLike(benchmark::State& state) {
   static constexpr std::size_t kInFlight = 64;
-  static constexpr std::size_t kHeaderSizes[] = {30, 41, 28};
+  static constexpr std::size_t kHeaderSizes[]{30, 41, 28};
   static constexpr std::size_t kFinalizationSize = 40;  // content-length, server, connection...
 
   const auto bodySize = static_cast<std::size_t>(state.range(0));

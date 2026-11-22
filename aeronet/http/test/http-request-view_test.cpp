@@ -829,7 +829,7 @@ TEST_F(HttpRequestViewTest, AbsoluteFormTakesTheHostFromTheTarget) {
     std::string_view path;
     std::string_view queryX;
   };
-  static constexpr Case kCases[] = {
+  static constexpr Case kCases[]{
       {"http://example.com:8080/onlyget?x=1&y=2", "example.com:8080", "/onlyget", "1"},
       {"http://h/onlyget", "h", "/onlyget", ""},
       {"http://h", "h", "/", ""},  // an empty path stands for "/" (RFC 9110 §4.2.3)
@@ -2618,7 +2618,7 @@ TEST_F(HttpRequestViewTest, HeaderAddLocationUnchecked) {
 
   // The location is a raw (percent-decoded) target: only its encoded form is written, so the header value is trimmed
   // and valid whatever the target.
-  static constexpr Case kCases[] = {
+  static constexpr Case kCases[]{
       {"/foo", false, "/foo"},
       {"/foo", true, "/foo/"},
       {"", true, "/"},

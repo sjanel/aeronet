@@ -159,7 +159,7 @@ TEST(RateLimitMiddleware, AcceptsCustomIRateLimitStoreImplementation) {
 }
 
 TEST(RateLimitMiddleware, BuildsSuccessfullyForEveryKeyStrategy) {
-  constexpr RateLimitClientKeyStrategy kStrategies[] = {
+  constexpr RateLimitClientKeyStrategy kStrategies[]{
       RateLimitClientKeyStrategy::PeerAddress,
       RateLimitClientKeyStrategy::XForwardedForFirst,
       RateLimitClientKeyStrategy::HeaderValue,

@@ -2,6 +2,7 @@
 
 #include <quickjs.h>
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -162,13 +163,9 @@ constexpr std::string_view kPrelude =
   class Window extends EventTarget {}
   Object.setPrototypeOf(globalThis, Window.prototype);
   Object.setPrototypeOf(Node.prototype, EventTarget.prototype);
-  const nodeTypes = { ELEMENT_NODE: 1, ATTRIBUTE_NODE: 2, TEXT_NODE: 3, CDATA_SECTION_NODE: 4,
-    PROCESSING_INSTRUCTION_NODE: 7, COMMENT_NODE: 8, DOCUMENT_NODE: 9, DOCUMENT_TYPE_NODE: 10,
-    DOCUMENT_FRAGMENT_NODE: 11 };
-  for (const [name, value] of Object.entries(nodeTypes)) {
-    Object.defineProperty(Node, name, { value });
-    Object.defineProperty(Node.prototype, name, { value });
-  }
+  // The globals set up on their first lookup (the lazy parts, the HTML element interfaces) come before EventTarget.
+  Object.setPrototypeOf(native.lazyGlobals, EventTarget.prototype);
+  Object.setPrototypeOf(Window.prototype, native.lazyGlobals);
 
   // --- Element helpers ---
   const whitespace = /[\t\n\f\r ]+/;
@@ -314,6 +311,7 @@ constexpr std::string_view kPrelude =
   };
   define(Element.prototype, parentNodeMethods);
   define(Document.prototype, parentNodeMethods);
+  define(DocumentFragment.prototype, parentNodeMethods);
   define(Element.prototype, childNodeMethods);
   define(CharacterData.prototype, childNodeMethods);
 
@@ -402,32 +400,14 @@ constexpr std::string_view kPrelude =
   });
 
 
-  // The network and text APIs (fetch(), XMLHttpRequest, URL...) are most of the prelude, and unused by many pages:
-  // native.loadNetwork(shared) runs their part (NetworkPreludeSource()) on the first use of one of their globals.
-  let network = null;
-  const networkApi = () => network ??= native.loadNetwork({ getters, Event, EventTarget });
-  for (const name of ['AbortController', 'AbortSignal', 'Headers', 'ProgressEvent', 'Request', 'Response',
-    'TextDecoder', 'TextEncoder', 'URL', 'URLSearchParams', 'XMLHttpRequest', 'XMLHttpRequestEventTarget',
-    'XMLHttpRequestUpload', 'fetch']) {
-    const set = value => Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });
-    Object.defineProperty(globalThis, name, {
-      get() {
-        const value = networkApi()[name];
-        set(value);
-        return value;
-      },
-      set,
-      configurable: true,
-    });
-  }
-  navigator.sendBeacon = (url, data) => networkApi().sendBeacon(url, data);
-
   return {
     dispatch(target, type, bubbles, cancelable) {
       const event = new Event(type, { bubbles, cancelable });
       event.isTrusted = true;
       return dispatch(target, event);
     },
+    // The helpers of the lazy parts (LazyPrelude), set up by Page::lazyPart().
+    shared: { getters, Event, EventTarget, CSSStyleDeclaration },
   };
 }))js";
 
@@ -1279,11 +1259,958 @@ constexpr std::string_view kNetworkPrelude =
 })
 )js";
 
+// The view part: the geometry, the observers and the media queries of a page without layout. About 7 KB.
+constexpr std::string_view kViewPrelude =
+    R"js((function (native, shared) {
+  'use strict';
+  const { getters, EventTarget, CSSStyleDeclaration } = shared;
+
+  let setRect;
+  class DOMRectReadOnly {
+    #x; #y; #width; #height;
+    constructor(x = 0, y = 0, width = 0, height = 0) {
+      this.#x = +x;
+      this.#y = +y;
+      this.#width = +width;
+      this.#height = +height;
+    }
+    static fromRect(rect) { return new this(rect?.x, rect?.y, rect?.width, rect?.height); }
+    get x() { return this.#x; }
+    get y() { return this.#y; }
+    get width() { return this.#width; }
+    get height() { return this.#height; }
+    get top() { return Math.min(this.#y, this.#y + this.#height); }
+    get right() { return Math.max(this.#x, this.#x + this.#width); }
+    get bottom() { return Math.max(this.#y, this.#y + this.#height); }
+    get left() { return Math.min(this.#x, this.#x + this.#width); }
+    toJSON() {
+      const { x, y, width, height, top, right, bottom, left } = this;
+      return { x, y, width, height, top, right, bottom, left };
+    }
+    static {
+      // The setters of DOMRect.
+      setRect = (rect, field, value) => {
+        if (field === 'x') rect.#x = +value;
+        else if (field === 'y') rect.#y = +value;
+        else if (field === 'width') rect.#width = +value;
+        else rect.#height = +value;
+      };
+    }
+  }
+  class DOMRect extends DOMRectReadOnly {}
+  for (const field of ['x', 'y', 'width', 'height']) {
+    const get = Object.getOwnPropertyDescriptor(DOMRectReadOnly.prototype, field).get;
+    getters(DOMRect.prototype, { [field]: { get, set(value) { setRect(this, field, value); } } });
+  }
+  const viewport = () => new DOMRectReadOnly(0, 0, innerWidth, innerHeight);
+
+  const checkElement = (target, method) => {
+    if (!(target instanceof Element)) throw new TypeError(`${method}: parameter 1 is not of type 'Element'`);
+  };
+  const checkCallback = (callback, name) => {
+    if (typeof callback !== 'function') throw new TypeError(`${name}: parameter 1 is not a function`);
+  };
+
+  // The entries of an observer are delivered together by a task: that of a 0 ms timer, the next "rendering".
+  class Observer {
+    #callback;
+    #targets = new Set();
+    #records = [];
+    constructor(callback, name) {
+      checkCallback(callback, name);
+      this.#callback = callback;
+    }
+    observe(target, entry) {
+      if (this.#targets.has(target)) return;
+      this.#targets.add(target);
+      if (this.#records.push(entry) === 1) {
+        setTimeout(() => {
+          const records = this.takeRecords();
+          if (records.length !== 0) this.#callback.call(this, records, this);
+        }, 0);
+      }
+    }
+    unobserve(target) {
+      this.#targets.delete(target);
+      this.#records = this.#records.filter(entry => entry.target !== target);
+    }
+    disconnect() {
+      this.#targets.clear();
+      this.#records = [];
+    }
+    takeRecords() {
+      const records = this.#records;
+      this.#records = [];
+      return records;
+    }
+  }
+
+  // An entry class with read-only fields from its initializer.
+  const entryClass = fields => {
+    const kInit = Symbol('init');
+    const entry = class {
+      constructor(init) { this[kInit] = init; }
+    };
+    for (const field of fields) getters(entry.prototype, { [field]: { get() { return this[kInit][field]; } } });
+    return entry;
+  };
+  const IntersectionObserverEntry = entryClass(['time', 'target', 'rootBounds', 'boundingClientRect',
+    'intersectionRect', 'isIntersecting', 'isVisible', 'intersectionRatio']);
+  const ResizeObserverEntry = entryClass(['target', 'contentRect', 'borderBoxSize', 'contentBoxSize',
+    'devicePixelContentBoxSize']);
+
+  // Every element intersects the viewport, wholly: lazy content is loaded at once.
+  class IntersectionObserver extends Observer {
+    #root;
+    #rootMargin;
+    #thresholds;
+    constructor(callback, options) {
+      super(callback, 'IntersectionObserver');
+      const { root = null, rootMargin = '0px 0px 0px 0px', threshold = 0 } = options ?? {};
+      this.#root = root;
+      this.#rootMargin = String(rootMargin);
+      this.#thresholds = [].concat(threshold).map(Number).sort((a, b) => a - b);
+      if (this.#thresholds.some(t => !(t >= 0 && t <= 1))) throw new RangeError('Threshold values must be in [0, 1]');
+    }
+    get root() { return this.#root; }
+    get rootMargin() { return this.#rootMargin; }
+    get thresholds() { return this.#thresholds.slice(); }
+    observe(target) {
+      checkElement(target, 'IntersectionObserver.observe');
+      super.observe(target, new IntersectionObserverEntry({ time: performance.now(), target,
+        rootBounds: viewport(), boundingClientRect: new DOMRectReadOnly(), intersectionRect: new DOMRectReadOnly(),
+        isIntersecting: true, isVisible: true, intersectionRatio: 1 }));
+    }
+  }
+
+  // Each observed element is reported once, empty.
+  class ResizeObserver extends Observer {
+    constructor(callback) { super(callback, 'ResizeObserver'); }
+    observe(target) {
+      checkElement(target, 'ResizeObserver.observe');
+      const size = [Object.freeze({ inlineSize: 0, blockSize: 0 })];
+      super.observe(target, new ResizeObserverEntry({ target, contentRect: new DOMRectReadOnly(),
+        borderBoxSize: size, contentBoxSize: size, devicePixelContentBoxSize: size }));
+    }
+  }
+
+  // Media queries, evaluated against the viewport of the window: a screen, in landscape, light, with a fine pointer
+  // that hovers, without reduced motion. An unknown feature does not match.
+  const length = value => {
+    const match = /^([0-9]*\.?[0-9]+)(px|em|rem)?$/.exec(value ?? '');
+    return match === null ? NaN : Number(match[1]) * (match[2] === 'em' || match[2] === 'rem' ? 16 : 1);
+  };
+  const compare = (actual, op, value) => {
+    switch (op) {
+      case '<': return actual < value;
+      case '<=': return actual <= value;
+      case '>': return actual > value;
+      case '>=': return actual >= value;
+      default: return actual === value;
+    }
+  };
+  const feature = (name, value) => {
+    const dimension = /^(min-|max-)?(width|height|device-width|device-height)$/.exec(name);
+    if (dimension !== null) {
+      const actual = dimension[2].endsWith('width') ? innerWidth : innerHeight;
+      if (value === undefined) return actual > 0;
+      return compare(actual, dimension[1] === 'min-' ? '>=' : dimension[1] === 'max-' ? '<=' : '=', length(value));
+    }
+    switch (name) {
+      case 'orientation': return value === 'landscape';
+      case 'prefers-color-scheme': return value === 'light';
+      case 'prefers-reduced-motion': case 'prefers-reduced-transparency': case 'prefers-contrast':
+        return value === 'no-preference';
+      case 'hover': case 'any-hover': return value === undefined || value === 'hover';
+      case 'pointer': case 'any-pointer': return value === undefined || value === 'fine';
+      case 'color': return true;
+      case 'display-mode': return value === 'browser';
+      case 'scripting': return value === undefined || value === 'enabled';
+      default: return false;
+    }
+  };
+  const condition = term => {
+    if (term === 'all' || term === 'screen') return true;
+    const range = /^\(\s*([a-z-]+)\s*(<=|>=|<|>|=)\s*([^)]+?)\s*\)$/.exec(term);
+    if (range !== null) {
+      const actual = range[1] === 'width' ? innerWidth : range[1] === 'height' ? innerHeight : NaN;
+      return compare(actual, range[2], length(range[3]));
+    }
+    const plain = /^\(\s*([a-z-]+)\s*(?::\s*([^)]+?)\s*)?\)$/.exec(term);
+    return plain !== null && feature(plain[1], plain[2]);
+  };
+  const matchesMedia = query => query.trim() === '' || query.split(',').some(part => {
+    let terms = part.trim().toLowerCase();
+    const negated = terms.startsWith('not ');
+    terms = terms.replace(/^(not|only)\s+/, '');
+    return terms.split(/\s+and\s+/).every(term => condition(term.trim())) !== negated;
+  });
+
+  class MediaQueryList extends EventTarget {
+    #media;
+    constructor(media) {
+      super();
+      this.#media = media;
+      this.onchange = null;
+    }
+    get media() { return this.#media; }
+    get matches() { return matchesMedia(this.#media); }
+    addListener(callback) { this.addEventListener('change', callback); }
+    removeListener(callback) { this.removeEventListener('change', callback); }
+  }
+
+  function matchMedia(query) {
+    if (arguments.length === 0) throw new TypeError('matchMedia: 1 argument required');
+    return new MediaQueryList(String(query));
+  }
+
+  // The declarations of the style attribute, then those set through element.style, by their names as written and
+  // camel-cased: no style sheet applies. The other properties are '', as those of an element that is not rendered.
+  const camelCase = name => name.replace(/-([a-z])/g, (match, c) => c.toUpperCase());
+  const unsetProperties = new Proxy(Object.create(CSSStyleDeclaration.prototype), {
+    get: (target, key, receiver) => typeof key === 'string' && !(key in target) ? '' : Reflect.get(target, key, receiver),
+  });
+  const getComputedStyle = element => {
+    checkElement(element, 'getComputedStyle');
+    const style = Object.create(unsetProperties);
+    const set = (name, value) => {
+      name = name.trim();
+      if (name === '') return;
+      style[name] = value;
+      style[camelCase(name)] = value;
+    };
+    for (const declaration of (element.getAttribute('style') ?? '').split(';')) {
+      const colon = declaration.indexOf(':');
+      if (colon > 0) set(declaration.slice(0, colon).toLowerCase(), declaration.slice(colon + 1).trim());
+    }
+    for (const [name, value] of Object.entries(element.style)) set(name, value);
+    return style;
+  };
+
+  return { DOMRect, DOMRectReadOnly, IntersectionObserver, IntersectionObserverEntry, MediaQueryList, ResizeObserver,
+    ResizeObserverEntry, getComputedStyle, matchMedia };
+})
+)js";
+
+// The Intl part: the Intl API that QuickJS-ng does not have, with the formats of en-US whatever the locale asked for.
+// About 22 KB, in adjacent literals of less than 16 KB each (MSVC).
+constexpr std::string_view kIntlPrelude =
+    R"js((function (native, shared) {
+  'use strict';
+  const define = (target, properties) => {
+    for (const [name, value] of Object.entries(properties)) {
+      Object.defineProperty(target, name, { value, writable: true, configurable: true });
+    }
+  };
+
+  // --- Options and locales ---
+  const option = (options, name, values, fallback) => {
+    const value = options[name];
+    if (value === undefined) return fallback;
+    const string = String(value);
+    if (values !== undefined && !values.includes(string)) {
+      throw new RangeError(`Value ${string} out of range for Intl options property ${name}`);
+    }
+    return string;
+  };
+  const digits = (options, name, min, max, fallback) => {
+    const value = options[name];
+    if (value === undefined) return fallback;
+    const number = Number(value);
+    if (!(number >= min && number <= max)) throw new RangeError(`${name} value is out of range.`);
+    return Math.floor(number);
+  };
+  const optionsOf = options => options === undefined ? {} : Object(options);
+
+  // A BCP 47 tag, case-normalized: language in lower case, script in title case, region in upper case.
+  const canonicalize = tag => {
+    if (typeof tag !== 'string' && (typeof tag !== 'object' || tag === null)) {
+      throw new TypeError('Language ID should be string or object.');
+    }
+    tag = String(tag);
+    if (!/^[a-z]{2,8}(-[a-z0-9]{1,8})*$/i.test(tag)) throw new RangeError(`Incorrect locale information provided`);
+    let extension = false;
+    return tag.split('-').map((subtag, index) => {
+      extension ||= index !== 0 && subtag.length === 1;
+      if (index === 0 || extension) return subtag.toLowerCase();
+      if (subtag.length === 4 && /^[a-z]+$/i.test(subtag)) return subtag[0].toUpperCase() + subtag.slice(1).toLowerCase();
+      return subtag.length === 2 || /^[0-9]{3}$/.test(subtag) ? subtag.toUpperCase() : subtag.toLowerCase();
+    }).join('-');
+  };
+  const canonicalLocales = locales => {
+    if (locales === undefined) return [];
+    const list = typeof locales === 'string' || locales instanceof Locale ? [locales] : Array.from(Object(locales));
+    return [...new Set(list.map(canonicalize))];
+  };
+  const baseName = tag => tag.split(/-[a-z0-9]-/i)[0];
+  const isEnglish = tag => tag === 'en' || tag.startsWith('en-');
+  // The locale of a format: the first English one asked for, else en-US, in which it formats anyway.
+  const resolveLocale = locales => baseName(canonicalLocales(locales).find(isEnglish) ?? 'en-US');
+  const supportedLocalesOf = locales => canonicalLocales(locales).filter(isEnglish);
+
+  class Locale {
+    #tag;
+    constructor(tag, options) {
+      if (tag === undefined) throw new TypeError('First argument to Intl.Locale constructor can\'t be empty');
+      let base = baseName(canonicalize(tag instanceof Locale ? tag.toString() : tag));
+      const extensions = canonicalize(String(tag)).slice(base.length);
+      const parts = base.split('-');
+      const { language = parts[0], script, region } = optionsOf(options);
+      const scriptPart = script ?? parts.find((part, i) => i > 0 && part.length === 4);
+      const regionPart = region ?? parts.find((part, i) => i > 0 && (part.length === 2 || /^[0-9]{3}$/.test(part)));
+      base = [language, scriptPart, regionPart].filter(part => part !== undefined).join('-');
+      this.#tag = canonicalize(base + extensions);
+    }
+    get baseName() { return baseName(this.#tag); }
+    get language() { return this.#tag.split('-')[0]; }
+    get script() { return this.baseName.split('-').find((part, i) => i > 0 && part.length === 4); }
+    get region() {
+      return this.baseName.split('-').find((part, i) => i > 0 && (part.length === 2 || /^[0-9]{3}$/.test(part)));
+    }
+    maximize() { return new Locale(this.#tag); }
+    minimize() { return new Locale(this.#tag); }
+    toString() { return this.#tag; }
+  }
+
+  // --- Numbers ---
+  // The decimal digits of a number string in exponent form ("1.5e+21"), or the string itself.
+  const plain = str => {
+    const match = /^([0-9]+)(?:\.([0-9]+))?e([+-][0-9]+)$/.exec(str);
+    if (match === null) return str;
+    const all = match[1] + (match[2] ?? '');
+    const point = match[1].length + Number(match[3]);
+    if (point <= 0) return '0.' + '0'.repeat(-point) + all;
+    return point >= all.length ? all + '0'.repeat(point - all.length) : all.slice(0, point) + '.' + all.slice(point);
+  };
+  // 'str' ("12.3400") with the trailing zeros of its fraction removed down to 'minFraction' digits.
+  const trimFraction = (str, minFraction) => {
+    const point = str.indexOf('.');
+    if (point < 0) return str;
+    let end = str.length;
+    while (end > point + 1 + minFraction && str[end - 1] === '0') --end;
+    return str.slice(0, end === point + 1 ? point : end);
+  };
+  // 'x' rounded to 'max' significant digits, with at least 'min' of them. Beyond 16, the shortest representation of
+  // the double: toPrecision() would show the digits of its binary value (0.1 is 0.1000000000000000055511...).
+  const significant = (x, min, max) => {
+    let str = x === 0 ? '0' : trimFraction(plain(max > 16 ? String(x) : x.toPrecision(max)), 0);
+    const count = x === 0 ? 1 : str.replace('.', '').replace(/^0+/, '').length;
+    if (count < min) str += (str.includes('.') ? '' : '.') + '0'.repeat(min - count);
+    return str;
+  };
+  const currencySymbols = { USD: '$', EUR: '€', GBP: '£', JPY: '¥', CNY: 'CN¥', INR: '₹', KRW: '₩', CAD: 'CA$',
+    AUD: 'A$', MXN: 'MX$', BRL: 'R$', HKD: 'HK$', NZD: 'NZ$', TWD: 'NT$', ILS: '₪', VND: '₫', PHP: '₱' };
+  const narrowSymbols = { CAD: '$', AUD: '$', MXN: '$', HKD: '$', NZD: '$', TWD: '$', CNY: '¥' };
+  const currencyDigits = { JPY: 0, KRW: 0, VND: 0, CLP: 0, ISK: 0, UGX: 0, PYG: 0, BHD: 3, KWD: 3, JOD: 3, OMR: 3,
+    TND: 3, IQD: 0, LYD: 3 };
+  const unitNames = { percent: '%', byte: 'byte', kilobyte: 'kB', megabyte: 'MB', gigabyte: 'GB', terabyte: 'TB',
+    bit: 'bit', millimeter: 'mm', centimeter: 'cm', meter: 'm', kilometer: 'km', inch: 'in', foot: 'ft', mile: 'mi',
+    gram: 'g', kilogram: 'kg', pound: 'lb', ounce: 'oz', liter: 'L', milliliter: 'mL', millisecond: 'ms',
+    second: 'sec', minute: 'min', hour: 'hr', day: 'day', week: 'wk', month: 'mth', year: 'yr', celsius: '°C',
+    fahrenheit: '°F', degree: 'deg', 'kilometer-per-hour': 'km/h', 'mile-per-hour': 'mph',
+    'meter-per-second': 'm/s' };
+  const compactScales = [[1e12, 'T', 'trillion'], [1e9, 'B', 'billion'], [1e6, 'M', 'million'], [1e3, 'K', 'thousand']];
+
+  class NumberFormat {
+    #options;
+    #format;
+    constructor(locales, options) {
+      options = optionsOf(options);
+      const locale = resolveLocale(locales);
+      const style = option(options, 'style', ['decimal', 'percent', 'currency', 'unit'], 'decimal');
+      let currency = options.currency;
+      if (currency !== undefined) {
+        currency = String(currency).toUpperCase();
+        if (!/^[A-Z]{3}$/.test(currency)) throw new RangeError(`Invalid currency code : ${currency}`);
+      } else if (style === 'currency') {
+        throw new TypeError('Currency code is required with currency style.');
+      }
+      const currencyDisplay = option(options, 'currencyDisplay', ['code', 'symbol', 'narrowSymbol', 'name'], 'symbol');
+      const unit = options.unit === undefined ? undefined : String(options.unit);
+      if (style === 'unit' && unit === undefined) throw new TypeError('Unit is required with unit style.');
+      const unitDisplay = option(options, 'unitDisplay', ['short', 'narrow', 'long'], 'short');
+      const notation = option(options, 'notation', ['standard', 'scientific', 'engineering', 'compact'], 'standard');
+      const compactDisplay = option(options, 'compactDisplay', ['short', 'long'], 'short');
+      const minimumIntegerDigits = digits(options, 'minimumIntegerDigits', 1, 21, 1);
+      const currencyFraction = currencyDigits[currency] ?? 2;
+      const defaultMin = style === 'currency' && notation !== 'compact' ? currencyFraction : 0;
+      const defaultMax = style === 'currency' && notation !== 'compact' ? currencyFraction
+        : style === 'percent' || notation === 'compact' ? 0 : 3;
+      let minimumFractionDigits = digits(options, 'minimumFractionDigits', 0, 100, undefined);
+      let maximumFractionDigits = digits(options, 'maximumFractionDigits', 0, 100, undefined);
+      const explicitFraction = minimumFractionDigits !== undefined || maximumFractionDigits !== undefined;
+      if (minimumFractionDigits === undefined) {
+        minimumFractionDigits = Math.min(defaultMin, maximumFractionDigits ?? defaultMin);
+      }
+      if (maximumFractionDigits === undefined) maximumFractionDigits = Math.max(defaultMax, minimumFractionDigits);
+      if (minimumFractionDigits > maximumFractionDigits) {
+        throw new RangeError('maximumFractionDigits value is out of range.');
+      }
+      let minimumSignificantDigits = digits(options, 'minimumSignificantDigits', 1, 21, undefined);
+      let maximumSignificantDigits = digits(options, 'maximumSignificantDigits', 1, 21, undefined);
+      if (minimumSignificantDigits !== undefined || maximumSignificantDigits !== undefined) {
+        minimumSignificantDigits ??= 1;
+        maximumSignificantDigits ??= 21;
+        if (minimumSignificantDigits > maximumSignificantDigits) {
+          throw new RangeError('maximumSignificantDigits value is out of range.');
+        }
+      }
+      const grouping = options.useGrouping;
+      const useGrouping = grouping === undefined ? (notation === 'compact' ? 'min2' : 'auto')
+        : grouping === false || grouping === 'false' ? false : grouping === true ? 'always' : String(grouping);
+      const signDisplay = option(options, 'signDisplay', ['auto', 'never', 'always', 'exceptZero', 'negative'], 'auto');
+      this.#options = { locale, numberingSystem: 'latn', style, currency, currencyDisplay: style === 'currency'
+        ? currencyDisplay : undefined, unit, unitDisplay: style === 'unit' ? unitDisplay : undefined,
+      minimumIntegerDigits, minimumFractionDigits, maximumFractionDigits, minimumSignificantDigits,
+      maximumSignificantDigits, useGrouping, notation, compactDisplay: notation === 'compact' ? compactDisplay
+        : undefined, signDisplay, compactRounding: notation === 'compact' && !explicitFraction
+        && maximumSignificantDigits === undefined };
+    }
+    static supportedLocalesOf(locales) { return supportedLocalesOf(locales); }
+    get format() { return this.#format ??= value => this.formatToParts(value).map(part => part.value).join(''); }
+    formatRange(start, end) { return `${this.format(start)}–${this.format(end)}`; }
+    resolvedOptions() {
+      const { compactRounding, ...options } = this.#options;
+      return Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined));
+    }
+)js"
+    R"js(    // The digits of 'x' (not negative, finite) rounded by the options: [integer, fraction] strings.
+    #round(x) {
+      const o = this.#options;
+      let str;
+      if (o.compactRounding) {
+        str = x < 100 ? significant(x, 1, 2) : plain(x.toFixed(0));
+      } else if (o.maximumSignificantDigits !== undefined) {
+        str = significant(x, o.minimumSignificantDigits, o.maximumSignificantDigits);
+      } else {
+        str = trimFraction(plain(x.toFixed(o.maximumFractionDigits)), o.minimumFractionDigits);
+      }
+      const [integer, fraction = ''] = str.split('.');
+      return [integer.padStart(o.minimumIntegerDigits, '0'), fraction];
+    }
+    formatToParts(value) {
+      const o = this.#options;
+      let x = typeof value === 'bigint' ? Number(value) : Number(value);
+      const negative = x < 0 || Object.is(x, -0);
+      const number = [];
+      let zero = false;
+      if (Number.isNaN(x)) {
+        number.push({ type: 'nan', value: 'NaN' });
+      } else if (!Number.isFinite(x)) {
+        number.push({ type: 'infinity', value: '∞' });
+      } else {
+        x = Math.abs(x) * (o.style === 'percent' ? 100 : 1);
+        let suffix = null;
+        let exponent = 0;
+        if (o.notation === 'compact') {
+          for (const [scale, short, long] of compactScales) {
+            if (x >= scale || Number(this.#round(x / (scale / 1000)).join('.')) >= 1000) {
+              x /= scale;
+              suffix = o.compactDisplay === 'long' ? long : short;
+              break;
+            }
+          }
+        } else if (o.notation !== 'standard' && x !== 0) {
+          exponent = Math.floor(Math.log10(x));
+          if (o.notation === 'engineering') exponent -= ((exponent % 3) + 3) % 3;
+          x /= 10 ** exponent;
+        }
+        const [integer, fraction] = this.#round(x);
+        zero = /^0*$/.test(integer + fraction);
+        const group = o.useGrouping === 'always' || o.useGrouping === 'auto' ? integer.length > 3
+          : o.useGrouping === 'min2' && integer.length > 4;
+        if (group) {
+          const first = integer.length % 3 || 3;
+          number.push({ type: 'integer', value: integer.slice(0, first) });
+          for (let i = first; i < integer.length; i += 3) {
+            number.push({ type: 'group', value: ',' }, { type: 'integer', value: integer.slice(i, i + 3) });
+          }
+        } else {
+          number.push({ type: 'integer', value: integer });
+        }
+        if (fraction !== '') number.push({ type: 'decimal', value: '.' }, { type: 'fraction', value: fraction });
+        if (suffix !== null) {
+          if (o.compactDisplay === 'long') number.push({ type: 'literal', value: ' ' });
+          number.push({ type: 'compact', value: suffix });
+        }
+        if (o.notation === 'scientific' || o.notation === 'engineering') {
+          number.push({ type: 'exponentSeparator', value: 'E' });
+          if (exponent < 0) number.push({ type: 'exponentMinusSign', value: '-' });
+          number.push({ type: 'exponentInteger', value: String(Math.abs(exponent)) });
+        }
+      }
+      let sign = '';
+      switch (o.signDisplay) {
+        case 'auto': sign = negative ? '-' : ''; break;
+        case 'always': sign = negative ? '-' : '+'; break;
+        case 'exceptZero': sign = zero ? '' : negative ? '-' : '+'; break;
+        case 'negative': sign = negative && !zero ? '-' : ''; break;
+        default: break;
+      }
+      const parts = sign === '' ? [] : [{ type: sign === '-' ? 'minusSign' : 'plusSign', value: sign }];
+      if (o.style === 'currency') {
+        const symbol = o.currencyDisplay === 'code' || o.currencyDisplay === 'name' ? null
+          : (o.currencyDisplay === 'narrowSymbol' ? narrowSymbols[o.currency] : undefined)
+            ?? currencySymbols[o.currency] ?? null;
+        if (o.currencyDisplay === 'name') {
+          parts.push(...number, { type: 'literal', value: ' ' }, { type: 'currency', value: o.currency });
+        } else if (symbol === null) {
+          parts.push({ type: 'currency', value: o.currency }, { type: 'literal', value: ' ' }, ...number);
+        } else {
+          parts.push({ type: 'currency', value: symbol }, ...number);
+        }
+      } else if (o.style === 'percent') {
+        parts.push(...number, { type: 'percentSign', value: '%' });
+      } else if (o.style === 'unit') {
+        const name = o.unitDisplay === 'long' ? o.unit : unitNames[o.unit] ?? o.unit;
+        if (name === '%') parts.push(...number, { type: 'unit', value: name });
+        else parts.push(...number, { type: 'literal', value: o.unitDisplay === 'narrow' ? '' : ' ' },
+          { type: 'unit', value: name });
+      } else {
+        parts.push(...number);
+      }
+      return parts;
+    }
+  }
+
+  // --- Dates: in the local time zone of the process, or in UTC ---
+  const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October',
+    'November', 'December'];
+  const offsetText = minutes => {
+    const sign = minutes <= 0 ? '+' : '-';
+    const total = Math.abs(minutes);
+    return `${sign}${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+  };
+  // The time zone of the process: UTC, else an Etc/GMT zone for a whole hour offset, else its offset ("+05:30").
+  const localTimeZone = () => {
+    const offset = new Date().getTimezoneOffset();
+    if (offset === 0) return 'UTC';
+    return offset % 60 === 0 ? `Etc/GMT${offset > 0 ? '+' : '-'}${Math.abs(offset / 60)}` : offsetText(offset);
+  };
+  const isUtc = zone => /^(etc\/)?(utc|gmt|uct|zulu|universal)$/i.test(zone);
+  const dateStyles = {
+    full: { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' },
+    long: { month: 'long', day: 'numeric', year: 'numeric' },
+    medium: { month: 'short', day: 'numeric', year: 'numeric' },
+    short: { month: 'numeric', day: 'numeric', year: '2-digit' },
+  };
+  const timeStyles = {
+    full: { hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'long' },
+    long: { hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short' },
+    medium: { hour: 'numeric', minute: '2-digit', second: '2-digit' },
+    short: { hour: 'numeric', minute: '2-digit' },
+  };
+  const dateFieldNames = ['weekday', 'era', 'year', 'month', 'day', 'dayPeriod', 'hour', 'minute', 'second',
+    'fractionalSecondDigits', 'timeZoneName'];
+  const textValues = ['narrow', 'short', 'long'];
+  const numericValues = ['2-digit', 'numeric'];
+  const dateFieldValues = { weekday: textValues, era: textValues, year: numericValues,
+    month: [...numericValues, ...textValues], day: numericValues, dayPeriod: textValues, hour: numericValues,
+    minute: numericValues, second: numericValues,
+    timeZoneName: ['short', 'long', 'shortOffset', 'longOffset', 'shortGeneric', 'longGeneric'] };
+  const pad2 = value => String(value).padStart(2, '0');
+)js"
+    R"js(
+  class DateTimeFormat {
+    #options;
+    #fields;
+    #format;
+    #utc;
+    constructor(locales, options) {
+      options = optionsOf(options);
+      const locale = resolveLocale(locales);
+      const local = localTimeZone();
+      let timeZone = options.timeZone === undefined ? local : String(options.timeZone);
+      if (isUtc(timeZone)) {
+        timeZone = 'UTC';
+      } else if (timeZone !== local && !/^[A-Za-z_]+(\/[A-Za-z0-9_+-]+)*$|^[+-][0-9]{2}(:?[0-9]{2})?$/.test(timeZone)) {
+        throw new RangeError(`Invalid time zone specified: ${timeZone}`);
+      }
+      // Another time zone than UTC and that of the process is formatted as UTC: no time zone database.
+      this.#utc = timeZone !== local;
+      const fields = {};
+      for (const name of dateFieldNames) {
+        fields[name] = name === 'fractionalSecondDigits' ? digits(options, name, 1, 3, undefined)
+          : option(options, name, dateFieldValues[name], undefined);
+      }
+      const dateStyle = option(options, 'dateStyle', ['full', 'long', 'medium', 'short'], undefined);
+      const timeStyle = option(options, 'timeStyle', ['full', 'long', 'medium', 'short'], undefined);
+      const explicit = dateFieldNames.some(name => fields[name] !== undefined);
+      if ((dateStyle !== undefined || timeStyle !== undefined) && explicit) {
+        throw new TypeError(`Can't set option ${dateFieldNames.find(name => fields[name] !== undefined)} when ` +
+          `${dateStyle !== undefined ? 'dateStyle' : 'timeStyle'} is used`);
+      }
+      if (dateStyle !== undefined || timeStyle !== undefined) {
+        Object.assign(fields, dateStyles[dateStyle], timeStyles[timeStyle]);
+      } else if (!explicit || dateFieldNames.every(name => name === 'timeZoneName' || fields[name] === undefined)) {
+        Object.assign(fields, { year: 'numeric', month: 'numeric', day: 'numeric' });
+      }
+      const hourCycle = option(options, 'hourCycle', ['h11', 'h12', 'h23', 'h24'], undefined);
+      const hour12 = options.hour12 !== undefined ? Boolean(options.hour12)
+        : hourCycle !== undefined ? hourCycle === 'h11' || hourCycle === 'h12' : true;
+      this.#fields = fields;
+      this.#options = { locale, calendar: 'gregory', numberingSystem: 'latn', timeZone, dateStyle, timeStyle,
+        hourCycle: fields.hour === undefined ? undefined : hourCycle ?? (hour12 ? 'h12' : 'h23'),
+        hour12: fields.hour === undefined ? undefined : hour12,
+        ...(dateStyle === undefined && timeStyle === undefined ? fields : {}),
+        longDate: dateStyle === 'full' || dateStyle === 'long' };
+    }
+    static supportedLocalesOf(locales) { return supportedLocalesOf(locales); }
+    get format() { return this.#format ??= date => this.formatToParts(date).map(part => part.value).join(''); }
+    formatRange(start, end) { return `${this.format(start)} – ${this.format(end)}`; }
+    resolvedOptions() {
+      const { longDate, ...options } = this.#options;
+      return Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined));
+    }
+    formatToParts(date) {
+      const time = date === undefined ? Date.now() : Number(date instanceof Date ? date.valueOf() : date);
+      const d = new Date(time);
+      if (Number.isNaN(d.valueOf())) throw new RangeError('Invalid time value');
+      const utc = this.#utc;
+      const year = utc ? d.getUTCFullYear() : d.getFullYear();
+      const month = utc ? d.getUTCMonth() : d.getMonth();
+      const day = utc ? d.getUTCDate() : d.getDate();
+      const weekday = utc ? d.getUTCDay() : d.getDay();
+      const hours = utc ? d.getUTCHours() : d.getHours();
+      const minutes = utc ? d.getUTCMinutes() : d.getMinutes();
+      const seconds = utc ? d.getUTCSeconds() : d.getSeconds();
+      const millis = utc ? d.getUTCMilliseconds() : d.getMilliseconds();
+      const f = this.#fields;
+      const o = this.#options;
+      const parts = [];
+      const literal = value => parts.push({ type: 'literal', value });
+      const text = (names, index, style) => style === 'long' ? names[index]
+        : style === 'short' ? names[index].slice(0, 3) : names[index][0];
+      const numeric = (value, style) => style === '2-digit' ? pad2(value % 100) : String(value);
+      const yearText = f.year === '2-digit' ? pad2(Math.abs(year) % 100) : String(year);
+      const textMonth = f.month !== undefined && f.month !== 'numeric' && f.month !== '2-digit';
+      // Date: "Tuesday, January 2, 2018", "Jan 2", "January 2018", or "1/2/2018".
+      if (f.weekday !== undefined) {
+        parts.push({ type: 'weekday', value: text(weekdays, weekday, f.weekday) });
+        if (f.month !== undefined || f.day !== undefined || f.year !== undefined) literal(', ');
+      }
+      if (textMonth) {
+        parts.push({ type: 'month', value: text(months, month, f.month) });
+        if (f.day !== undefined) {
+          literal(' ');
+          parts.push({ type: 'day', value: numeric(day, f.day) });
+        }
+        if (f.year !== undefined) {
+          literal(f.day !== undefined ? ', ' : ' ');
+          parts.push({ type: 'year', value: yearText });
+        }
+      } else {
+        const numbers = [];
+        if (f.month !== undefined) numbers.push({ type: 'month', value: numeric(month + 1, f.month) });
+        if (f.day !== undefined) numbers.push({ type: 'day', value: numeric(day, f.day) });
+        if (f.year !== undefined) numbers.push({ type: 'year', value: yearText });
+        numbers.forEach((part, i) => {
+          if (i !== 0) literal('/');
+          parts.push(part);
+        });
+      }
+      if (f.era !== undefined) {
+        literal(' ');
+        parts.push({ type: 'era', value: year > 0 ? (f.era === 'long' ? 'Anno Domini' : 'AD')
+          : (f.era === 'long' ? 'Before Christ' : 'BC') });
+      }
+      // Time: "11:40:40 PM", "23:40", with the time zone.
+      const hasTime = f.hour !== undefined || f.minute !== undefined || f.second !== undefined;
+      if (hasTime && parts.length !== 0) literal(o.longDate ? ' at ' : ', ');
+      const timeParts = [];
+      if (f.hour !== undefined) {
+        const h12 = o.hourCycle === 'h11' ? hours % 12 : hours % 12 || 12;
+        const h24 = o.hourCycle === 'h24' ? hours || 24 : hours;
+        timeParts.push({ type: 'hour', value: o.hour12 ? numeric(h12, f.hour) : pad2(h24) });
+      }
+      if (f.minute !== undefined) {
+        timeParts.push({ type: 'minute', value: f.hour !== undefined ? pad2(minutes) : numeric(minutes, f.minute) });
+      }
+      if (f.second !== undefined) {
+        timeParts.push({ type: 'second', value: timeParts.length !== 0 ? pad2(seconds) : numeric(seconds, f.second) });
+      }
+      timeParts.forEach((part, i) => {
+        if (i !== 0) literal(':');
+        parts.push(part);
+      });
+      if (f.fractionalSecondDigits !== undefined) {
+        if (timeParts.length !== 0) literal('.');
+        parts.push({ type: 'fractionalSecond', value: String(millis).padStart(3, '0').slice(0, f.fractionalSecondDigits) });
+      }
+      if (f.hour !== undefined && o.hour12) {
+        literal(' ');
+        parts.push({ type: 'dayPeriod', value: hours < 12 ? 'AM' : 'PM' });
+      }
+      if (f.timeZoneName !== undefined) {
+        const offset = utc ? 0 : d.getTimezoneOffset();
+        const long = f.timeZoneName.startsWith('long');
+        let name = offset === 0 ? (long ? 'Coordinated Universal Time' : 'UTC') : 'GMT' + offsetText(offset);
+        if (offset !== 0 && !long) name = name.replace(/:00$/, '').replace(/([+-])0([0-9])/, '$1$2');
+        if (parts.length !== 0) literal(' ');
+        parts.push({ type: 'timeZoneName', value: name });
+      }
+      return parts;
+    }
+  }
+)js"
+    R"js(
+  // --- Plural rules, collation, relative times, lists: English ---
+  class PluralRules {
+    #options;
+    #number;
+    constructor(locales, options) {
+      options = optionsOf(options);
+      const type = option(options, 'type', ['cardinal', 'ordinal'], 'cardinal');
+      this.#number = new NumberFormat(locales, { ...options, useGrouping: false, style: 'decimal' });
+      const { locale, minimumIntegerDigits, minimumFractionDigits, maximumFractionDigits } =
+        this.#number.resolvedOptions();
+      this.#options = { locale, type, minimumIntegerDigits, minimumFractionDigits, maximumFractionDigits,
+        pluralCategories: type === 'ordinal' ? ['few', 'one', 'two', 'other'] : ['one', 'other'] };
+    }
+    static supportedLocalesOf(locales) { return supportedLocalesOf(locales); }
+    select(value) {
+      const n = Math.abs(Number(value));
+      if (this.#options.type === 'ordinal') {
+        if (!Number.isInteger(n)) return 'other';
+        const units = n % 10;
+        const tens = n % 100;
+        if (units === 1 && tens !== 11) return 'one';
+        if (units === 2 && tens !== 12) return 'two';
+        return units === 3 && tens !== 13 ? 'few' : 'other';
+      }
+      // "one" for 1 without visible fraction digits ("1.0" is plural).
+      return this.#number.format(n) === '1' ? 'one' : 'other';
+    }
+    selectRange(start, end) { return this.select(end); }
+    resolvedOptions() { return { ...this.#options, pluralCategories: this.#options.pluralCategories.slice() }; }
+  }
+
+  const stripMarks = str => str.normalize('NFD').replace(/[̀-ͯ]/g, '');
+  // Compares by code units, the runs of digits by value with 'numeric'.
+  const compareKeys = (a, b, numeric) => {
+    if (numeric) {
+      const left = a.split(/([0-9]+)/);
+      const right = b.split(/([0-9]+)/);
+      for (let i = 0; i < left.length && i < right.length; ++i) {
+        if (left[i] === right[i]) continue;
+        if (i % 2 === 1) {
+          const x = left[i].replace(/^0+(?=.)/, '');
+          const y = right[i].replace(/^0+(?=.)/, '');
+          if (x.length !== y.length) return x.length < y.length ? -1 : 1;
+        }
+        return left[i] < right[i] ? -1 : 1;
+      }
+      return Math.sign(left.length - right.length);
+    }
+    return a < b ? -1 : a > b ? 1 : 0;
+  };
+  // The first difference of case between 'a' and 'b' (the same letters): lower case first, unless 'upperFirst'.
+  const compareCase = (a, b, upperFirst) => {
+    for (let i = 0; i < a.length && i < b.length; ++i) {
+      if (a[i] !== b[i] && a[i].toLowerCase() === b[i].toLowerCase()) {
+        return (a[i] === a[i].toLowerCase()) !== upperFirst ? -1 : 1;
+      }
+    }
+    return 0;
+  };
+  class Collator {
+    #options;
+    #compare;
+    constructor(locales, options) {
+      options = optionsOf(options);
+      const usage = option(options, 'usage', ['sort', 'search'], 'sort');
+      const sensitivity = option(options, 'sensitivity', ['base', 'accent', 'case', 'variant'], 'variant');
+      const ignorePunctuation = Boolean(options.ignorePunctuation);
+      const numeric = Boolean(options.numeric);
+      const caseFirst = option(options, 'caseFirst', ['upper', 'lower', 'false'], 'false');
+      this.#options = { locale: resolveLocale(locales), usage, sensitivity, ignorePunctuation, collation: 'default',
+        numeric, caseFirst };
+    }
+    static supportedLocalesOf(locales) { return supportedLocalesOf(locales); }
+    // Letters without marks nor case first (the primary strength of a collation), then marks, then case.
+    get compare() {
+      return this.#compare ??= (first, second) => {
+        const o = this.#options;
+        let a = String(first);
+        let b = String(second);
+        if (o.ignorePunctuation) {
+          a = a.replace(/[\s\p{P}]/gu, '');
+          b = b.replace(/[\s\p{P}]/gu, '');
+        }
+        const primary = compareKeys(stripMarks(a).toLowerCase(), stripMarks(b).toLowerCase(), o.numeric);
+        if (primary !== 0 || o.sensitivity === 'base') return primary;
+        if (o.sensitivity !== 'case') {
+          const marks = compareKeys(a.normalize('NFD').toLowerCase(), b.normalize('NFD').toLowerCase(), o.numeric);
+          if (marks !== 0 || o.sensitivity === 'accent') return marks;
+        }
+        const cases = compareCase(stripMarks(a), stripMarks(b), o.caseFirst === 'upper');
+        if (cases !== 0 || o.sensitivity === 'case') return cases;
+        return compareKeys(a, b, false);
+      };
+    }
+    resolvedOptions() { return { ...this.#options }; }
+  }
+
+  const relativeUnits = ['second', 'minute', 'hour', 'day', 'week', 'month', 'quarter', 'year'];
+  const shortUnits = { second: 'sec.', minute: 'min.', hour: 'hr.', week: 'wk.', month: 'mo.', year: 'yr.' };
+  const autoPhrases = { second: { 0: 'now' }, minute: { 0: 'this minute' }, hour: { 0: 'this hour' },
+    day: { '-1': 'yesterday', 0: 'today', 1: 'tomorrow' } };
+  class RelativeTimeFormat {
+    #options;
+    #number;
+    constructor(locales, options) {
+      options = optionsOf(options);
+      const style = option(options, 'style', ['long', 'short', 'narrow'], 'long');
+      const numeric = option(options, 'numeric', ['always', 'auto'], 'always');
+      this.#number = new NumberFormat(locales);
+      this.#options = { locale: this.#number.resolvedOptions().locale, style, numeric, numberingSystem: 'latn' };
+    }
+    static supportedLocalesOf(locales) { return supportedLocalesOf(locales); }
+    format(value, unit) { return this.formatToParts(value, unit).map(part => part.value).join(''); }
+    formatToParts(value, unit) {
+      value = Number(value);
+      if (!Number.isFinite(value)) throw new RangeError('Invalid value');
+      unit = String(unit);
+      const singular = unit.endsWith('s') ? unit.slice(0, -1) : unit;
+      if (!relativeUnits.includes(singular)) throw new RangeError(`Invalid unit argument for format() '${unit}'`);
+      const zero = value === 0;
+      if (this.#options.numeric === 'auto') {
+        const phrase = autoPhrases[singular]?.[zero ? 0 : value]
+          ?? (singular !== 'second' && singular !== 'minute' && singular !== 'hour' && singular !== 'day'
+            && (zero || value === 1 || value === -1)
+            ? `${zero ? 'this' : value === 1 ? 'next' : 'last'} ${singular}` : undefined);
+        if (phrase !== undefined) return [{ type: 'literal', value: phrase }];
+      }
+      const past = value < 0 || Object.is(value, -0);
+      const amount = Math.abs(value);
+      const plural = amount === 1 ? '' : 's';
+      const name = this.#options.style === 'long' ? singular + plural
+        : shortUnits[singular] ?? (singular === 'quarter' ? `qtr${plural}.` : singular + plural);
+      const number = this.#number.formatToParts(amount).map(part => ({ ...part, unit: singular }));
+      return past ? [...number, { type: 'literal', value: ` ${name} ago` }]
+        : [{ type: 'literal', value: 'in ' }, ...number, { type: 'literal', value: ` ${name}` }];
+    }
+    resolvedOptions() { return { ...this.#options }; }
+  }
+
+  class ListFormat {
+    #options;
+    constructor(locales, options) {
+      options = optionsOf(options);
+      const type = option(options, 'type', ['conjunction', 'disjunction', 'unit'], 'conjunction');
+      const style = option(options, 'style', ['long', 'short', 'narrow'], 'long');
+      this.#options = { locale: resolveLocale(locales), type, style };
+    }
+    static supportedLocalesOf(locales) { return supportedLocalesOf(locales); }
+    format(list) { return this.formatToParts(list).map(part => part.value).join(''); }
+    formatToParts(list) {
+      const items = [];
+      for (const item of list ?? []) {
+        if (typeof item !== 'string') throw new TypeError(`Iterable yielded ${String(item)} which is not a string`);
+        items.push(item);
+      }
+      const { type, style } = this.#options;
+      const word = type === 'disjunction' ? 'or' : type === 'conjunction' && style !== 'narrow'
+        ? (style === 'long' ? 'and' : '&') : null;
+      const separator = type === 'unit' && style === 'narrow' ? ' ' : ', ';
+      const parts = [];
+      items.forEach((item, i) => {
+        if (i !== 0) {
+          const last = i === items.length - 1;
+          parts.push({ type: 'literal', value: last && word !== null
+            ? (items.length === 2 ? ` ${word} ` : `, ${word} `) : separator });
+        }
+        parts.push({ type: 'element', value: item });
+      });
+      return parts;
+    }
+    resolvedOptions() { return { ...this.#options }; }
+  }
+
+  // NumberFormat, DateTimeFormat and Collator can be called without new (ECMA-402), the other constructors cannot.
+  const callable = Class => {
+    const constructor = { [Class.name]: function (locales, options) {
+      return Reflect.construct(Class, [locales, options], new.target ?? constructor);
+    } }[Class.name];
+    constructor.prototype = Class.prototype;
+    Object.defineProperty(Class.prototype, 'constructor', { value: constructor, writable: true, configurable: true });
+    define(constructor, { supportedLocalesOf });
+    return constructor;
+  };
+
+  const supportedValues = { calendar: ['gregory'], collation: ['default'], currency: Object.keys(currencySymbols).sort(),
+    numberingSystem: ['latn'], timeZone: ['UTC'], unit: Object.keys(unitNames).sort() };
+  const Intl = {};
+  define(Intl, { Collator: callable(Collator), DateTimeFormat: callable(DateTimeFormat), ListFormat, Locale,
+    NumberFormat: callable(NumberFormat), PluralRules, RelativeTimeFormat,
+    getCanonicalLocales: locales => canonicalLocales(locales),
+    supportedValuesOf: key => {
+      const values = supportedValues[String(key)];
+      if (values === undefined) throw new RangeError(`Invalid key : ${String(key)}`);
+      return values.slice();
+    } });
+  Object.defineProperty(Intl, Symbol.toStringTag, { value: 'Intl', configurable: true });
+
+  // The locale methods of the built-ins (natives that call these ones): QuickJS-ng ignores their locales and options.
+  const defaultFormats = {};
+  // A format of 'Kind' for 'locales' and 'options', with 'defaults' (can be undefined) when the options have none of the
+  // fields of 'fields': the defaults of the locale methods of Date.
+  const formatter = (name, Kind, locales, options, defaults, fields) => {
+    if (locales === undefined && options === undefined) return defaultFormats[name] ??= new Kind(undefined, defaults);
+    const defaulted = defaults !== undefined && !Object.keys(Object(options)).some(key => fields.has(key));
+    return new Kind(locales, defaulted ? { ...options, ...defaults } : options);
+  };
+  const dateFields = new Set(['weekday', 'era', 'year', 'month', 'day', 'hour', 'minute', 'second', 'dateStyle',
+    'timeStyle', 'dayPeriod', 'fractionalSecondDigits']);
+  const kDate = { year: 'numeric', month: 'numeric', day: 'numeric' };
+  const kTime = { hour: 'numeric', minute: '2-digit', second: '2-digit' };
+  const dateMethod = (name, defaults) => function (locales, options) {
+    if (!(this instanceof Date)) throw new TypeError('not a Date');
+    return formatter(name, DateTimeFormat, locales, options, defaults, dateFields).format(this);
+  };
+  return { Intl,
+    numberToLocaleString(locales, options) {
+      return formatter('number', NumberFormat, locales, options).format(Number.prototype.valueOf.call(this));
+    },
+    localeCompare(that, locales, options) {
+      if (this == null) throw new TypeError('String.prototype.localeCompare called on null or undefined');
+      return formatter('collator', Collator, locales, options).compare(String(this), String(that));
+    },
+    dateToLocaleString: dateMethod('dateTime', { ...kDate, ...kTime }),
+    dateToLocaleDateString: dateMethod('date', kDate),
+    dateToLocaleTimeString: dateMethod('time', kTime),
+  };
+})
+)js";
+
 }  // namespace
 
 std::string_view PreludeSource() noexcept { return kPrelude; }
 
-std::string_view NetworkPreludeSource() noexcept { return kNetworkPrelude; }
+std::string_view LazyPreludeSource(LazyPrelude part) noexcept {
+  switch (part) {
+    case LazyPrelude::Network:
+      return kNetworkPrelude;
+    case LazyPrelude::View:
+      return kViewPrelude;
+    default:
+      assert(part == LazyPrelude::Intl);
+      return kIntlPrelude;
+  }
+}
+
+const char* LazyPreludeName(LazyPrelude part) noexcept {
+  switch (part) {
+    case LazyPrelude::Network:
+      return "aeronet:network";
+    case LazyPrelude::View:
+      return "aeronet:view";
+    default:
+      assert(part == LazyPrelude::Intl);
+      return "aeronet:intl";
+  }
+}
 
 JSValue PreludeFunction(JSContext* pCtx, std::string_view source, const char* filename, RawBytes& bytecode,
                         const JsLimits& limits) {

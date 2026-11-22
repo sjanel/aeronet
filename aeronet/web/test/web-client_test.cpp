@@ -41,10 +41,6 @@ HttpResponse Redirect(const HttpRequestView& req, std::string_view location) {
 test::TestServer MakeServer() {
   test::TestServer server = test::MakePageServer();
   auto router = server.router();
-  // GET /js?src=<code>: a script.
-  router.setPath(http::Method::GET, "/js", [](const HttpRequestView& req) {
-    return req.makeResponse(req.queryParamValue("src").value_or(""), "text/javascript");
-  });
   // GET /typed-js?type=<Content-Type>&src=<bytes>: a script of any encoding.
   router.setPath(http::Method::GET, "/typed-js", [](const HttpRequestView& req) {
     return req.makeResponse(req.queryParamValue("src").value_or(""), req.queryParamValue("type").value_or(""));
@@ -121,7 +117,7 @@ std::string Page(std::string_view html) { return test::PageUrl(gServer, html); }
 // The relative URL of a page, for the navigations of the scripts.
 std::string PagePath(std::string_view html) { return "/html?src=" + test::PercentEncode(html); }
 
-std::string ScriptUrl(std::string_view code) { return StoreUrl("/js?src=" + test::PercentEncode(code)); }
+std::string ScriptUrl(std::string_view code) { return StoreUrl(test::ScriptPath(code)); }
 
 std::string Script(std::string_view code, std::string_view attributes = {}) {
   return "<script src=\"" + ScriptUrl(code) + "\" " + std::string(attributes) + "></script>";
@@ -135,7 +131,7 @@ std::string ClosedPortUrl() {
   return url;
 }
 
-std::string Log(WebPage& page) { return test::Eval(page, "log"); }
+using test::Log;
 
 constexpr std::string_view kLogEvents =
     "<script>log = ['inline ' + document.readyState];"
@@ -275,7 +271,7 @@ TEST(WebClientTest, DocumentWrite) {
   WebPage page = test::Navigate(
       client,
       Page("<script>log = []; document.write('<p id=w>wr', 'itten</p><script>log.push(\"written\")<\\/script>');"
-           "document.writeln('<i>'); log.push('writer ' + document.getElementById('w'))</script>"
+           "document.writeln('<i', '>'); log.push('writer ' + document.getElementById('w'))</script>"
            "<script>log.push('next ' + document.getElementById('w').textContent + ' ' + "
            "document.querySelector('i').textContent.length)</script>"
            "<p><script>document.currentScript.remove(); document.write('<b id=dropped>')</script></p>"
@@ -429,6 +425,18 @@ TEST(WebClientTest, SelectorMatchedAfterATimer) {
       {.untilSelector = "ul", .until = LoadState::NetworkIdle});
   EXPECT_EQ(page.stopReason(), StopReason::SelectorMatched);
   EXPECT_EQ(test::Eval(page, "window.after"), "");
+}
+
+// A change that inserts nothing changes the document too: replaceChild() of an empty fragment removes the child.
+TEST(WebClientTest, SelectorMatchedAfterAReplacementByNothing) {
+  WebClient client;
+  WebPage page = test::Navigate(client,
+                                Page("<p id=gone></p><i></i><script>setTimeout(() => document.body.replaceChild("
+                                     "document.createDocumentFragment(), document.getElementById('gone')), 10);"
+                                     "setTimeout(() => window.after = 1, 20)</script>"),
+                                {.untilSelector = "body > i:first-child", .until = LoadState::NetworkIdle});
+  EXPECT_EQ(page.stopReason(), StopReason::SelectorMatched);
+  EXPECT_EQ(test::Eval(page, "[document.getElementById('gone'), window.after]"), "[null,null]");
 }
 
 TEST(WebClientTest, SelectorNeverMatched) {
@@ -740,7 +748,7 @@ TEST(WebClientTest, LocationAndNavigator) {
             R"(["aeronet","aeronet","en-US",["en-US"],true,true,"undefined"])");
 
   WebClientConfig config;
-  const http::Header headers[] = {{"User-Agent", "Mozilla/5.0 (Test)"}, {"Accept-Language", "fr-FR,fr;q=0.9"}};
+  const http::Header headers[]{{"User-Agent", "Mozilla/5.0 (Test)"}, {"Accept-Language", "fr-FR,fr;q=0.9"}};
   config.http.withGlobalHeaders(headers);
   WebClient custom(config);
   WebPage customPage = test::Navigate(custom, Page("<p>"));

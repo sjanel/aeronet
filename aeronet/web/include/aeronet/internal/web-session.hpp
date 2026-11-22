@@ -1,6 +1,7 @@
 #pragma once
 
 #include <amc/type_traits.hpp>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -129,9 +130,9 @@ struct WebSession {
   // of the setup of a page (180 us instead of 760 us for a small document, Release). Written by the process, so safe
   // to read.
   RawBytes preludeBytecode;
-  // The second part of the prelude (see NetworkPreludeSource()), compiled by the first page that uses one of its
-  // globals.
-  RawBytes networkBytecode;
+  // The lazy parts of the prelude (network, view, Intl), each compiled by the first page that uses one of its
+  // globals (see LazyPreludeSource()).
+  std::array<RawBytes, 3> lazyPreludeBytecode;
   ScriptCache scripts;
   StorageAreas localStorage;
   StorageAreas sessionStorage;

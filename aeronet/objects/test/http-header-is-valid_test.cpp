@@ -21,7 +21,7 @@ TEST(HttpHeader, IsValidHeaderName) {
     const bool expected = (byte >= '0' && byte <= '9') || (byte >= 'A' && byte <= 'Z') ||
                           (byte >= 'a' && byte <= 'z') || std::string_view("!#$%&'*+-.^_`|~").contains(ch);
     EXPECT_EQ(IsValidHeaderName(std::string_view(&ch, 1)), expected) << byte;
-    const char name[] = {'x', ch, 'y'};
+    const char name[]{'x', ch, 'y'};
     EXPECT_EQ(IsValidHeaderName(std::string_view(name, sizeof(name))), expected) << byte;
   }
 }
@@ -36,7 +36,7 @@ TEST(HttpHeader, IsValidLowerCaseHeaderName) {
     const char ch = static_cast<char>(byte);
     const bool expected = IsValidHeaderName(std::string_view(&ch, 1)) && (byte < 'A' || byte > 'Z');
     EXPECT_EQ(IsValidLowerCaseHeaderName(std::string_view(&ch, 1)), expected) << byte;
-    const char name[] = {'x', ch, 'y'};
+    const char name[]{'x', ch, 'y'};
     EXPECT_EQ(IsValidLowerCaseHeaderName(std::string_view(name, sizeof(name))), expected) << byte;
   }
 }

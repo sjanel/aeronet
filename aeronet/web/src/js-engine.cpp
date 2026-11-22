@@ -37,16 +37,21 @@ void RemoveSharedMemory(JSContext* pCtx) noexcept {
 
 }  // namespace
 
-JSClassID NewClass(JSContext* pCtx, const char* name) noexcept {
-  JSRuntime* pRuntime = JS_GetRuntime(pCtx);
-  JSClassID classId = 0;
-  JS_NewClassID(pRuntime, &classId);
-  const JSClassDef def{name, nullptr, nullptr, nullptr, nullptr};
-  if (JS_NewClass(pRuntime, classId, &def) < 0) {
+bool RegisterJsClass(JSContext* pCtx, JSClassID classId, const char* name,
+                     const JSClassExoticMethods* pExotic) noexcept {
+  // The exotic methods are not modified by QuickJS: the field is not const for historical reasons.
+  const JSClassDef def{name, nullptr, nullptr, nullptr, const_cast<JSClassExoticMethods*>(pExotic)};
+  if (JS_NewClass(JS_GetRuntime(pCtx), classId, &def) < 0) {
     JS_ThrowOutOfMemory(pCtx);
-    return 0;
+    return false;
   }
-  return classId;
+  return true;
+}
+
+JSClassID NewClass(JSContext* pCtx, const char* name, const JSClassExoticMethods* pExotic) noexcept {
+  JSClassID classId = 0;
+  JS_NewClassID(JS_GetRuntime(pCtx), &classId);
+  return RegisterJsClass(pCtx, classId, name, pExotic) ? classId : 0;
 }
 
 const char* NonStringToUtf8(JSContext* pCtx, JSValueConst value, std::size_t& size) noexcept {

@@ -29,6 +29,11 @@ JSValue MethodThrowsBadAlloc(JSContext* /*pCtx*/, JSValueConst /*self*/, int /*a
   throw std::bad_alloc();
 }
 
+JSValue MagicMethodThrowsBadAlloc(JSContext* /*pCtx*/, JSValueConst /*self*/, int /*argc*/, JSValueConst* /*argv*/,
+                                  int /*magic*/) {
+  throw std::bad_alloc();
+}
+
 // The memory exhaustion of the C++ code of a native function, its only C++ exception, is an out of memory error.
 TEST(JsEngineTest, BadAllocBecomesAnOutOfMemoryError) {
   JsEngine engine(kNoLimits);
@@ -38,6 +43,8 @@ TEST(JsEngineTest, BadAllocBecomesAnOutOfMemoryError) {
   EXPECT_TRUE(JS_IsException(JsSetter<SetterThrowsBadAlloc>(pCtx, JS_UNDEFINED, JS_UNDEFINED)));
   EXPECT_TRUE(engine.takeException().contains("out of memory"));
   EXPECT_TRUE(JS_IsException(JsMethod<MethodThrowsBadAlloc>(pCtx, JS_UNDEFINED, 0, nullptr)));
+  EXPECT_TRUE(engine.takeException().contains("out of memory"));
+  EXPECT_TRUE(JS_IsException(JsMagicMethod<MagicMethodThrowsBadAlloc>(pCtx, JS_UNDEFINED, 0, nullptr, 1)));
   EXPECT_TRUE(engine.takeException().contains("out of memory"));
 }
 

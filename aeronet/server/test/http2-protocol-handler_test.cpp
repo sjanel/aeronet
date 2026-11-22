@@ -2339,7 +2339,7 @@ TEST(Http2ProtocolHandler, ContentLengthNotMatchingTheBodyIsMalformed) {
     bool endWithTrailers;
     bool malformed;
   };
-  static constexpr Case kCases[] = {
+  static constexpr Case kCases[]{
       {"abc", 10, false, true},      {"", 10, false, true},        {"-1", 10, false, true},
       {"1,1", 1, false, true},       {"5", 0, false, true},        {"0", 0, false, false},
       {"20000", 32768, false, true}, {"1000", 999, false, true},   {"1000", 999, true, true},

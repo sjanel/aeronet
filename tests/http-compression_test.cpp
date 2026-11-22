@@ -1687,7 +1687,7 @@ TEST(HttpCompression, StreamedDeclaredLengthIsTheLengthOfTheBytesSent) {
     bool writeForHead;
     bool compressed;
   };
-  static constexpr DeclaredLengthCase kCases[] = {
+  static constexpr DeclaredLengthCase kCases[]{
       {"/declared/compressed", http::ContentTypeTextPlain, 4096, true, true},
       {"/declared/compressed-silent-head", http::ContentTypeTextPlain, 4096, false, true},
       {"/declared/at-threshold", http::ContentTypeTextPlain, kHeadMinBytes, true, true},

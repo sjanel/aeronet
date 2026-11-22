@@ -31,7 +31,6 @@
 #include "cors.hpp"
 #include "html-node-ops.hpp"
 #include "js-engine.hpp"
-#include "js-prelude.hpp"
 #include "page.hpp"
 #include "request-queue.hpp"
 #include "web-url.hpp"
@@ -623,25 +622,7 @@ JSValue ParseUrl(JSContext* pCtx, JSValueConst /*self*/, [[maybe_unused]] int ar
   return NewString(pCtx, Page::Of(pCtx).urlResolver().resolve(base.view(), input.view()));
 }
 
-// loadNetwork(shared): the object of the globals of the second part of the prelude (NetworkPreludeSource()), run with
-// the native helpers (this) and 'shared', the helpers of the first part.
-JSValue LoadNetwork(JSContext* pCtx, JSValueConst self, [[maybe_unused]] int argc, JSValueConst* argv) {
-  assert(argc == 1);
-  WebSession& session = Page::Of(pCtx).session();
-  const JsValue function(pCtx,
-                         PreludeFunction(pCtx, NetworkPreludeSource(), "aeronet:network", session.networkBytecode,
-                                         JsLimits{session.config.maxScriptMemory, session.config.maxScriptStackSize}));
-  if (JS_IsException(function.get())) {
-    return JS_EXCEPTION;
-  }
-
-  JSValueConst args[]{self, argv[0]};
-
-  return JS_Call(pCtx, function.get(), JS_UNDEFINED, 2, args);
-}
-
 const JSCFunctionListEntry kNetworkNatives[]{
-    JS_CFUNC_DEF("loadNetwork", 1, &JsMethod<LoadNetwork>),
     JS_CFUNC_DEF("request", kRequestArgCount + 1, &JsMethod<Request>),
     JS_CFUNC_DEF("requestSync", kRequestArgCount, &JsMethod<RequestSync>),
     JS_CFUNC_DEF("cancelRequest", 1, &JsMethod<CancelRequest>),
@@ -673,7 +654,7 @@ bool RunNextRequest(Page& page) {
   }
 
   JsValue reason;
-  JSValueConst args[] = {record.get(), JS_UNDEFINED};
+  JSValueConst args[]{record.get(), JS_UNDEFINED};
 
   if (JS_IsNull(record.get())) {
     reason = JsValue(pCtx, JS_NewString(pCtx, error));

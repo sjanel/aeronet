@@ -48,8 +48,9 @@ AeronetAddUnitTest(
     aeronet_basic_test_support
 )
 
-if(AERONET_ENABLE_HTTP_SERVER)
-    foreach(_web_test IN ITEMS web-client_test web-dom_test web-network_test web-runtime_test)
+# Their targets are configured below: only with the tests.
+if(AERONET_ENABLE_HTTP_SERVER AND AERONET_BUILD_TESTS)
+    foreach(_web_test IN ITEMS web-app_test web-client_test web-dom_test web-network_test web-runtime_test)
         AeronetAddUnitTest(
             ${_web_test}
             test/${_web_test}.cpp
@@ -64,4 +65,6 @@ if(AERONET_ENABLE_HTTP_SERVER)
             target_link_options(${_web_test} PRIVATE /STACK:8388608)
         endif()
     endforeach()
+    # The vendored production builds of React served to the pages of the tests.
+    target_compile_definitions(web-app_test PRIVATE AERONET_WEB_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
 endif()

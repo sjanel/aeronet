@@ -438,8 +438,9 @@ the [performance optimization backlog](#performance-optimization-backlog)):
 
 Status: [HTML parsing and DOM mutation](modules/html.md) (phase 1), the
 [client cookies](modules/http-client.md#cookies) (phase 2) and the [JS core](modules/web.md) (phase 3, with `fetch`,
-XHR and CORS) delivered ([#738](https://github.com/sjanel/aeronet/issues/738)); phase 4 is next. Goal: let the client read pages whose content is produced or
-completed by JavaScript, e.g. `page.querySelectorAll("table tr")` after a `navigate()`.
+XHR and CORS) delivered ([#738](https://github.com/sjanel/aeronet/issues/738)); phase 4 is in progress, its first part
+delivered. Goal: let the client read pages whose content is produced or completed by JavaScript, e.g.
+`page.querySelectorAll("table tr")` after a `navigate()`.
 
 **The JS engine is the small part.** Embedding one is a few C files; the DOM, the script loading rules, the event
 loop and the Web APIs (`fetch`, XHR, timers, `location`, storage, observers...) are most of the work, and that
@@ -513,6 +514,12 @@ Phases:
      or a heap write before the label array of the function), found by the memory-limit sweep of
      `web-network_test.cpp` under UBSan. The prelude is compiled without the memory limit; a page script compiled
      near `maxScriptMemory` can still hit it until a release has the fix (two lines: return when `new_label()` fails).
+   - a third fix of QuickJS-ng to propose upstream (unfixed on its master on 2026-11-21): the native methods of a
+     function list (`JS_CFUNC_DEF`) are created on their first use (`JS_AutoInitProperty()`), which drops the property
+     for good, leaving `undefined`, when that creation runs out of memory: in a page that ran out of memory there, the
+     method is missing until the page ends (`ArrayBindingsOnEachAllocationFailure` of `web-runtime_test.cpp` uses each
+     binding once before failing its allocations). Two lines: return before `js_autoinit_free()` when the creation
+     fails, so that the next use tries again.
    - another fix of QuickJS-ng to propose upstream (unfixed on its master on 2026-11-21): when the allocation of the
      UTF-8 fails, `JS_ToCStringLen2()` keeps the reference it took to the string it converts, which then outlives its
      runtime (a 10 MB leak of `BodyBeyondTheMemoryOfTheScripts` under LeakSanitizer). aeronet converts with
@@ -540,10 +547,36 @@ Phases:
      the HTML costs no script run.
    - Each node wrapper is cached in the `user` pointer of its lexbor node and kept until the page dies, so that
      `a === b` holds and the properties that scripts add to nodes stay (React does this).
-4. **Single-page app compatibility**: ES modules and `import()`, scripts inserted at runtime (webpack chunk
-   loading) through the lexbor mutation callbacks, `MutationObserver`, stubs (`Intl`, `matchMedia`,
-   `getComputedStyle`, `IntersectionObserver` reporting everything visible, layout sizes of 0),
-   `waitForSelector()`, then clicks and form input.
+4. **Single-page app compatibility**, in four parts (decided on 2026-11-21):
+   1. delivered: the scripts that scripts insert (webpack chunk loading), run from the insertion bindings (every
+      mutation of the scripts goes through them, no lexbor callback needed), the DOM that bundles use
+      (`cloneNode()`, `DocumentFragment`, `matches()`, `closest()`, `createElementNS()`, the interfaces of the common
+      HTML elements: React checks `instanceof HTMLIFrameElement` at each commit), a layout of empty boxes in a desktop
+      viewport, `matchMedia()`, `getComputedStyle()`, `IntersectionObserver` reporting everything visible,
+      `ResizeObserver`, and an `Intl` of en-US written in JavaScript; the observers and media queries, and `Intl`, are
+      lazy parts of the prelude like the network APIs. A vendored production build of React 18 renders a table from
+      an API in the tests. The page setup stays at 170 µs: the globals of the lazy parts and the interfaces of the
+      HTML elements are resolved on their first lookup by an exotic object of the prototype chain of the window
+      (whose `get_own_property` hook reports an accessor: its getter sets the global up and defines it on that object,
+      its setter defines an assigned value on the window without setting anything up; defining them on the window
+      during the lookup of an assignment would give the window the property twice), the layout values and methods are
+      native function lists
+      (created on first use) rather than prelude code (about 1 µs per property defined from JavaScript), and the HTML
+      elements keep the prototype of `HTMLElement`, the interface of each tag recognizing its elements by
+      `Symbol.hasInstance` (a prototype per tag costs 3 ns per property lookup on an element);
+   2. ES modules and `import()`: one synchronous module loader serves both (QuickJS-ng 0.16.2 of vcpkg has no
+      asynchronous import hook, 0.18 has `JS_SetDynamicImportFunc()`), module scripts fetched in the `cors` mode,
+      `import.meta.url`, the bytecode cache for modules;
+   3. `MutationObserver` (records from the bindings) and `WebPage::waitForSelector()`;
+   4. clicks and form input: default actions (links, checkboxes, form submission), which need navigations with a
+      method and a body (POST), and the `value` of the form controls apart from their attribute.
+
+   lexbor bug to report, found with `cloneNode()` (3.0.1, and its master on 2026-11-21): `lxb_html_interface_clone()`
+   copies a document fragment (and a CDATA section) with `lxb_dom_node_interface_clone()`, into a plain node smaller
+   than a fragment, whose `host` is then read past its allocation; it also copies the `user` pointer of each node, and
+   not the qualified name of an element (`lxb_dom_element_interface_copy()`: the copy loses its prefix and the case of
+   an SVG name). `CloneNode()` of `aeronet/html/src/html-node-ops.cpp` creates its fragments itself, clears the user
+   pointers and copies the qualified names.
 5. **Optional, independent**: a driver for full-fidelity browsers (Chrome, Lightpanda) over CDP (JSON over
    WebSocket). Little aeronet code, on top of the [WebSocket client](protocols/websocket-client.md), which needs a
    pull-style `receive(timeout)` for its request / response exchanges.

@@ -605,7 +605,7 @@ void RunAnsweredStreams(benchmark::State& state, uint32_t batch, uint32_t nbActi
 
   const std::size_t frameSize = FrameHeader::kSize + blocks.next.size();
   input.clear();
-  input.ensureAvailableCapacity(frameSize * batch);
+  input.reserve(frameSize * batch);
   for (uint32_t idx = 0; idx < batch; ++idx) {
     input.addSize(FrameHeader::kSize);
     input.unchecked_append(blocks.next);

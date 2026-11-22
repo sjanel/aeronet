@@ -14,9 +14,11 @@
 #include <quickjs.h>
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -31,16 +33,181 @@
 #include "html-node-ops.hpp"
 #include "html-tree-walk.hpp"
 #include "js-engine.hpp"
+#include "js-prelude.hpp"
 #include "page.hpp"
 
 namespace aeronet::internal {
 
 namespace {
 
+// The classes of the node wrappers, consecutive from Page::firstNodeClass(), each with the prototype of its interface.
+// The HTML elements all have the prototype of HTMLElement: the interface of a tag (HTMLDivElement...) recognizes its
+// elements by Symbol.hasInstance (see InstallHtmlInterface()), rather than by a prototype of its own that each property
+// lookup on its elements would cross (3 ns each).
+enum class NodeClass : uint8_t {
+  Node,
+  Element,
+  HtmlElement,
+  Text,
+  Comment,
+  Document,
+  DocumentFragment,
+  SvgElement,
+  Count,
+};
+
 constexpr unsigned kNbNodeClasses = static_cast<unsigned>(NodeClass::Count);
 
-// The JS_PROP_* flags are distinct bits of signed int macros: added rather than or-ed (bugprone-signed-bitwise).
-constexpr int kWritableConfigurable = JS_PROP_WRITABLE + JS_PROP_CONFIGURABLE;
+// The HTML element interfaces of InstallHtmlInterface(), in the order of kHtmlInterfaces.
+enum class HtmlInterfaceId : uint8_t {
+  Media,  // HTMLMediaElement, the parent of the audio and video ones
+  Anchor,
+  Audio,
+  Body,
+  Button,
+  Canvas,
+  Div,
+  Form,
+  Head,
+  Heading,
+  Html,
+  IFrame,
+  Image,
+  Input,
+  Label,
+  Li,
+  Link,
+  Meta,
+  OList,
+  Option,
+  Paragraph,
+  Pre,
+  Script,
+  Select,
+  Span,
+  Style,
+  Table,
+  TableCell,
+  TableRow,
+  TableSection,
+  Template,
+  TextArea,
+  Title,
+  UList,
+  Video,
+  None,
+};
+
+static_assert(static_cast<std::size_t>(HtmlInterfaceId::None) == kNbHtmlInterfaces);
+
+// The interface of the HTML elements of tag 'tag', None for HTMLElement itself.
+constexpr HtmlInterfaceId HtmlInterfaceOfTag(uintptr_t tag) noexcept {
+  switch (tag) {
+    case LXB_TAG_A:
+      return HtmlInterfaceId::Anchor;
+    case LXB_TAG_AUDIO:
+      return HtmlInterfaceId::Audio;
+    case LXB_TAG_BODY:
+      return HtmlInterfaceId::Body;
+    case LXB_TAG_BUTTON:
+      return HtmlInterfaceId::Button;
+    case LXB_TAG_CANVAS:
+      return HtmlInterfaceId::Canvas;
+    case LXB_TAG_DIV:
+      return HtmlInterfaceId::Div;
+    case LXB_TAG_FORM:
+      return HtmlInterfaceId::Form;
+    case LXB_TAG_HEAD:
+      return HtmlInterfaceId::Head;
+    case LXB_TAG_H1:
+    case LXB_TAG_H2:
+    case LXB_TAG_H3:
+    case LXB_TAG_H4:
+    case LXB_TAG_H5:
+    case LXB_TAG_H6:
+      return HtmlInterfaceId::Heading;
+    case LXB_TAG_HTML:
+      return HtmlInterfaceId::Html;
+    case LXB_TAG_IFRAME:
+      return HtmlInterfaceId::IFrame;
+    case LXB_TAG_IMG:
+      return HtmlInterfaceId::Image;
+    case LXB_TAG_INPUT:
+      return HtmlInterfaceId::Input;
+    case LXB_TAG_LABEL:
+      return HtmlInterfaceId::Label;
+    case LXB_TAG_LI:
+      return HtmlInterfaceId::Li;
+    case LXB_TAG_LINK:
+      return HtmlInterfaceId::Link;
+    case LXB_TAG_META:
+      return HtmlInterfaceId::Meta;
+    case LXB_TAG_OL:
+      return HtmlInterfaceId::OList;
+    case LXB_TAG_OPTION:
+      return HtmlInterfaceId::Option;
+    case LXB_TAG_P:
+      return HtmlInterfaceId::Paragraph;
+    case LXB_TAG_PRE:
+      return HtmlInterfaceId::Pre;
+    case LXB_TAG_SCRIPT:
+      return HtmlInterfaceId::Script;
+    case LXB_TAG_SELECT:
+      return HtmlInterfaceId::Select;
+    case LXB_TAG_SPAN:
+      return HtmlInterfaceId::Span;
+    case LXB_TAG_STYLE:
+      return HtmlInterfaceId::Style;
+    case LXB_TAG_TABLE:
+      return HtmlInterfaceId::Table;
+    case LXB_TAG_TD:
+    case LXB_TAG_TH:
+      return HtmlInterfaceId::TableCell;
+    case LXB_TAG_TR:
+      return HtmlInterfaceId::TableRow;
+    case LXB_TAG_THEAD:
+    case LXB_TAG_TBODY:
+    case LXB_TAG_TFOOT:
+      return HtmlInterfaceId::TableSection;
+    case LXB_TAG_TEMPLATE:
+      return HtmlInterfaceId::Template;
+    case LXB_TAG_TEXTAREA:
+      return HtmlInterfaceId::TextArea;
+    case LXB_TAG_TITLE:
+      return HtmlInterfaceId::Title;
+    case LXB_TAG_UL:
+      return HtmlInterfaceId::UList;
+    case LXB_TAG_VIDEO:
+      return HtmlInterfaceId::Video;
+    default:
+      return HtmlInterfaceId::None;
+  }
+}
+
+bool IsHtmlElement(const lxb_dom_node_t* pNode) noexcept {
+  return pNode->type == LXB_DOM_NODE_TYPE_ELEMENT && pNode->ns == LXB_NS_HTML;
+}
+
+// The class of the wrapper of pNode, not the document node (its wrapper is created by InstallDom()).
+NodeClass NodeClassOf(const lxb_dom_node_t* pNode) noexcept {
+  switch (pNode->type) {
+    case LXB_DOM_NODE_TYPE_ELEMENT:
+      if (pNode->ns == LXB_NS_HTML) {
+        return NodeClass::HtmlElement;
+      }
+      return pNode->ns == LXB_NS_SVG ? NodeClass::SvgElement : NodeClass::Element;
+    case LXB_DOM_NODE_TYPE_TEXT:
+    case LXB_DOM_NODE_TYPE_CDATA_SECTION:
+      return NodeClass::Text;
+    case LXB_DOM_NODE_TYPE_COMMENT:
+      return NodeClass::Comment;
+    case LXB_DOM_NODE_TYPE_DOCUMENT_FRAGMENT:
+      return NodeClass::DocumentFragment;
+    default:
+      assert(pNode->type != LXB_DOM_NODE_TYPE_DOCUMENT);
+      return NodeClass::Node;  // the doctype
+  }
+}
 
 HtmlElement Element(lxb_dom_node_t* pNode) noexcept { return HtmlNodeAccess::Element(pNode); }
 
@@ -67,7 +234,8 @@ bool Implements(JSContext* pCtx, const lxb_dom_node_t* pNode) noexcept {
   } else if constexpr (kOn == On::CharacterData) {
     return IsCharacterData(pNode);
   } else if constexpr (kOn == On::ParentNode) {
-    return IsElement(pNode) || pNode == Page::Of(pCtx).documentNode();
+    return IsElement(pNode) || pNode->type == LXB_DOM_NODE_TYPE_DOCUMENT_FRAGMENT ||
+           pNode == Page::Of(pCtx).documentNode();
   } else if constexpr (kOn == On::Document) {
     return pNode == Page::Of(pCtx).documentNode();
   } else {
@@ -233,14 +401,12 @@ JSValue GetOwnerDocument(JSContext* pCtx, lxb_dom_node_t* pNode) {
 }
 
 JSValue GetIsConnected(JSContext* pCtx, lxb_dom_node_t* pNode) {
-  while (pNode->parent != nullptr) {
-    pNode = pNode->parent;
-  }
-  return JS_NewBool(pCtx, pNode == Page::Of(pCtx).documentNode());
+  return JS_NewBool(pCtx, Page::Of(pCtx).connected(pNode));
 }
 
-// Replaces the data of pNode, a character data node, counting its size change in the native memory of the page.
-// Returns JS_UNDEFINED, or JS_EXCEPTION with an out of memory error thrown when the page cannot hold it.
+// Replaces the data of pNode, a character data node, counting its size change in the native memory of the page: the
+// text of a script created empty, which then starts (see Page::scriptChanged()). Returns JS_UNDEFINED, or JS_EXCEPTION
+// with the error pending: out of memory when the page cannot hold it, or the uncatchable error of the script started.
 JSValue SetCharacterData(JSContext* pCtx, lxb_dom_node_t* pNode, std::string_view data) {
   Page& page = Page::Of(pCtx);
   const std::size_t size = Data(pNode).size();
@@ -256,16 +422,18 @@ JSValue SetCharacterData(JSContext* pCtx, lxb_dom_node_t* pNode, std::string_vie
   if (data.size() < size) {
     page.memory().release(size - data.size());
   }
-  return JS_UNDEFINED;
+  // The DOM "replace data" runs the "children changed steps" of the parent.
+  return pNode->parent == nullptr || page.scriptChanged(pNode->parent) ? JS_UNDEFINED : JS_EXCEPTION;
 }
 
 JSValue GetTextContent(JSContext* pCtx, lxb_dom_node_t* pNode) {
   if (IsCharacterData(pNode)) {
     return NewString(pCtx, Data(pNode));
   }
-  if (!IsElement(pNode)) {
-    return pNode->type == LXB_DOM_NODE_TYPE_DOCUMENT_FRAGMENT ? NewString(pCtx, {}) : JS_NULL;
+  if (!IsElement(pNode) && pNode->type != LXB_DOM_NODE_TYPE_DOCUMENT_FRAGMENT) {
+    return JS_NULL;
   }
+  // HtmlElement reads the text of the descendants of any node.
   return NewString(pCtx, Element(pNode).textContent(Page::Of(pCtx).htmlBuffer()));
 }
 
@@ -278,7 +446,7 @@ JSValue SetTextContent(JSContext* pCtx, lxb_dom_node_t* pNode, JSValueConst valu
   if (IsCharacterData(pNode)) {
     return SetCharacterData(pCtx, pNode, text.view());
   }
-  if (IsElement(pNode)) {
+  if (IsElement(pNode) || pNode->type == LXB_DOM_NODE_TYPE_DOCUMENT_FRAGMENT) {
     // The former children stay in the document (see HtmlElement): the text node is new memory.
     const std::size_t memory = text.view().empty() ? 0 : kNodeMemory + text.view().size();
     Page& page = Page::Of(pCtx);
@@ -288,6 +456,9 @@ JSValue SetTextContent(JSContext* pCtx, lxb_dom_node_t* pNode, JSValueConst valu
     Element(pNode).setTextContent(text.view());
     page.touchDom();
     page.memory().charge(memory);
+    if (!page.scriptChanged(pNode)) {  // the text of a script inserted empty
+      return JS_EXCEPTION;
+    }
   }
   return JS_UNDEFINED;
 }
@@ -402,10 +573,19 @@ bool CheckInsertion(JSContext* pCtx, const lxb_dom_node_t* pParent, const lxb_do
   return pError == nullptr;
 }
 
+// Page::nodesInserted() of the siblings from pFirst to pEnd (excluded, null for after the last one), none when pFirst
+// is pEnd.
+bool NodesInserted(Page& page, lxb_dom_node_t* pFirst, lxb_dom_node_t* pEnd) {
+  return pFirst == pEnd || page.nodesInserted(pFirst, pEnd);
+}
+
 // Moves pNode (the children of a document fragment), which can be inserted there, before pReference among the children
-// of pParent, after the last one if pReference is null.
-void Move(Page& page, lxb_dom_node_t* pParent, lxb_dom_node_t* pNode, lxb_dom_node_t* pReference) noexcept {
+// of pParent, after the last one if pReference is null. The scripts that scripts created among them run once connected
+// (see Page::nodesInserted()): returns false when one stopped with an uncatchable error, pending.
+bool Move(Page& page, lxb_dom_node_t* pParent, lxb_dom_node_t* pNode, lxb_dom_node_t* pReference) {
+  lxb_dom_node_t* pFirst = pNode;
   if (pNode->type == LXB_DOM_NODE_TYPE_DOCUMENT_FRAGMENT) {
+    pFirst = pNode->first_child;
     while (lxb_dom_node_t* pChild = pNode->first_child) {
       RemoveNode(pChild);
       InsertNode(pParent, pChild, pReference);
@@ -419,16 +599,13 @@ void Move(Page& page, lxb_dom_node_t* pParent, lxb_dom_node_t* pNode, lxb_dom_no
     }
     InsertNode(pParent, pNode, pReference);
   }
-  page.touchDom();
+  return pFirst == nullptr || NodesInserted(page, pFirst, pReference);
 }
 
-// Move() after CheckInsertion() (DOM "pre-insert"). Returns false, nothing moved, when pNode cannot be inserted there.
-bool Insert(JSContext* pCtx, lxb_dom_node_t* pParent, lxb_dom_node_t* pNode, lxb_dom_node_t* pReference) noexcept {
-  if (!CheckInsertion(pCtx, pParent, pNode, pReference, false)) {
-    return false;
-  }
-  Move(Page::Of(pCtx), pParent, pNode, pReference);
-  return true;
+// Move() after CheckInsertion() (DOM "pre-insert"). Returns false, the error pending, when pNode cannot be inserted
+// there (nothing moved), or as Move().
+bool Insert(JSContext* pCtx, lxb_dom_node_t* pParent, lxb_dom_node_t* pNode, lxb_dom_node_t* pReference) {
+  return CheckInsertion(pCtx, pParent, pNode, pReference, false) && Move(Page::Of(pCtx), pParent, pNode, pReference);
 }
 
 // The node argument argv[index] of 'function', a child of pParent: null, with the error thrown, when it is not one.
@@ -488,7 +665,11 @@ JSValue ReplaceChild(JSContext* pCtx, lxb_dom_node_t* pParent, int argc, JSValue
     // Removing a child of pParent keeps the insertion valid: it is not an ancestor of pParent.
     lxb_dom_node_t* pReference = pChild->next == pNode ? pNode->next : pChild->next;
     RemoveNode(pChild);
-    Move(Page::Of(pCtx), pParent, pNode, pReference);
+    Page& page = Page::Of(pCtx);
+    page.touchDom();  // also by an empty fragment, which inserts nothing
+    if (!Move(page, pParent, pNode, pReference)) {
+      return JS_EXCEPTION;
+    }
   }
   return JS_DupValue(pCtx, argv[1]);
 }
@@ -511,6 +692,37 @@ JSValue Contains(JSContext* pCtx, lxb_dom_node_t* pNode, int argc, JSValueConst*
     }
   }
   return JS_FALSE;
+}
+
+// The memory of a copy of pNode, with its descendants for 'deep'.
+std::size_t CloneMemory(lxb_dom_node_t* pNode, bool deep) noexcept {
+  switch (pNode->type) {
+    case LXB_DOM_NODE_TYPE_DOCUMENT_FRAGMENT:
+      return kNodeMemory + (deep ? NodesMemory(pNode->first_child, nullptr) : 0);
+    case LXB_DOM_NODE_TYPE_DOCUMENT_TYPE:
+      return kNodeMemory;
+    default:
+      return deep ? NodesMemory(pNode, pNode->next) : NodeMemory(pNode);
+  }
+}
+
+JSValue CloneNodeMethod(JSContext* pCtx, lxb_dom_node_t* pNode, int argc, JSValueConst* argv) {
+  Page& page = Page::Of(pCtx);
+  if (pNode == page.documentNode()) {
+    return JS_ThrowDOMException(pCtx, "NotSupportedError", "cloneNode: the document cannot be cloned");
+  }
+  const bool deep = argc > 0 && JS_ToBool(pCtx, argv[0]) > 0;
+  const std::size_t memory = CloneMemory(pNode, deep);
+  if (!page.memory().canHold(memory)) {
+    return JS_ThrowOutOfMemory(pCtx);
+  }
+  // The copies of the scripts created by scripts and not started are runnable too: reported only while there are some.
+  const ClonedFn onCloned = [](const lxb_dom_node_t* pSource, lxb_dom_node_t* pCopy, void* pPage) {
+    static_cast<Page*>(pPage)->nodeCloned(pSource, pCopy);
+  };
+  lxb_dom_node_t* pCopy = CloneNode(pNode, deep, page.hasCreatedScripts() ? onCloned : nullptr, &page);
+  page.memory().charge(memory);
+  return page.wrap(pCopy);
 }
 
 // remove() of Element and CharacterData (the ChildNode mixin).
@@ -665,7 +877,12 @@ JSValue GetElementsByClassName(JSContext* pCtx, lxb_dom_node_t* pRoot, int argc,
 
 // --- Element ---
 
-JSValue GetLocalName(JSContext* pCtx, lxb_dom_node_t* pElement) { return NewString(pCtx, Element(pElement).tagName()); }
+// The qualified name without its prefix: only createElementNS() makes prefixed elements, the HTML parser keeps the
+// colons of "a:b" in the local name.
+JSValue GetLocalName(JSContext* pCtx, lxb_dom_node_t* pElement) {
+  const std::string_view name = Element(pElement).tagName();
+  return NewString(pCtx, pElement->prefix == 0 ? name : name.substr(name.find(':') + 1));
+}
 
 template <const char* kName>
 JSValue GetReflectedAttribute(JSContext* pCtx, lxb_dom_node_t* pElement) {
@@ -698,6 +915,11 @@ JSValue SetAttribute(JSContext* pCtx, lxb_dom_node_t* pElement, std::string_view
   page.memory().charge(growth);
   if (replaced && value.size() < former) {
     page.memory().release(former - value.size());
+  }
+  if (CaseInsensitiveEqual(name, "src")) {
+    // The src of a script inserted empty: queued, it runs as a task, nothing can fail now.
+    [[maybe_unused]] const bool started = page.scriptChanged(pElement);
+    assert(started);
   }
   return JS_UNDEFINED;
 }
@@ -776,15 +998,23 @@ JSValue SetInnerHtml(JSContext* pCtx, lxb_dom_node_t* pElement, JSValueConst val
   if (html.failed()) {
     return JS_EXCEPTION;
   }
+
   Page& page = Page::Of(pCtx);
   if (!page.memory().canHold(html.view().size() * kHtmlMemoryPerByte)) {
     return JS_ThrowOutOfMemory(pCtx);
   }
+
   Element(pElement).setInnerHtml(html.view());
+
   page.touchDom();
+
   // The former children stay in the document (see HtmlElement): the new ones are new memory.
   page.memory().charge(NodesMemory(ChildrenParent(pElement)->first_child, nullptr));
-  return page.memory().exceeded() ? JS_ThrowOutOfMemory(pCtx) : JS_UNDEFINED;
+  if (page.memory().exceeded()) {
+    return JS_ThrowOutOfMemory(pCtx);
+  }
+
+  return page.scriptChanged(pElement) ? JS_UNDEFINED : JS_EXCEPTION;  // the text of a script inserted empty
 }
 
 // The position argument argv[0] of 'function', into 'position'. Returns false, with the error thrown, when it is not
@@ -795,26 +1025,40 @@ bool PositionArgument(JSContext* pCtx, int argc, JSValueConst* argv, const char*
   if (name.failed()) {
     return false;
   }
+
   struct NamedPosition {
     std::string_view name;
     HtmlInsertPosition position;
   };
-  static constexpr NamedPosition kPositions[] = {
+
+  static constexpr NamedPosition kPositions[]{
       {"beforebegin", HtmlInsertPosition::BeforeBegin},
       {"afterbegin", HtmlInsertPosition::AfterBegin},
       {"beforeend", HtmlInsertPosition::BeforeEnd},
       {"afterend", HtmlInsertPosition::AfterEnd},
   };
+
   for (const NamedPosition& named : kPositions) {
     if (CaseInsensitiveEqual(name.view(), named.name)) {
       position = named.position;
       return true;
     }
   }
+
   const std::string_view invalid = name.view();
   JS_ThrowDOMException(pCtx, "SyntaxError", "%s: invalid position '%.*s'", function, static_cast<int>(invalid.size()),
                        invalid.data());
   return false;
+}
+
+// The node before the insertion point, after which the inserted nodes go: null for the first children of its parent.
+const lxb_dom_node_t* NodeBefore(const InsertionPoint& point) noexcept {
+  return point.pReference != nullptr ? point.pReference->prev : point.pParent->last_child;
+}
+
+// The first node inserted at 'point' after pBefore (see NodeBefore()), point.pReference when none was.
+lxb_dom_node_t* NodeAfter(const lxb_dom_node_t* pBefore, const InsertionPoint& point) noexcept {
+  return pBefore != nullptr ? pBefore->next : point.pParent->first_child;
 }
 
 JSValue InsertAdjacentHtml(JSContext* pCtx, lxb_dom_node_t* pElement, int argc, JSValueConst* argv) {
@@ -836,12 +1080,16 @@ JSValue InsertAdjacentHtml(JSContext* pCtx, lxb_dom_node_t* pElement, int argc, 
   if (!page.memory().canHold(html.view().size() * kHtmlMemoryPerByte)) {
     return JS_ThrowOutOfMemory(pCtx);
   }
-  // The inserted nodes go after the node before the insertion point (null: first children of its parent).
-  const lxb_dom_node_t* pBefore = point.pReference != nullptr ? point.pReference->prev : point.pParent->last_child;
+  const lxb_dom_node_t* pBefore = NodeBefore(point);
   Element(pElement).insertAdjacentHtml(position, html.view());
-  page.touchDom();
-  page.memory().charge(NodesMemory(pBefore != nullptr ? pBefore->next : point.pParent->first_child, point.pReference));
-  return page.memory().exceeded() ? JS_ThrowOutOfMemory(pCtx) : JS_UNDEFINED;
+  lxb_dom_node_t* pFirst = NodeAfter(pBefore, point);
+  page.memory().charge(NodesMemory(pFirst, point.pReference));
+  if (page.memory().exceeded()) {
+    page.touchDom();
+    return JS_ThrowOutOfMemory(pCtx);
+  }
+  // The scripts of the fragment never run, but its text can be that of a script parent inserted empty.
+  return NodesInserted(page, pFirst, point.pReference) ? JS_UNDEFINED : JS_EXCEPTION;
 }
 
 JSValue InsertAdjacentElement(JSContext* pCtx, lxb_dom_node_t* pElement, int argc, JSValueConst* argv) {
@@ -849,13 +1097,16 @@ JSValue InsertAdjacentElement(JSContext* pCtx, lxb_dom_node_t* pElement, int arg
   if (!PositionArgument(pCtx, argc, argv, "insertAdjacentElement", position)) {
     return JS_EXCEPTION;
   }
+
   lxb_dom_node_t* pOther = NodeArgument(pCtx, argc, argv, 1, "insertAdjacentElement");
   if (pOther == nullptr) {
     return JS_EXCEPTION;
   }
+
   if (!IsElement(pOther)) {
     return JS_ThrowTypeError(pCtx, "insertAdjacentElement: parameter 2 is not of type 'Element'");
   }
+
   // DOM "insert adjacent": nothing beside an element without parent, a pre-insertion otherwise (an error beside the
   // root element: the document has it as element).
   const InsertionPoint point = AdjacentInsertionPoint(pElement, position);
@@ -870,29 +1121,35 @@ JSValue InsertAdjacentText(JSContext* pCtx, lxb_dom_node_t* pElement, int argc, 
   if (!PositionArgument(pCtx, argc, argv, "insertAdjacentText", position)) {
     return JS_EXCEPTION;
   }
+
   const StringArgument text(pCtx, argc, argv, 1, "insertAdjacentText");
   if (text.failed()) {
     return JS_EXCEPTION;
   }
+
   // DOM "insert adjacent": nothing beside an element without parent, an error beside the root element (a text node
   // cannot be a child of the document).
   const InsertionPoint point = AdjacentInsertionPoint(pElement, position);
   if (point.pParent == nullptr) {
     return JS_UNDEFINED;
   }
+
   if (!CanInsertAdjacent(point)) {
     return JS_ThrowDOMException(pCtx, "HierarchyRequestError",
                                 "insertAdjacentText: a document cannot have a text child");
   }
+
   const std::size_t memory = text.view().empty() ? 0 : kNodeMemory + text.view().size();
+
   Page& page = Page::Of(pCtx);
   if (!page.memory().canHold(memory)) {
     return JS_ThrowOutOfMemory(pCtx);
   }
+  const lxb_dom_node_t* pBefore = NodeBefore(point);
   Element(pElement).insertAdjacentText(position, text.view());
-  page.touchDom();
   page.memory().charge(memory);
-  return JS_UNDEFINED;
+  // The text of a script parent inserted empty.
+  return NodesInserted(page, NodeAfter(pBefore, point), point.pReference) ? JS_UNDEFINED : JS_EXCEPTION;
 }
 
 // The contents of a <template> (a document fragment), the reflected attribute of a <meta>, undefined for the other
@@ -905,6 +1162,32 @@ JSValue GetContent(JSContext* pCtx, lxb_dom_node_t* pElement) {
     return Page::Of(pCtx).wrap(ChildrenParent(pElement));
   }
   return pElement->local_name == LXB_TAG_META ? NewString(pCtx, Element(pElement).attribute("content")) : JS_UNDEFINED;
+}
+
+JSValue GetNamespaceUri(JSContext* pCtx, lxb_dom_node_t* pElement) {
+  const std::string_view uri = NamespaceUri(pElement);
+  return uri.empty() ? JS_NULL : NewString(pCtx, uri);
+}
+
+constexpr char kMatches[] = "matches";
+constexpr char kClosest[] = "closest";
+
+// matches() (kAncestors false) and closest() (true).
+template <bool kAncestors, const char* kFunction>
+JSValue MatchSelectorMethod(JSContext* pCtx, lxb_dom_node_t* pElement, int argc, JSValueConst* argv) {
+  const StringArgument selector(pCtx, argc, argv, 0, kFunction);
+  if (selector.failed()) {
+    return JS_EXCEPTION;
+  }
+  const SelectorMatch match = MatchSelector(pElement, selector.view(), kAncestors);
+  if (!match.valid) {
+    return ThrowSelectorSyntaxError(pCtx, kFunction, selector.view());
+  }
+  if constexpr (kAncestors) {
+    return Page::Of(pCtx).wrap(match.pElement);
+  } else {
+    return JS_NewBool(pCtx, match.pElement != nullptr);
+  }
 }
 
 // --- CharacterData ---
@@ -960,7 +1243,64 @@ JSValue CreateElement(JSContext* pCtx, lxb_dom_node_t* /*pDocument*/, int argc, 
   }
   lxb_dom_node_t* pElement = HtmlNodeAccess::Node(page.document().createElement(name.view()));
   page.memory().charge(memory);
+  page.elementCreated(pElement);
   return page.wrap(pElement);
+}
+
+constexpr char kCreateElementNs[] = "createElementNS";
+
+// Whether 'qualifiedName' is a valid qualified name: a valid element name, or two separated by a colon (the prefix and
+// the local name).
+bool IsValidQualifiedName(std::string_view qualifiedName) noexcept {
+  const std::size_t colon = qualifiedName.find(':');
+  if (colon == std::string_view::npos) {
+    return HtmlDocument::IsValidElementName(qualifiedName);
+  }
+  const std::string_view localName = qualifiedName.substr(colon + 1);
+  return HtmlDocument::IsValidElementName(qualifiedName.substr(0, colon)) && !localName.contains(':') &&
+         HtmlDocument::IsValidElementName(localName);
+}
+
+JSValue CreateElementNs(JSContext* pCtx, lxb_dom_node_t* pDocument, int argc, JSValueConst* argv) {
+  if (argc < 2) {
+    return ThrowMissingArguments(pCtx, kCreateElementNs, 2);
+  }
+  // A nullable namespace: null, undefined and "" are none.
+  const NullableString namespaceUri(pCtx, JS_IsUndefined(argv[0]) ? JS_NULL : argv[0]);
+  if (namespaceUri.failed()) {
+    return JS_EXCEPTION;
+  }
+  const StringArgument qualifiedName(pCtx, argc, argv, 1, kCreateElementNs);
+  if (qualifiedName.failed()) {
+    return JS_EXCEPTION;
+  }
+  const std::string_view name = qualifiedName.view();
+  if (!IsValidQualifiedName(name)) {
+    return JS_ThrowDOMException(pCtx, "InvalidCharacterError", "Invalid qualified name '%.*s'",
+                                static_cast<int>(name.size()), name.data());
+  }
+  if (namespaceUri.view().empty() && name.contains(':')) {
+    return JS_ThrowDOMException(pCtx, "NamespaceError", "A prefix needs a namespace");
+  }
+  Page& page = Page::Of(pCtx);
+  const std::size_t memory = kNodeMemory + name.size();
+  if (!page.memory().canHold(memory)) {
+    return JS_ThrowOutOfMemory(pCtx);
+  }
+  lxb_dom_node_t* pElement = NewElementNs(pDocument, namespaceUri.view(), name);
+  page.memory().charge(memory);
+  page.elementCreated(pElement);
+  return page.wrap(pElement);
+}
+
+JSValue CreateDocumentFragment(JSContext* pCtx, lxb_dom_node_t* pDocument, int /*argc*/, JSValueConst* /*argv*/) {
+  Page& page = Page::Of(pCtx);
+  if (!page.memory().canHold(kNodeMemory)) {
+    return JS_ThrowOutOfMemory(pCtx);
+  }
+  lxb_dom_node_t* pFragment = NewDocumentFragment(pDocument);
+  page.memory().charge(kNodeMemory);
+  return page.wrap(pFragment);
 }
 
 template <lxb_dom_node_t* (*kCreate)(lxb_dom_node_t*, std::string_view), const char* kFunction>
@@ -1040,9 +1380,117 @@ JSValue Write(JSContext* pCtx, lxb_dom_node_t* /*pDocument*/, int argc, JSValueC
                                                                                   : JS_ThrowOutOfMemory(pCtx);
 }
 
+// --- Layout: none, the elements are empty boxes ---
+
+JSValue GetZero(JSContext* pCtx, lxb_dom_node_t* /*pElement*/) { return JS_NewInt32(pCtx, 0); }
+
+JSValue GetNull(JSContext* /*pCtx*/, lxb_dom_node_t* /*pElement*/) { return JS_NULL; }
+
+JSValue IgnoreValue(JSContext* /*pCtx*/, lxb_dom_node_t* /*pElement*/, JSValueConst /*value*/) { return JS_UNDEFINED; }
+
+JSValue Noop(JSContext* /*pCtx*/, lxb_dom_node_t* /*pNode*/, int /*argc*/, JSValueConst* /*argv*/) {
+  return JS_UNDEFINED;
+}
+
+JSValue GetClientRects(JSContext* pCtx, lxb_dom_node_t* /*pElement*/, int /*argc*/, JSValueConst* /*argv*/) {
+  return JS_NewArray(pCtx);
+}
+
+// An empty DOMRect at the origin, of the view part of the prelude.
+JSValue GetBoundingClientRect(JSContext* pCtx, lxb_dom_node_t* /*pElement*/, int /*argc*/, JSValueConst* /*argv*/) {
+  const JSValue view = Page::Of(pCtx).lazyPart(LazyPrelude::View);
+  if (JS_IsException(view)) {
+    return JS_EXCEPTION;
+  }
+  const JsValue rect(pCtx, JS_GetPropertyStr(pCtx, view, "DOMRect"));
+  return JS_IsException(rect.get()) ? JS_EXCEPTION : JS_CallConstructor(pCtx, rect.get(), 0, nullptr);
+}
+
+// --- Positions of the nodes ---
+
+lxb_dom_node_t* RootOf(lxb_dom_node_t* pNode) noexcept {
+  while (pNode->parent != nullptr) {
+    pNode = pNode->parent;
+  }
+  return pNode;
+}
+
+JSValue GetRootNode(JSContext* pCtx, lxb_dom_node_t* pNode, int /*argc*/, JSValueConst* /*argv*/) {
+  return Page::Of(pCtx).wrap(RootOf(pNode));
+}
+
+JSValue IsSameNode(JSContext* pCtx, lxb_dom_node_t* pNode, int argc, JSValueConst* argv) {
+  return JS_NewBool(pCtx, argc > 0 && NodeOf(pCtx, argv[0]) == pNode);
+}
+
+// The bits of Node.compareDocumentPosition().
+constexpr int32_t kDisconnected = 1;
+constexpr int32_t kPreceding = 2;
+constexpr int32_t kFollowing = 4;
+constexpr int32_t kContains = 8;
+constexpr int32_t kContainedBy = 16;
+constexpr int32_t kImplementationSpecific = 32;
+
+unsigned DepthOf(const lxb_dom_node_t* pNode) noexcept {
+  unsigned depth = 0;
+  for (; pNode->parent != nullptr; pNode = pNode->parent) {
+    ++depth;
+  }
+  return depth;
+}
+
+// The position of pOther relative to pNode (DOM "compareDocumentPosition"): the nodes of two trees are ordered by
+// address, a consistent order.
+int32_t DocumentPosition(const lxb_dom_node_t* pNode, const lxb_dom_node_t* pOther) noexcept {
+  if (pOther == pNode) {
+    return 0;
+  }
+  const unsigned depth = DepthOf(pNode);
+  const unsigned otherDepth = DepthOf(pOther);
+
+  // The ancestors of both nodes at the same depth: when one of them is the other node, it contains the first one.
+  const lxb_dom_node_t* pAncestor = pNode;
+  for (unsigned level = depth; level > otherDepth; --level) {
+    pAncestor = pAncestor->parent;
+  }
+
+  const lxb_dom_node_t* pOtherAncestor = pOther;
+
+  for (unsigned level = otherDepth; level > depth; --level) {
+    pOtherAncestor = pOtherAncestor->parent;
+  }
+
+  if (pAncestor == pOther) {
+    return kContains + kPreceding;
+  }
+  if (pOtherAncestor == pNode) {
+    return kContainedBy + kFollowing;
+  }
+  while (pAncestor->parent != pOtherAncestor->parent) {
+    pAncestor = pAncestor->parent;
+    pOtherAncestor = pOtherAncestor->parent;
+  }
+  if (pAncestor->parent == nullptr) {
+    return kDisconnected + kImplementationSpecific +
+           (std::less<const lxb_dom_node_t*>{}(pOther, pNode) ? kPreceding : kFollowing);
+  }
+  // Siblings under the closest common ancestor.
+  for (const lxb_dom_node_t* pSibling = pAncestor->next; pSibling != nullptr; pSibling = pSibling->next) {
+    if (pSibling == pOtherAncestor) {
+      return kFollowing;
+    }
+  }
+  return kPreceding;
+}
+
+JSValue CompareDocumentPosition(JSContext* pCtx, lxb_dom_node_t* pNode, int argc, JSValueConst* argv) {
+  const lxb_dom_node_t* pOther = NodeArgument(pCtx, argc, argv, 0, "compareDocumentPosition");
+  return pOther == nullptr ? JS_EXCEPTION : JS_NewInt32(pCtx, DocumentPosition(pNode, pOther));
+}
+
 // --- Function lists of the interfaces ---
 
-constexpr JSCFunctionListEntry kNodeFunctions[] = {
+constexpr JSCFunctionListEntry kNodeFunctions[]{
     Getter<On::Node, GetNodeType>("nodeType"),
     Getter<On::Node, GetNodeName>("nodeName"),
     Getter<On::Node, GetParentNode>("parentNode"),
@@ -1062,10 +1510,33 @@ constexpr JSCFunctionListEntry kNodeFunctions[] = {
     Method<On::Node, ReplaceChild>("replaceChild", 2),
     Method<On::Node, HasChildNodes>("hasChildNodes", 0),
     Method<On::Node, Contains>("contains", 1),
+    Method<On::Node, CloneNodeMethod>("cloneNode", 0),
+    Method<On::Node, GetRootNode>("getRootNode", 0),
+    Method<On::Node, IsSameNode>("isSameNode", 1),
+    Method<On::Node, CompareDocumentPosition>("compareDocumentPosition", 1),
 };
 
-// The ParentNode mixin, on Element and Document.
-constexpr JSCFunctionListEntry kParentNodeFunctions[] = {
+// The constants of Node, on its constructor and its prototype: plain values, nothing to create.
+constexpr JSCFunctionListEntry kNodeConstants[]{
+    JS_PROP_INT32_DEF("ELEMENT_NODE", LXB_DOM_NODE_TYPE_ELEMENT, JS_PROP_ENUMERABLE),
+    JS_PROP_INT32_DEF("ATTRIBUTE_NODE", LXB_DOM_NODE_TYPE_ATTRIBUTE, JS_PROP_ENUMERABLE),
+    JS_PROP_INT32_DEF("TEXT_NODE", LXB_DOM_NODE_TYPE_TEXT, JS_PROP_ENUMERABLE),
+    JS_PROP_INT32_DEF("CDATA_SECTION_NODE", LXB_DOM_NODE_TYPE_CDATA_SECTION, JS_PROP_ENUMERABLE),
+    JS_PROP_INT32_DEF("PROCESSING_INSTRUCTION_NODE", LXB_DOM_NODE_TYPE_PROCESSING_INSTRUCTION, JS_PROP_ENUMERABLE),
+    JS_PROP_INT32_DEF("COMMENT_NODE", LXB_DOM_NODE_TYPE_COMMENT, JS_PROP_ENUMERABLE),
+    JS_PROP_INT32_DEF("DOCUMENT_NODE", LXB_DOM_NODE_TYPE_DOCUMENT, JS_PROP_ENUMERABLE),
+    JS_PROP_INT32_DEF("DOCUMENT_TYPE_NODE", LXB_DOM_NODE_TYPE_DOCUMENT_TYPE, JS_PROP_ENUMERABLE),
+    JS_PROP_INT32_DEF("DOCUMENT_FRAGMENT_NODE", LXB_DOM_NODE_TYPE_DOCUMENT_FRAGMENT, JS_PROP_ENUMERABLE),
+    JS_PROP_INT32_DEF("DOCUMENT_POSITION_DISCONNECTED", kDisconnected, JS_PROP_ENUMERABLE),
+    JS_PROP_INT32_DEF("DOCUMENT_POSITION_PRECEDING", kPreceding, JS_PROP_ENUMERABLE),
+    JS_PROP_INT32_DEF("DOCUMENT_POSITION_FOLLOWING", kFollowing, JS_PROP_ENUMERABLE),
+    JS_PROP_INT32_DEF("DOCUMENT_POSITION_CONTAINS", kContains, JS_PROP_ENUMERABLE),
+    JS_PROP_INT32_DEF("DOCUMENT_POSITION_CONTAINED_BY", kContainedBy, JS_PROP_ENUMERABLE),
+    JS_PROP_INT32_DEF("DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC", kImplementationSpecific, JS_PROP_ENUMERABLE),
+};
+
+// The ParentNode mixin, on Element, Document and DocumentFragment.
+constexpr JSCFunctionListEntry kParentNodeFunctions[]{
     Getter<On::ParentNode, GetChildren>("children"),
     Getter<On::ParentNode, GetFirstElementChild>("firstElementChild"),
     Getter<On::ParentNode, GetLastElementChild>("lastElementChild"),
@@ -1076,7 +1547,7 @@ constexpr JSCFunctionListEntry kParentNodeFunctions[] = {
     Method<On::ParentNode, GetElementsByClassName>("getElementsByClassName", 1),
 };
 
-constexpr JSCFunctionListEntry kElementFunctions[] = {
+constexpr JSCFunctionListEntry kElementFunctions[]{
     Getter<On::Element, TagName>("tagName"),
     Getter<On::Element, GetLocalName>("localName"),
     Accessor<On::Element, GetReflectedAttribute<kId>, SetReflectedAttribute<kId>>("id"),
@@ -1086,6 +1557,7 @@ constexpr JSCFunctionListEntry kElementFunctions[] = {
     Getter<On::Element, GetContent>("content"),
     Getter<On::Node, GetLinkedElement<&lxb_dom_node_t::prev>>("previousElementSibling"),
     Getter<On::Node, GetLinkedElement<&lxb_dom_node_t::next>>("nextElementSibling"),
+    Getter<On::Element, GetNamespaceUri>("namespaceURI"),
     Method<On::Element, GetAttribute>("getAttribute", 1),
     Method<On::Element, SetAttributeMethod>("setAttribute", 2),
     Method<On::Element, RemoveAttribute>("removeAttribute", 1),
@@ -1094,10 +1566,69 @@ constexpr JSCFunctionListEntry kElementFunctions[] = {
     Method<On::Element, InsertAdjacentHtml>("insertAdjacentHTML", 2),
     Method<On::Element, InsertAdjacentElement>("insertAdjacentElement", 2),
     Method<On::Element, InsertAdjacentText>("insertAdjacentText", 2),
+    Method<On::Element, MatchSelectorMethod<false, kMatches>>("matches", 1),
+    Method<On::Element, MatchSelectorMethod<false, kMatches>>("webkitMatchesSelector", 1),
+    Method<On::Element, MatchSelectorMethod<true, kClosest>>("closest", 1),
     Method<On::Node, Remove>("remove", 0),
+    // No layout: empty boxes at the origin.
+    Getter<On::Element, GetZero>("clientWidth"),
+    Getter<On::Element, GetZero>("clientHeight"),
+    Getter<On::Element, GetZero>("clientTop"),
+    Getter<On::Element, GetZero>("clientLeft"),
+    Getter<On::Element, GetZero>("scrollWidth"),
+    Getter<On::Element, GetZero>("scrollHeight"),
+    Accessor<On::Element, GetZero, IgnoreValue>("scrollTop"),
+    Accessor<On::Element, GetZero, IgnoreValue>("scrollLeft"),
+    Method<On::Element, GetBoundingClientRect>("getBoundingClientRect", 0),
+    Method<On::Element, GetClientRects>("getClientRects", 0),
+    Method<On::Element, Noop>("scrollIntoView", 0),
+    Method<On::Element, Noop>("scroll", 0),
+    Method<On::Element, Noop>("scrollTo", 0),
+    Method<On::Element, Noop>("scrollBy", 0),
 };
 
-constexpr JSCFunctionListEntry kCharacterDataFunctions[] = {
+// The text of the scripts, links, options and titles: their text content. The other elements do not have it: what a
+// script assigns becomes a property of the element, as in browsers.
+bool HasText(const lxb_dom_node_t* pElement) noexcept {
+  switch (HtmlInterfaceOfTag(pElement->local_name)) {
+    case HtmlInterfaceId::Anchor:
+    case HtmlInterfaceId::Option:
+    case HtmlInterfaceId::Script:
+    case HtmlInterfaceId::Title:
+      return IsHtmlElement(pElement);
+    default:
+      return false;
+  }
+}
+
+JSValue GetText(JSContext* pCtx, lxb_dom_node_t* pElement) {
+  return HasText(pElement) ? GetTextContent(pCtx, pElement) : JS_UNDEFINED;
+}
+
+JSValue SetText(JSContext* pCtx, JSValueConst self, JSValueConst value) {
+  lxb_dom_node_t* pElement = NodeOn<On::Element>(pCtx, self);
+  if (pElement == nullptr) {
+    return JS_EXCEPTION;
+  }
+  if (HasText(pElement)) {
+    return SetTextContent(pCtx, pElement, value);
+  }
+  return JS_DefinePropertyValueStr(pCtx, self, "text", JS_DupValue(pCtx, value), kOrdinaryProperty) < 0 ? JS_EXCEPTION
+                                                                                                        : JS_UNDEFINED;
+}
+
+constexpr JSCFunctionListEntry kHtmlElementFunctions[]{
+    Getter<On::Element, GetZero>("offsetWidth"),
+    Getter<On::Element, GetZero>("offsetHeight"),
+    Getter<On::Element, GetZero>("offsetTop"),
+    Getter<On::Element, GetZero>("offsetLeft"),
+    Getter<On::Element, GetNull>("offsetParent"),
+    JS_CGETSET_DEF("text", (&JsGetter<NodeGetter<On::Element, GetText>>), (&JsSetter<SetText>)),
+    Method<On::Element, Noop>("focus", 0),
+    Method<On::Element, Noop>("blur", 0),
+};
+
+constexpr JSCFunctionListEntry kCharacterDataFunctions[]{
     Accessor<On::CharacterData, GetData, SetData>("data"),
     Getter<On::Node, GetLinkedElement<&lxb_dom_node_t::prev>>("previousElementSibling"),
     Getter<On::Node, GetLinkedElement<&lxb_dom_node_t::next>>("nextElementSibling"),
@@ -1105,7 +1636,7 @@ constexpr JSCFunctionListEntry kCharacterDataFunctions[] = {
     Method<On::Node, Remove>("remove", 0),
 };
 
-constexpr JSCFunctionListEntry kDocumentFunctions[] = {
+constexpr JSCFunctionListEntry kDocumentFunctions[]{
     Getter<On::Document, GetDocumentElementOf<&HtmlDocument::documentElement>>("documentElement"),
     Getter<On::Document, GetDocumentElementOf<&HtmlDocument::head>>("head"),
     Getter<On::Document, GetDocumentElementOf<&HtmlDocument::body>>("body"),
@@ -1115,48 +1646,113 @@ constexpr JSCFunctionListEntry kDocumentFunctions[] = {
     Getter<On::Document, GetCharacterSet>("characterSet"),
     Method<On::Document, GetElementById>("getElementById", 1),
     Method<On::Document, CreateElement>("createElement", 1),
+    Method<On::Document, CreateElementNs>(kCreateElementNs, 2),
+    Method<On::Document, CreateDocumentFragment>("createDocumentFragment", 0),
     Method<On::Document, CreateCharacterData<&NewTextNode, kCreateTextNode>>("createTextNode", 1),
     Method<On::Document, CreateCharacterData<&NewCommentNode, kCreateComment>>("createComment", 1),
     Method<On::Document, Write<false>>("write", 1),
     Method<On::Document, Write<true>>("writeln", 1),
 };
 
+// The interfaces installed with the page.
 struct Interface {
   const char* name;
   int parent;     // index of the parent interface, -1 for none
   int nodeClass;  // NodeClass of the wrappers whose prototype it is, -1 for none
   std::span<const JSCFunctionListEntry> functions;
   std::span<const JSCFunctionListEntry> mixin;
+  std::span<const JSCFunctionListEntry> constants;  // also on the constructor
 };
+
+constexpr int kNodeInterface = 0;
+constexpr int kElementInterface = 1;
+constexpr int kCharacterDataInterface = 3;
+
+consteval int ClassIndex(NodeClass nodeClass) noexcept { return static_cast<int>(nodeClass); }
 
 // In order of inheritance.
-const Interface kInterfaces[] = {
-    {"Node", -1, static_cast<int>(NodeClass::Node), kNodeFunctions, {}},
-    {"Element", 0, static_cast<int>(NodeClass::Element), kElementFunctions, kParentNodeFunctions},
-    {"HTMLElement", 1, static_cast<int>(NodeClass::HtmlElement), {}, {}},
-    {"CharacterData", 0, -1, kCharacterDataFunctions, {}},
-    {"Text", 3, static_cast<int>(NodeClass::Text), {}, {}},
-    {"Comment", 3, static_cast<int>(NodeClass::Comment), {}, {}},
-    {"Document", 0, static_cast<int>(NodeClass::Document), kDocumentFunctions, kParentNodeFunctions},
+constexpr Interface kInterfaces[]{
+    {"Node", -1, ClassIndex(NodeClass::Node), kNodeFunctions, {}, kNodeConstants},
+    {"Element", kNodeInterface, ClassIndex(NodeClass::Element), kElementFunctions, kParentNodeFunctions, {}},
+    {"HTMLElement", kElementInterface, ClassIndex(NodeClass::HtmlElement), kHtmlElementFunctions, {}, {}},
+    {"CharacterData", kNodeInterface, -1, kCharacterDataFunctions, {}, {}},
+    {"Text", kCharacterDataInterface, ClassIndex(NodeClass::Text), {}, {}, {}},
+    {"Comment", kCharacterDataInterface, ClassIndex(NodeClass::Comment), {}, {}, {}},
+    {"Document", kNodeInterface, ClassIndex(NodeClass::Document), kDocumentFunctions, kParentNodeFunctions, {}},
+    {"DocumentFragment", kNodeInterface, ClassIndex(NodeClass::DocumentFragment), {}, kParentNodeFunctions, {}},
+    {"SVGElement", kElementInterface, ClassIndex(NodeClass::SvgElement), {}, {}, {}},
 };
 
-}  // namespace
+// An HTML element interface, created on the first lookup of its name: its elements are the HTML elements of its tags
+// (and those of its children for HTMLMediaElement), all of the HTMLElement class.
+struct HtmlInterface {
+  const char* name;
+  HtmlInterfaceId parent;  // None for HTMLElement
+};
 
-NodeClass NodeClassOf(const lxb_dom_node_t* pNode) noexcept {
-  switch (pNode->type) {
-    case LXB_DOM_NODE_TYPE_ELEMENT:
-      return pNode->ns == LXB_NS_HTML ? NodeClass::HtmlElement : NodeClass::Element;
-    case LXB_DOM_NODE_TYPE_TEXT:
-    case LXB_DOM_NODE_TYPE_CDATA_SECTION:
-      return NodeClass::Text;
-    case LXB_DOM_NODE_TYPE_COMMENT:
-      return NodeClass::Comment;
-    default:
-      // The document wrapper is created with the page (see InstallDom()).
-      assert(pNode->type != LXB_DOM_NODE_TYPE_DOCUMENT);
-      return NodeClass::Node;
+// Indexed by HtmlInterfaceId.
+constexpr HtmlInterface kHtmlInterfaces[]{
+    {"HTMLMediaElement", HtmlInterfaceId::None},     {"HTMLAnchorElement", HtmlInterfaceId::None},
+    {"HTMLAudioElement", HtmlInterfaceId::Media},    {"HTMLBodyElement", HtmlInterfaceId::None},
+    {"HTMLButtonElement", HtmlInterfaceId::None},    {"HTMLCanvasElement", HtmlInterfaceId::None},
+    {"HTMLDivElement", HtmlInterfaceId::None},       {"HTMLFormElement", HtmlInterfaceId::None},
+    {"HTMLHeadElement", HtmlInterfaceId::None},      {"HTMLHeadingElement", HtmlInterfaceId::None},
+    {"HTMLHtmlElement", HtmlInterfaceId::None},      {"HTMLIFrameElement", HtmlInterfaceId::None},
+    {"HTMLImageElement", HtmlInterfaceId::None},     {"HTMLInputElement", HtmlInterfaceId::None},
+    {"HTMLLabelElement", HtmlInterfaceId::None},     {"HTMLLIElement", HtmlInterfaceId::None},
+    {"HTMLLinkElement", HtmlInterfaceId::None},      {"HTMLMetaElement", HtmlInterfaceId::None},
+    {"HTMLOListElement", HtmlInterfaceId::None},     {"HTMLOptionElement", HtmlInterfaceId::None},
+    {"HTMLParagraphElement", HtmlInterfaceId::None}, {"HTMLPreElement", HtmlInterfaceId::None},
+    {"HTMLScriptElement", HtmlInterfaceId::None},    {"HTMLSelectElement", HtmlInterfaceId::None},
+    {"HTMLSpanElement", HtmlInterfaceId::None},      {"HTMLStyleElement", HtmlInterfaceId::None},
+    {"HTMLTableElement", HtmlInterfaceId::None},     {"HTMLTableCellElement", HtmlInterfaceId::None},
+    {"HTMLTableRowElement", HtmlInterfaceId::None},  {"HTMLTableSectionElement", HtmlInterfaceId::None},
+    {"HTMLTemplateElement", HtmlInterfaceId::None},  {"HTMLTextAreaElement", HtmlInterfaceId::None},
+    {"HTMLTitleElement", HtmlInterfaceId::None},     {"HTMLUListElement", HtmlInterfaceId::None},
+    {"HTMLVideoElement", HtmlInterfaceId::Media},
+};
+
+static_assert(std::size(kHtmlInterfaces) == kNbHtmlInterfaces);
+static_assert(std::string_view(kHtmlInterfaces[static_cast<std::size_t>(HtmlInterfaceId::Video)].name) ==
+              "HTMLVideoElement");
+
+// The name of the class of each NodeClass: that of its interface, but for the document.
+consteval std::array<const char*, kNbNodeClasses> ClassNames() {
+  std::array<const char*, kNbNodeClasses> names{};
+  for (const Interface& domInterface : kInterfaces) {
+    if (domInterface.nodeClass >= 0) {
+      names[static_cast<std::size_t>(domInterface.nodeClass)] = domInterface.name;
+    }
   }
+  names[static_cast<std::size_t>(NodeClass::Document)] = "HTMLDocument";
+  return names;
 }
+
+constexpr std::array<const char*, kNbNodeClasses> kClassNames = ClassNames();
+
+// A constructor 'name' that throws, whose prototype is 'prototype'. Returns it, owned, or JS_EXCEPTION on memory
+// exhaustion.
+JSValue NewConstructor(JSContext* pCtx, const char* name, JSValueConst prototype) {
+  JsValue constructor(pCtx, JS_NewCFunction2(pCtx, &IllegalConstructor, name, 0, JS_CFUNC_constructor, 0));
+  if (JS_IsException(constructor.get()) || JS_SetConstructor(pCtx, constructor.get(), prototype) < 0) {
+    return JS_EXCEPTION;
+  }
+  return constructor.release();
+}
+
+// [Symbol.hasInstance](value) of the HTML element interface 'id': whether 'value' is an HTML element of its tags.
+JSValue HasHtmlInstance(JSContext* pCtx, JSValueConst /*self*/, int argc, JSValueConst* argv, int id) noexcept {
+  const lxb_dom_node_t* pNode = argc > 0 ? NodeOf(pCtx, argv[0]) : nullptr;
+  if (pNode == nullptr || !IsHtmlElement(pNode)) {
+    return JS_FALSE;
+  }
+  const HtmlInterfaceId tagInterface = HtmlInterfaceOfTag(pNode->local_name);
+  return JS_NewBool(pCtx, tagInterface != HtmlInterfaceId::None &&
+                              (static_cast<int>(tagInterface) == id ||
+                               static_cast<int>(kHtmlInterfaces[static_cast<std::size_t>(tagInterface)].parent) == id));
+}
+
+}  // namespace
 
 lxb_dom_node_t* NodeOf(JSContext* pCtx, JSValueConst value) noexcept {
   JSClassID classId = 0;
@@ -1166,13 +1762,63 @@ lxb_dom_node_t* NodeOf(JSContext* pCtx, JSValueConst value) noexcept {
              : nullptr;
 }
 
+std::size_t FindHtmlInterface(std::string_view name) noexcept {
+  for (std::size_t index = 0; index < kNbHtmlInterfaces; ++index) {
+    if (name == kHtmlInterfaces[index].name) {
+      return index;
+    }
+  }
+  return kNbHtmlInterfaces;
+}
+
+const char* HtmlInterfaceName(std::size_t index) noexcept {
+  assert(index < kNbHtmlInterfaces);
+  return kHtmlInterfaces[index].name;
+}
+
+JSValue InstallHtmlInterface(Page& page, std::size_t index) {
+  assert(index < kNbHtmlInterfaces);
+  JSContext* pCtx = page.context();
+  const HtmlInterface& domInterface = kHtmlInterfaces[index];
+  JSValueConst lazyGlobals = page.lazyGlobals();
+  // The prototype of its parent: HTMLElement.prototype, or HTMLMediaElement.prototype, installed first by its lookup.
+  JsValue parent(pCtx, JS_GetClassProto(pCtx, page.firstNodeClass() + static_cast<JSClassID>(NodeClass::HtmlElement)));
+  if (domInterface.parent != HtmlInterfaceId::None) {
+    const JsValue media(pCtx, JS_GetPropertyStr(pCtx, lazyGlobals,
+                                                kHtmlInterfaces[static_cast<std::size_t>(domInterface.parent)].name));
+    if (JS_IsException(media.get())) {
+      return JS_EXCEPTION;
+    }
+    parent = JsValue(pCtx, JS_GetPropertyStr(pCtx, media.get(), "prototype"));
+    if (JS_IsException(parent.get())) {
+      return JS_EXCEPTION;
+    }
+  }
+  const JsValue prototype(pCtx, JS_NewObjectProto(pCtx, parent.get()));
+  if (JS_IsException(prototype.get())) {
+    return JS_EXCEPTION;
+  }
+  JsValue constructor(pCtx, NewConstructor(pCtx, domInterface.name, prototype.get()));
+  if (JS_IsException(constructor.get())) {
+    return JS_EXCEPTION;
+  }
+  // JS_DefinePropertyValue() would define a failed creation (JS_EXCEPTION) as the value.
+  const JSValue hasInstance = JS_NewCFunctionMagic(pCtx, &HasHtmlInstance, "[Symbol.hasInstance]", 1,
+                                                   JS_CFUNC_generic_magic, static_cast<int>(index));
+  if (JS_IsException(hasInstance) ||
+      JS_DefinePropertyValue(pCtx, constructor.get(), page.hasInstanceAtom(), hasInstance, 0) < 0) {
+    return JS_EXCEPTION;
+  }
+  return constructor.release();
+}
+
 JSValue Page::wrap(lxb_dom_node_t* pNode) {
   JSContext* pCtx = context();
   if (pNode == nullptr) {
     return JS_NULL;
   }
   if (pNode == _pDocumentNode) {
-    return JS_DupValue(pCtx, _wrappers.front());
+    return JS_DupValue(pCtx, _kept.front());
   }
   if (pNode->user != nullptr) {
     return JS_DupValue(pCtx, JS_MKPTR(JS_TAG_OBJECT, pNode->user));
@@ -1182,7 +1828,7 @@ JSValue Page::wrap(lxb_dom_node_t* pNode) {
     return JS_EXCEPTION;
   }
   SetOpaque(wrapper.get(), pNode);
-  keepWrapper(wrapper.get());
+  keep(wrapper.get());
   pNode->user = JS_VALUE_GET_PTR(wrapper.get());
   return wrapper.release();
 }
@@ -1190,9 +1836,6 @@ JSValue Page::wrap(lxb_dom_node_t* pNode) {
 bool InstallDom(Page& page) {
   JSContext* pCtx = page.context();
 
-  static constexpr const char* kClassNames[kNbNodeClasses] = {
-      "Node", "Element", "HTMLElement", "Text", "Comment", "HTMLDocument",
-  };
   for (unsigned index = 0; index < kNbNodeClasses; ++index) {
     const JSClassID classId = NewClass(pCtx, kClassNames[index]);
     if (classId == 0) {
@@ -1213,13 +1856,12 @@ bool InstallDom(Page& page) {
                                               : JS_NewObjectProto(pCtx, prototypes[domInterface.parent].get()));
     const JSValue prototype = prototypes[index].get();
     if (JS_IsException(prototype) || !SetFunctions(pCtx, prototype, domInterface.functions) ||
-        !SetFunctions(pCtx, prototype, domInterface.mixin)) {
+        !SetFunctions(pCtx, prototype, domInterface.mixin) || !SetFunctions(pCtx, prototype, domInterface.constants)) {
       return false;
     }
-    JsValue constructor(pCtx,
-                        JS_NewCFunction2(pCtx, &IllegalConstructor, domInterface.name, 0, JS_CFUNC_constructor, 0));
-    if (JS_IsException(constructor.get()) || JS_SetConstructor(pCtx, constructor.get(), prototype) < 0 ||
-        !Define(pCtx, global.get(), domInterface.name, constructor.release(), kWritableConfigurable)) {
+    const JsValue constructor(pCtx, NewConstructor(pCtx, domInterface.name, prototype));
+    if (JS_IsException(constructor.get()) || !SetFunctions(pCtx, constructor.get(), domInterface.constants) ||
+        !Define(pCtx, global.get(), domInterface.name, JS_DupValue(pCtx, constructor.get()), kWritableConfigurable)) {
       return false;
     }
     if (domInterface.nodeClass >= 0) {
@@ -1235,7 +1877,7 @@ bool InstallDom(Page& page) {
     return false;
   }
   SetOpaque(document.get(), page.documentNode());
-  page.keepWrapper(document.get());
+  page.keep(document.get());
   return Define(pCtx, global.get(), "document", document.release(), JS_PROP_ENUMERABLE);
 }
 

@@ -87,8 +87,8 @@ void AppendSerializedNode(lxb_dom_node_t* pNode, std::string& out) {
 
 }  // namespace
 
-// lexbor keeps the lower-cased name as local name, the name adjusted by the parser for SVG elements as qualified name
-// (no element has a prefix: they are only created by the parser and by createElement()).
+// lexbor keeps the lower-cased name as local name, the name adjusted by the parser for SVG elements, or with its prefix
+// for the elements of createElementNS() (aeronet_web), as qualified name.
 std::string_view HtmlElement::tagName() const noexcept {
   std::size_t size = 0;
   const lxb_char_t* pName = lxb_dom_element_qualified_name(AsElement(_pNode), &size);

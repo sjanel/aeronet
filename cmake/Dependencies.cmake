@@ -545,8 +545,18 @@ if(AeronetFetchContentPackagesToMakeAvailable)
   endif()
 
   # aeronet_web runs remote scripts in the process: the ASAN legs also check the memory accesses of the engine.
+  # Two adjustments make the sanitized engine usable:
+  # - Optimized (-O1): QuickJS-ng recurses on the native stack for each call of a script, and at -O0 with ASAN and UBSAN
+  #   the frame of JS_CallInternal is 70 KB (1.7 KB at -O1): the 1 MiB default of WebClientConfig::maxScriptStackSize
+  #   then allows 15 nested calls, which React exceeds with a RangeError.
+  # - No -fsanitize=function (clang): QuickJS-ng calls js_realloc and js_realloc_rt through a DynBufReallocFunc pointer
+  #   whose first parameter is not the same type, which this check reports as an error.
   if(AERONET_ENABLE_ASAN AND quickjs_ng_SOURCE_DIR)
-    aeronet_add_options_to_dir_targets("${quickjs_ng_SOURCE_DIR}" ${AERONET_ASAN_OPTIONS})
+    aeronet_add_options_to_dir_targets(
+      "${quickjs_ng_SOURCE_DIR}"
+      ${AERONET_ASAN_OPTIONS}
+      $<$<C_COMPILER_ID:GNU,Clang,AppleClang>:-O1>
+      $<$<C_COMPILER_ID:Clang,AppleClang>:-fno-sanitize=function>)
   endif()
 
   # glaze populated without its CMakeLists (CMake < 3.31, see above): the same target as glaze's own CMakeLists.

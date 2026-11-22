@@ -19,7 +19,7 @@ constexpr std::string_view kTraceRequestLineStart = "TRACE ";
 
 // The header fields likely to contain sensitive data, left out of the echo (RFC 9110 §9.3.8): the credentials (§11.6)
 // and the cookies (RFC 6265 §5.4).
-constexpr std::string_view kExcludedFields[] = {http::Authorization, http::ProxyAuthorization, http::Cookie};
+constexpr std::string_view kExcludedFields[]{http::Authorization, http::ProxyAuthorization, http::Cookie};
 
 bool IsExcludedField(std::string_view line) {
   const std::string_view name = line.substr(0, line.find(':'));
