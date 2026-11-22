@@ -36,8 +36,9 @@ StorageAreas::Item::Item(std::string_view key, std::string_view value)
 }
 
 void StorageAreas::Item::setValue(std::string_view value) {
+  _chars.reserve(_keySize + value.size());
   _chars.setSize(_keySize);
-  _chars.append(value);
+  _chars.unchecked_append(value);
 }
 
 ScriptCache::Script::Script(std::string_view url, std::string_view code) noexcept

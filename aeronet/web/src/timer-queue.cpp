@@ -57,6 +57,10 @@ int32_t TimerQueue::add(JSValueConst callback, std::span<const JSValueConst> arg
     delay = std::max(delay, kNestedMinDelay);
   }
 
+  if (repeat && _maxIntervalRuns == 0) {
+    return id;
+  }
+
   const int64_t due = _clock + delay;
   if (due > _horizon) {
     log::debug("[js] timer of {} ms beyond the horizon of the virtual clock: dropped", delay);

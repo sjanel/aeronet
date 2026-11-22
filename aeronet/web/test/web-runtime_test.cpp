@@ -272,16 +272,19 @@ TEST(WebRuntimeTest, StackLimit) {
 
 constexpr std::size_t kSmallMemory = std::size_t{4} << 20;
 
-// Whether 'script' fails with an out of memory error (uncatchable in QuickJS-ng 0.18, as all its internal errors). When
-// even the error object does not fit in the memory left, which depends on the exact allocations of the build,
-// QuickJS-ng throws null instead (to avoid recursing).
+// Whether 'script' fails with an out of memory error (uncatchable in QuickJS-ng 0.18, as all its internal errors). The
+// memory left for the error depends on the exact allocations of the build: when its message does not fit, QuickJS-ng
+// throws an InternalError without one (the text is its name, then its stack), and when even the error object does not
+// fit, it throws null instead (to avoid recursing).
 testing::AssertionResult RunsOutOfMemory(WebPage& page, std::string_view script) {
   const auto result = page.evaluate(script);
   if (result) {
     return testing::AssertionFailure() << "the script returned " << *result;
   }
-  if (!result.error().starts_with("InternalError: out of memory") && result.error() != "null") {
-    return testing::AssertionFailure() << "the script failed with " << result.error();
+  const std::string_view error = result.error();
+  const bool withoutMessage = error == "InternalError" || error.starts_with("InternalError\n");
+  if (!error.starts_with("InternalError: out of memory") && !withoutMessage && error != "null") {
+    return testing::AssertionFailure() << "the script failed with " << error;
   }
   return testing::AssertionSuccess();
 }
@@ -513,6 +516,15 @@ TEST(WebRuntimeTest, DocumentWriteIsBounded) {
   ASSERT_EQ(dense.uncaughtErrors().size(), 2U);
   EXPECT_EQ(dense.uncaughtErrors()[1],
             "aeronet: the output of document.write() exceeds WebClientConfig::maxScriptMemory");
+  // The scripts of such an output are inserted, but never run.
+  WebPage denseScript = Load(client,
+                             "<p><script>document.write('<script>window.ran = 1<\\/script>');"
+                             "for (;;) document.write('<i a b c d e f>')</script></p>");
+  ASSERT_EQ(denseScript.uncaughtErrors().size(), 2U);
+  EXPECT_EQ(denseScript.uncaughtErrors()[1],
+            "aeronet: the output of document.write() exceeds WebClientConfig::maxScriptMemory");
+  EXPECT_EQ(test::Eval(denseScript, "[document.querySelectorAll('p > script').length, typeof ran]"),
+            R"([2,"undefined"])");
 }
 
 TEST(WebRuntimeTest, TimeoutsBeyondTheClock) {

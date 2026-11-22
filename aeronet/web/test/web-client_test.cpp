@@ -345,6 +345,13 @@ TEST(WebClientTest, Intervals) {
       {.until = LoadState::NetworkIdle});
   // At 30 ms, the interval rescheduled at 15 ms runs before the one rescheduled at 20 ms.
   EXPECT_EQ(Log(page), R"(["capped 1",1,"capped 1",2,"capped 1","string","string","string"])");
+
+  config.maxIntervalRuns = 0;
+  WebClient zeroIntervals(config);
+  WebPage zeroPage =
+      test::Navigate(zeroIntervals, Page("<script>log = []; setInterval(() => log.push('interval'), 1);</script>"),
+                     {.until = LoadState::NetworkIdle});
+  EXPECT_EQ(Log(zeroPage), "[]");
 }
 
 TEST(WebClientTest, NestedTimersAreClamped) {

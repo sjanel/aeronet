@@ -627,17 +627,20 @@ JsValue Page::evalScript(std::string_view code, const char* filename) {
     return _engine.eval(code, filename);
   }
   JSContext* pCtx = context();
+
   const ScriptCache::Script script(filename, code);
   if (const std::span<const std::byte> bytecode = cache.find(script); !bytecode.empty()) {
     const JSValue function =
         JS_ReadObject(pCtx, reinterpret_cast<const uint8_t*>(bytecode.data()), bytecode.size(), JS_READ_OBJ_BYTECODE);
     return {pCtx, JS_IsException(function) ? JS_EXCEPTION : JS_EvalFunction(pCtx, function)};
   }
+
   // Of type JS_EVAL_TYPE_GLOBAL (0), as _engine.eval().
   JsValue compiled(pCtx, JS_Eval(pCtx, code.data(), code.size(), filename, JS_EVAL_FLAG_COMPILE_ONLY));
   if (JS_IsException(compiled.get())) {
     return compiled;
   }
+
   std::size_t size = 0;
   const std::unique_ptr<uint8_t, JsFreeDeleter> pBytecode(
       JS_WriteObject(pCtx, &size, compiled.get(), JS_WRITE_OBJ_BYTECODE), JsFreeDeleter{pCtx});
@@ -647,6 +650,7 @@ JsValue Page::evalScript(std::string_view code, const char* filename) {
     // Out of memory of the JavaScript heap: the script still runs, its bytecode not cached.
     JS_FreeValue(pCtx, JS_GetException(pCtx));
   }
+
   return {pCtx, JS_EvalFunction(pCtx, compiled.release())};
 }
 
@@ -672,15 +676,17 @@ void Page::flushDocumentWrite(lxb_dom_node_t* pScript) {
   written.clear();
 
   _memory.charge(NodesMemory(pScript->next, point.pReference));
+  touchDom();
   if (_memory.exceeded()) {
     reportError("aeronet: the output of document.write() exceeds WebClientConfig::maxScriptMemory");
+    return;
   }
   _scripts.collect(pScript->next, point.pReference, url());
-  touchDom();
 }
 
 Page::Refresh Page::findRefresh() {
   Refresh refresh{{}, -1};
+
   WalkDescendants(_pDocumentNode, [&](lxb_dom_node_t* pNode) {
     if (pNode->type != LXB_DOM_NODE_TYPE_ELEMENT || pNode->local_name != LXB_TAG_META) {
       return true;
@@ -696,6 +702,7 @@ Page::Refresh Page::findRefresh() {
     refresh.delay = seconds * 1000;
     return false;  // the first one only
   });
+
   // A refresh of the page itself (auto-refreshing pages) is not followed: the page would load again and again.
   if (refresh.delay >= 0 && (!IsHttpUrl(refresh.url) || std::string_view(refresh.url) == url())) {
     refresh.delay = -1;
@@ -711,6 +718,7 @@ Page::Outcome Page::run(const CssSelector* pSelector, LoadState until, SteadyClo
     _stopReason = StopReason::SelectorMatched;
     return outcome(TaskEnd::Stop);
   }
+
   _scripts.collect(_pDocumentNode->first_child, nullptr, url());
 
   TaskEnd end = TaskEnd::Continue;
@@ -777,10 +785,12 @@ Page::Outcome Page::run(const CssSelector* pSelector, LoadState until, SteadyClo
       return outcome(end);
     }
   }
+
   if (refresh.delay > 0 && refresh.delay <= session().config.maxTimerDelay.count()) {
     _pendingNavigation = std::move(refresh.url);
     return outcome(TaskEnd::Navigate);
   }
+
   return outcome(TaskEnd::Stop);
 }
 

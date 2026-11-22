@@ -316,6 +316,12 @@ lxb_dom_node_t* NodeArgument(JSContext* pCtx, int argc, JSValueConst* argv, int 
   return pNode;
 }
 
+// Whether the nullable node argument argv[index] (Node? in WebIDL) is null: undefined converts to null. A missing
+// argument is not null: NodeArgument() then throws, as the argument is required.
+bool IsNullNodeArgument(int argc, JSValueConst* argv, int index) noexcept {
+  return index < argc && (JS_IsNull(argv[index]) || JS_IsUndefined(argv[index]));
+}
+
 // A DOMString argument: null converts to "null", as in the DOM. Fails with a TypeError when it is missing.
 class StringArgument : public JsString {
  public:
@@ -633,7 +639,7 @@ JSValue InsertBefore(JSContext* pCtx, lxb_dom_node_t* pParent, int argc, JSValue
     return ThrowMissingArguments(pCtx, "insertBefore", 2);
   }
   lxb_dom_node_t* pReference = nullptr;
-  if (!JS_IsNull(argv[1]) && !JS_IsUndefined(argv[1])) {
+  if (!IsNullNodeArgument(argc, argv, 1)) {
     pReference = ChildArgument(pCtx, argc, argv, 1, pParent, "insertBefore");
     if (pReference == nullptr) {
       return JS_EXCEPTION;
@@ -679,7 +685,7 @@ JSValue HasChildNodes(JSContext* pCtx, lxb_dom_node_t* pNode, int /*argc*/, JSVa
 }
 
 JSValue Contains(JSContext* pCtx, lxb_dom_node_t* pNode, int argc, JSValueConst* argv) {
-  if (argc == 0 || JS_IsNull(argv[0])) {
+  if (IsNullNodeArgument(argc, argv, 0)) {
     return JS_FALSE;
   }
   const lxb_dom_node_t* pOther = NodeArgument(pCtx, argc, argv, 0, "contains");
@@ -1164,6 +1170,24 @@ JSValue GetContent(JSContext* pCtx, lxb_dom_node_t* pElement) {
   return pElement->local_name == LXB_TAG_META ? NewString(pCtx, Element(pElement).attribute("content")) : JS_UNDEFINED;
 }
 
+JSValue SetContent(JSContext* pCtx, JSValueConst self, JSValueConst value) {
+  lxb_dom_node_t* pElement = NodeOn<On::Element>(pCtx, self);
+  if (pElement == nullptr) {
+    return JS_EXCEPTION;
+  }
+  if (pElement->ns == LXB_NS_HTML && pElement->local_name == LXB_TAG_META) {
+    const JsString converted(pCtx, value);
+    return converted.failed() ? JS_EXCEPTION : SetAttribute(pCtx, pElement, "content", converted.view());
+  }
+  if (pElement->ns == LXB_NS_HTML && pElement->local_name == LXB_TAG_TEMPLATE) {
+    // Read-only: ignored as in the non-strict code of classic scripts (a setter cannot tell the mode of its caller).
+    return JS_UNDEFINED;
+  }
+  return JS_DefinePropertyValueStr(pCtx, self, "content", JS_DupValue(pCtx, value), kOrdinaryProperty) < 0
+             ? JS_EXCEPTION
+             : JS_UNDEFINED;
+}
+
 JSValue GetNamespaceUri(JSContext* pCtx, lxb_dom_node_t* pElement) {
   const std::string_view uri = NamespaceUri(pElement);
   return uri.empty() ? JS_NULL : NewString(pCtx, uri);
@@ -1420,7 +1444,11 @@ JSValue GetRootNode(JSContext* pCtx, lxb_dom_node_t* pNode, int /*argc*/, JSValu
 }
 
 JSValue IsSameNode(JSContext* pCtx, lxb_dom_node_t* pNode, int argc, JSValueConst* argv) {
-  return JS_NewBool(pCtx, argc > 0 && NodeOf(pCtx, argv[0]) == pNode);
+  if (IsNullNodeArgument(argc, argv, 0)) {
+    return JS_FALSE;
+  }
+  const lxb_dom_node_t* pOther = NodeArgument(pCtx, argc, argv, 0, "isSameNode");
+  return pOther == nullptr ? JS_EXCEPTION : JS_NewBool(pCtx, pOther == pNode);
 }
 
 // The bits of Node.compareDocumentPosition().
@@ -1554,7 +1582,7 @@ constexpr JSCFunctionListEntry kElementFunctions[]{
     Accessor<On::Element, GetReflectedAttribute<kClass>, SetReflectedAttribute<kClass>>("className"),
     Accessor<On::Element, GetSerialization<&HtmlElement::appendInnerHtml>, SetInnerHtml>("innerHTML"),
     Getter<On::Element, GetSerialization<&HtmlElement::appendOuterHtml>>("outerHTML"),
-    Getter<On::Element, GetContent>("content"),
+    JS_CGETSET_DEF("content", (&JsGetter<NodeGetter<On::Element, GetContent>>), (&JsSetter<SetContent>)),
     Getter<On::Node, GetLinkedElement<&lxb_dom_node_t::prev>>("previousElementSibling"),
     Getter<On::Node, GetLinkedElement<&lxb_dom_node_t::next>>("nextElementSibling"),
     Getter<On::Element, GetNamespaceUri>("namespaceURI"),

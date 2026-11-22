@@ -42,7 +42,7 @@ struct WebClientConfig {
   // used scripts are dropped beyond it (0 keeps none).
   std::size_t maxScriptCacheBytes{64UL << 20U};
 
-  // Maximum number of runs of a setInterval() callback, after which the interval is cleared.
+  // Maximum number of runs of a setInterval() callback, after which the interval is cleared (0 runs none).
   uint32_t maxIntervalRuns{100};
 
   // Maximum number of requests (fetch(), XMLHttpRequest, navigator.sendBeacon()) that the scripts of a document make:

@@ -59,9 +59,19 @@ TEST_F(WebDomTest, NodeTypesAndNames) {
             "[true,true,true,true,true,true,true,true,true]");
   EXPECT_EQ(eval("[Node.ELEMENT_NODE, Node.TEXT_NODE, p.COMMENT_NODE, Node.DOCUMENT_NODE]"), "[1,3,8,9]");
   EXPECT_EQ(eval("document.getElementById('root').content"), "");
-  EXPECT_EQ(eval("const meta = document.createElement('meta'); meta.setAttribute('content', 'c');"
-                 "[meta.content, document.getElementById('fo').content]"),
-            R"(["c",null])");
+  EXPECT_EQ(eval("var meta = document.createElement('meta'); meta.setAttribute('content', 'c');"
+                 "meta.content = 'updated'; const div = document.getElementById('root'); div.content = 'own';"
+                 "const fo = document.getElementById('fo'); const foBefore = fo.content; fo.content = 'svg';"
+                 "[meta.content, meta.getAttribute('content'), div.content, Object.hasOwn(div, 'content'), "
+                 "foBefore, fo.content]"),
+            R"(["updated","updated","own",true,null,"svg"])");
+  // The content of a template is read-only: assigning it is ignored, as in the non-strict code of classic scripts.
+  EXPECT_EQ(eval("const tpl = document.getElementById('tpl'); const tplContent = tpl.content; tpl.content = 'x';"
+                 "[tpl.content === tplContent, Object.hasOwn(tpl, 'content')]"),
+            "[true,false]");
+  EXPECT_EQ(errorName("Object.getOwnPropertyDescriptor(Element.prototype, 'content').set.call({}, 1)"),
+            R"("TypeError")");
+  EXPECT_EQ(errorName("meta.content = { toString() { throw new RangeError(); } }"), R"("RangeError")");
 }
 
 TEST_F(WebDomTest, TreeNavigation) {
@@ -84,8 +94,10 @@ TEST_F(WebDomTest, TreeNavigation) {
                  "document.createElement('p').isConnected]"),
             "[true,null,true,false]");
   EXPECT_EQ(eval("[root.contains(first.firstChild), root.contains(root), first.contains(root), root.contains(null), "
-                 "root.hasChildNodes(), first.firstChild.hasChildNodes()]"),
-            "[true,true,false,false,true,false]");
+                 "root.contains(undefined), root.hasChildNodes(), first.firstChild.hasChildNodes()]"),
+            "[true,true,false,false,false,true,false]");
+  EXPECT_EQ(errorName("root.contains()"), R"("TypeError")");
+  EXPECT_EQ(errorName("root.contains({})"), R"("TypeError")");
   EXPECT_EQ(eval("document.firstElementChild === document.documentElement && "
                  "document.lastElementChild === document.documentElement"),
             "true");
@@ -385,9 +397,10 @@ TEST_F(WebDomTest, WrongArguments) {
 TEST_F(WebDomTest, PreludeElementHelpers) {
   EXPECT_EQ(eval("const list = document.getElementById('root').classList; list.add('c', 'a'); list.remove('b');"
                  "[list.value, list.length, list.item(0), list.item(5), list.contains('c'), list.toggle('a'), "
-                 "list.toggle('z', true), list.toggle('z', true), list.toggle('y', false), list.replace('z', 'c'), "
+                 "list.toggle('z', true), list.toggle('z', true), list.toggle('y', false), list.toggle('c', 1), "
+                 "list.toggle('w', 0), list.toggle('w', 1), list.toggle('w', 0), list.replace('z', 'c'), "
                  "list.replace('q', 'r'), [...list], String(list), list.supports('x')]"),
-            R"(["a c",2,"a",null,true,false,true,true,false,true,false,["c"],"c",true])");
+            R"(["a c",2,"a",null,true,false,true,true,false,true,false,true,false,true,false,["c"],"c",true])");
   EXPECT_EQ(errorName("list.add('')"), R"("SyntaxError")");
   EXPECT_EQ(errorName("list.add('a b')"), R"("InvalidCharacterError")");
   EXPECT_EQ(eval("const seen = []; list.forEach((token, i) => seen.push(token + i)); list.value = 'v w';"
@@ -395,6 +408,12 @@ TEST_F(WebDomTest, PreludeElementHelpers) {
             R"([["c0"],[0,1],[[0,"v"],[1,"w"]],"v w"])");
   EXPECT_EQ(eval("document.getElementById('root').classList = 'x'; document.getElementById('root').className"),
             R"("x")");
+  // An empty token set adds no attribute to an element without one, but keeps an existing one.
+  EXPECT_EQ(eval("const bare = document.createElement('p'); bare.classList.remove('x'); bare.classList.add();"
+                 "const before = bare.hasAttribute('class');"
+                 "[before, bare.classList.toggle('y', false), bare.hasAttribute('class'), bare.classList.toggle('y'),"
+                 "bare.classList.toggle('y'), bare.outerHTML]"),
+            R"([false,false,false,true,false,"<p class=\"\"></p>"])");
 
   EXPECT_EQ(eval("const data = document.getElementById('root').dataset; data.someValue = 5; delete data.userId;"
                  "[data.someValue, data.userId, 'someValue' in data, Object.keys(data), "
@@ -683,8 +702,10 @@ TEST_F(WebDomTest, DocumentPositions) {
                  "second.firstChild.compareDocumentPosition(first.firstChild)]"),
             "[4,2]");
   EXPECT_EQ(eval("[b.getRootNode() === document, detached.getRootNode() === detached, b.isSameNode(b),"
-                 "b.isSameNode(first), b.isSameNode()]"),
-            "[true,true,true,false,false]");
+                 "b.isSameNode(first), b.isSameNode(null), b.isSameNode(undefined)]"),
+            "[true,true,true,false,false,false]");
+  EXPECT_EQ(errorName("b.isSameNode()"), R"("TypeError")");
+  EXPECT_EQ(errorName("b.isSameNode({})"), R"("TypeError")");
   EXPECT_EQ(errorName("b.compareDocumentPosition({})"), R"("TypeError")");
 }
 
