@@ -52,8 +52,13 @@ lxb_dom_node* CloneNode(lxb_dom_node* pNode, bool deep, ClonedFn onCloned = null
 // invalidated. Throws std::bad_alloc on memory exhaustion, the data being unchanged.
 void SetNodeData(lxb_dom_node* pNode, std::string_view data);
 
+// Whether pNode is pParent or one of its ancestors, the template whose contents hold pParent included (DOM
+// "host-including inclusive ancestor"): pNode cannot be inserted into pParent, as the tree would contain itself and its
+// walks (CloneNode(), NodesMemory(), serializations) would never end.
+[[nodiscard]] bool IsHostIncludingInclusiveAncestor(const lxb_dom_node* pNode, const lxb_dom_node* pParent) noexcept;
+
 // Inserts pNode, out of the tree, before pReference among the children of pParent, after its last child when
-// pReference is null.
+// pReference is null. pNode must not be a host-including inclusive ancestor of pParent.
 void InsertNode(lxb_dom_node* pParent, lxb_dom_node* pNode, lxb_dom_node* pReference) noexcept;
 
 // Takes pNode, with its descendants, out of the tree.
@@ -113,21 +118,6 @@ inline constexpr std::size_t kHtmlMemoryPerByte = 32;
 // with their descendants (those of the template contents too): kNodeMemory for each node and attribute, plus their
 // text and values. The nodes are elements, text, CDATA sections and comments, as in a parsed fragment.
 [[nodiscard]] std::size_t NodesMemory(lxb_dom_node* pFirst, const lxb_dom_node* pEnd) noexcept;
-
-// The source text of a classic script fetched with the body 'bytes' and the Content-Type 'contentType', decoded to
-// UTF-8 as browsers decode it (HTML "fetch a classic script"): from the encoding of its byte order mark, else of the
-// charset parameter of 'contentType', else of 'charset' (the charset attribute of the script), else
-// 'documentEncoding', else UTF-8. Invalid sequences become U+FFFD. Returns 'bytes' itself, without its byte order mark,
-// when it is valid UTF-8, else the text decoded into 'buffer', whose previous contents are discarded. Throws
-// std::bad_alloc on memory exhaustion.
-[[nodiscard]] std::string_view DecodeScript(std::string_view bytes, std::string_view contentType,
-                                            std::string_view charset, std::string_view documentEncoding,
-                                            RawChars& buffer);
-
-// 'bytes' decoded as UTF-8, a byte order mark included (WHATWG Encoding "UTF-8 decode without BOM"): 'bytes' itself
-// exactly when it is valid UTF-8, else the text decoded into 'buffer' (its previous contents discarded), invalid
-// sequences becoming U+FFFD. Throws std::bad_alloc on memory exhaustion.
-[[nodiscard]] std::string_view DecodeUtf8(std::string_view bytes, RawChars& buffer);
 
 // Resolves URLs as browsers resolve those of a page (WHATWG URL Standard, URL parser of lexbor): "../a?b" against
 // "https://example.com/x/y" is "https://example.com/a?b". Its parser and the last base it parsed are kept: the URLs of

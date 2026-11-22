@@ -29,7 +29,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/web-client-config.hpp"
 #include "cors.hpp"
-#include "html-node-ops.hpp"
+#include "html-encoding.hpp"
 #include "js-engine.hpp"
 #include "page.hpp"
 #include "request-queue.hpp"

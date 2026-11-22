@@ -617,6 +617,7 @@ const JSCFunctionListEntry kPreludeNatives[]{
     JS_CFUNC_DEF("reportError", 1, &JsMethod<ReportError>),
     JS_CFUNC_DEF("setUrl", 1, &JsMethod<SetUrl>),
     JS_CFUNC_DEF("resolveUrl", 1, &JsMethod<ResolveUrlNative>),
+    JS_CFUNC_DEF("replaceAll", 2, &JsMethod<ReplaceAll>),
 };
 
 // --- Installation ---

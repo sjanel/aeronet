@@ -67,7 +67,7 @@ doc.forEach(names, [&count](HtmlElement) { ++count; });  // no allocation
 | --- | --- |
 | `querySelector(selector)` | The first descendant matching `selector`, or an invalid `HtmlElement` (`valid()` and `operator bool` are `false`) |
 | `querySelectorAll(selector)` | All the matching descendants, in document order, as a `vector<HtmlElement>` |
-| `forEach(selector, callback)` | Calls `callback(HtmlElement)` for each matching descendant, without allocating |
+| `forEach(selector, callback)` | Calls `callback(HtmlElement)` for each matching descendant, without collecting them, until it returns `false` |
 
 Each query takes the selector as text or as a `CssSelector`. A document queries its whole tree (`<html>` included), an element its descendants only, as `Element.querySelectorAll()` of the DOM: the element is not part of its own search, but the selector can match its ancestors (`row.querySelectorAll("table td")` finds the cells of the row). An element matching several selectors of a list (`"td, .name"`) is returned once.
 
@@ -75,7 +75,7 @@ The selectors are those of [Selectors Level 4](https://www.w3.org/TR/selectors-4
 
 A selector given as text is parsed at each query, in a memory that the document reuses: after the first queries, a text query only allocates its result (`querySelectorAll()`). A `CssSelector` skips the parsing and works with any document: compile the selectors used in a loop, or on many documents, once.
 
-A `forEach()` callback can query the same document (`doc.forEach("tr", ...)` then `row.querySelectorAll("td")` in the callback), at any depth. An exception thrown by the callback stops the search and is propagated.
+A `forEach()` callback that returns a `bool` stops the search by returning `false` (the first 3 rows: `return ++rows < 3;`), the other return types are ignored. It can query the same document (`doc.forEach("tr", ...)` then `row.querySelectorAll("td")` in the callback), at any depth. An exception thrown by the callback stops the search and is propagated.
 
 ## Elements
 
@@ -90,7 +90,7 @@ A `forEach()` callback can query the same document (`doc.forEach("tr", ...)` the
 | `innerHtml()`, `outerHtml()` | The HTML serialization of the children, and of the element with its children |
 | `appendInnerHtml(out)`, `appendOuterHtml(out)` | The same serializations, appended to the `std::string` `out` |
 | `parent()`, `firstChild()`, `lastChild()`, `nextSibling()`, `previousSibling()` | The neighbor elements (text and comment nodes are skipped), invalid when there is none |
-| `children()` | A forward range of the child elements: `for (HtmlElement cell : row.children())` |
+| `children()` | A forward range of the child elements: `for (HtmlElement cell : row.children())`. The visited child can be removed or moved, the loop going on with the one that followed it |
 
 `HtmlDocument` adds `documentElement()`, `head()` and `body()` (the parser always creates them, they are invalid once taken out of the tree), `encoding()` and `createElement()` (see [Modifying the tree](#modifying-the-tree)). As `document.body` in the DOM, `body()` is the `<frameset>` element of a frameset document.
 
@@ -163,7 +163,7 @@ The positions are those of the DOM `beforebegin`, `afterbegin`, `beforeend` and 
 
 The markup given to `setInnerHtml()` and `insertAdjacentHtml()` is parsed as the DOM `innerHTML` setter and `insertAdjacentHTML()` parse it: as a fragment, in the context of the element where it goes (the element, or its parent beside it, a `<body>` standing for `<html>`). `<tr>` is a row in a `<tbody>` and is dropped in a `<div>`, the contents of `<textarea>`, `<title>`, `<script>` and `<style>` stay text, `<circle>` is an SVG element in an `<svg>`. A fragment gets the [parsing limits](#parsing-limits) of a document.
 
-No node is freed before its document. An element taken out of the tree, by `remove()` or replaced by `setInnerHtml()` or `setTextContent()`, stays valid: it can still be queried, serialized and inserted again, and the views of its text stay valid. A document modified in a loop therefore grows until it is destroyed. A removed attribute stays in the document too: the views of its name and value stay valid, and the attribute visited by an `attributes()` loop can be removed, the loop going on with the next one (`for (HtmlAttribute attr : link.attributes())`, then `link.removeAttribute(attr.name)` for the names starting with `on`, removes all the event handlers). Only the value of an attribute changed by `setAttribute()` is invalidated.
+No node is freed before its document. An element taken out of the tree, by `remove()` or replaced by `setInnerHtml()` or `setTextContent()`, stays valid: it can still be queried, serialized and inserted again, and the views of its text stay valid. A document modified in a loop therefore grows until it is destroyed. A removed attribute stays in the document too: the views of its name and value stay valid, and the attribute visited by an `attributes()` loop can be removed, the loop going on with the next one (`for (HtmlAttribute attr : link.attributes())`, then `link.removeAttribute(attr.name)` for the names starting with `on`, removes all the event handlers). In the same way, the child visited by a `children()` loop can be removed or moved elsewhere, the loop going on with the child that followed it. Only the value of an attribute changed by `setAttribute()` is invalidated.
 
 The queries and serializations see the modified tree, and `documentElement()`, `head()` and `body()` are found as the DOM finds them (the first element child of the document, the first `<head>` and the first `<body>` or `<frameset>` child of `<html>`): they are invalid once removed. A `forEach()` callback can set attributes, not change the tree (a debug build asserts it): collect the elements with `querySelectorAll()` first, as above.
 
@@ -247,8 +247,8 @@ An `HtmlDocument` and its elements must not be used from several threads at the 
 ## Tests
 
 - [html-document_test.cpp](../../aeronet/html/test/html-document_test.cpp): parsing, document accessors (frameset documents), moves, limits of the tree construction, encodings, `assignedJson()`, memory exhaustion.
-- [html-element_test.cpp](../../aeronet/html/test/html-element_test.cpp): element accessors (tag names of SVG and MathML elements), text without copy or in a reused buffer (no allocation), serialization appended to a buffer, navigation, queries, nested queries, exceptions from callbacks.
-- [html-mutation_test.cpp](../../aeronet/html/test/html-mutation_test.cpp): attributes (names, escaping, `id` and `class` seen by selectors, foreign elements), text, `setInnerHtml()` and `insertAdjacentHtml()` in their parsing contexts and with the parsing limits, `<template>` contents, element creation and moves, removed root, head and body elements, memory exhaustion.
+- [html-element_test.cpp](../../aeronet/html/test/html-element_test.cpp): element accessors (tag names of SVG and MathML elements), text without copy or in a reused buffer (no allocation), serialization appended to a buffer, navigation, queries, nested queries, callbacks stopping the search or throwing.
+- [html-mutation_test.cpp](../../aeronet/html/test/html-mutation_test.cpp): attributes (names, escaping, `id` and `class` seen by selectors, foreign elements), text, `setInnerHtml()` and `insertAdjacentHtml()` in their parsing contexts and with the parsing limits, `<template>` contents, element creation and moves, children removed or moved by a `children()` loop, removed root, head and body elements, memory exhaustion.
 - [css-selector_test.cpp](../../aeronet/html/test/css-selector_test.cpp): compilation, invalid selectors, reuse across documents.
 - [assigned-json_test.cpp](../../aeronet/html/test/assigned-json_test.cpp): the search of an assigned JSON literal.
-- [html-node-ops_test.cpp](../../aeronet/html/test/html-node-ops_test.cpp): the URL resolution and the script decoding used by [JavaScript pages](web.md), memory exhaustion.
+- [html-node-ops_test.cpp](../../aeronet/html/test/html-node-ops_test.cpp): the URL resolution, the script decoding and the insertion checks (a template into its own contents) used by [JavaScript pages](web.md), memory exhaustion.

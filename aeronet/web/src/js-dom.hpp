@@ -20,6 +20,11 @@ class Page;
 // The node of the wrapper 'value', null when it is not one.
 [[nodiscard]] lxb_dom_node* NodeOf(JSContext* pCtx, JSValueConst value) noexcept;
 
+// replaceAll(parent, node), a native helper of the prelude for ParentNode.replaceChildren(): the DOM "replace all" of
+// the children of the node 'parent' by 'node', after checking that 'node' can be inserted there (nothing removed
+// otherwise, the HierarchyRequestError thrown). Throws a TypeError when 'parent' or 'node' is not a node.
+JSValue ReplaceAll(JSContext* pCtx, JSValueConst self, int argc, JSValueConst* argv);
+
 // The HTML element interfaces (HTMLMediaElement, HTMLAnchorElement...), installed on the first lookup of their name on
 // the window (see InstallWindow()). Their elements have the prototype of HTMLElement: an interface recognizes them by
 // its Symbol.hasInstance.

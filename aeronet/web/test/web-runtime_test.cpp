@@ -140,6 +140,7 @@ TEST(WebRuntimeTest, ScriptsInsertingScriptsAreStoppedByTheTimeout) {
            "document.body.appendChild(script('for (;;) {}'))",
            "try { document.body.append(script('for (;;) {}')) } catch { window.caught = 1 }",
            "document.body.replaceChild(script('for (;;) {}'), document.body.firstChild)",
+           "try { document.body.replaceChildren(script('for (;;) {}')) } catch { window.caught = 1 }",
            "document.body.appendChild(script('')).text = 'for (;;) {}'",
            "document.body.appendChild(script('')).insertAdjacentText('beforeend', 'for (;;) {}')",
            "document.body.appendChild(script('')).insertAdjacentHTML('beforeend', 'for (;;) {}')",

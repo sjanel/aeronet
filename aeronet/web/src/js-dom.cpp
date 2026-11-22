@@ -552,10 +552,8 @@ const char* InsertionError(const lxb_dom_node_t* pParent, const lxb_dom_node_t* 
   if (!IsElement(pParent) && pParent != pDocument && pParent->type != LXB_DOM_NODE_TYPE_DOCUMENT_FRAGMENT) {
     return "This node type cannot have children";
   }
-  for (const lxb_dom_node_t* pAncestor = pParent; pAncestor != nullptr; pAncestor = pAncestor->parent) {
-    if (pAncestor == pNode) {
-      return "The new child is an inclusive ancestor of the parent";
-    }
+  if (IsHostIncludingInclusiveAncestor(pNode, pParent)) {
+    return "The new child is an inclusive ancestor of the parent";
   }
   const bool doctype = pNode->type == LXB_DOM_NODE_TYPE_DOCUMENT_TYPE;
   if (pNode->type == LXB_DOM_NODE_TYPE_DOCUMENT || (pParent == pDocument && IsTextNode(pNode)) ||
@@ -1788,6 +1786,23 @@ lxb_dom_node_t* NodeOf(JSContext* pCtx, JSValueConst value) noexcept {
   return pNode != nullptr && classId - Page::Of(pCtx).firstNodeClass() < kNbNodeClasses
              ? static_cast<lxb_dom_node_t*>(pNode)
              : nullptr;
+}
+
+JSValue ReplaceAll(JSContext* pCtx, JSValueConst /*self*/, int argc, JSValueConst* argv) {
+  lxb_dom_node_t* pParent = NodeArgument(pCtx, argc, argv, 0, "replaceChildren");
+  if (pParent == nullptr) {
+    return JS_EXCEPTION;
+  }
+  lxb_dom_node_t* pNode = NodeArgument(pCtx, argc, argv, 1, "replaceChildren");
+  if (pNode == nullptr || !CheckInsertion(pCtx, pParent, pNode, nullptr, false)) {
+    return JS_EXCEPTION;
+  }
+  while (pParent->first_child != nullptr) {
+    RemoveNode(pParent->first_child);
+  }
+  Page& page = Page::Of(pCtx);
+  page.touchDom();  // also when nothing is inserted
+  return Move(page, pParent, pNode, nullptr) ? JS_UNDEFINED : JS_EXCEPTION;
 }
 
 std::size_t FindHtmlInterface(std::string_view name) noexcept {

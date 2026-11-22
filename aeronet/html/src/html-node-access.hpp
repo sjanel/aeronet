@@ -47,10 +47,15 @@ inline lxb_dom_element_t* AsElement(lxb_dom_node_t* pNode) noexcept {
   return reinterpret_cast<lxb_dom_element_t*>(Checked(pNode));
 }
 
+// Whether pNode is an HTML <template> element, whose contents are a document fragment created with it.
+inline bool IsHtmlTemplate(const lxb_dom_node_t* pNode) noexcept {
+  return pNode->local_name == LXB_TAG_TEMPLATE && pNode->ns == LXB_NS_HTML;
+}
+
 // The node holding the children that innerHTML reads and writes for the element pNode: the contents of a <template>
 // (a document fragment, created with the element), the element itself otherwise.
 inline lxb_dom_node_t* ChildrenParent(lxb_dom_node_t* pNode) noexcept {
-  if (pNode->local_name == LXB_TAG_TEMPLATE && pNode->ns == LXB_NS_HTML) {
+  if (IsHtmlTemplate(pNode)) {
     return &reinterpret_cast<lxb_html_template_element_t*>(pNode)->content->node;
   }
   return pNode;

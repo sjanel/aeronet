@@ -38,12 +38,11 @@ namespace aeronet {
 namespace {
 
 using internal::AsElement;
+using internal::Chars;
 using internal::CheckCreated;
 using internal::Checked;
 using internal::CheckStatus;
 using internal::HtmlNodeAccess;
-
-const lxb_char_t* Chars(std::string_view str) noexcept { return reinterpret_cast<const lxb_char_t*>(str.data()); }
 
 constexpr bool IsAsciiAlpha(char ch) noexcept { return islower(tolower(ch)); }
 
@@ -202,10 +201,8 @@ void HtmlElement::insertAdjacentElement(HtmlInsertPosition position, HtmlElement
     throw std::invalid_argument("HtmlElement inserted into another document");
   }
   InsertionPoint point = ResolvePosition(_pNode, position);
-  for (const lxb_dom_node_t* pAncestor = point.pParent; pAncestor != nullptr; pAncestor = pAncestor->parent) {
-    if (pAncestor == pNode) {
-      throw std::invalid_argument("HtmlElement inserted into itself or one of its descendants");
-    }
+  if (internal::IsHostIncludingInclusiveAncestor(pNode, point.pParent)) {
+    throw std::invalid_argument("HtmlElement inserted into itself or one of its descendants");
   }
   // Inserted before itself: before its next sibling once removed.
   if (point.pReference == pNode) {
