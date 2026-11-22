@@ -51,7 +51,8 @@ class TimerQueue {
 
   // Schedules 'callback' with 'args' (new references are kept) after 'delay' ms, every 'delay' ms when 'repeat'
   // (setTimeout() / setInterval()), with the HTML timer nesting clamp. Returns its id (positive), also when it is
-  // dropped beyond the horizon, 0 when the page cannot hold it (nothing scheduled).
+  // dropped (beyond the horizon, or an interval when 'maxIntervalRuns' is 0), 0 when the page cannot hold it (nothing
+  // scheduled).
   [[nodiscard]] int32_t add(JSValueConst callback, std::span<const JSValueConst> args, int32_t delay, bool repeat);
 
   // Cancels the timer 'id', if pending.

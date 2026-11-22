@@ -177,7 +177,12 @@ constexpr std::string_view kPrelude =
       this.#attribute = attribute;
     }
     #tokens() { return [...new Set(this.value.split(whitespace).filter(Boolean))]; }
-    #set(tokens) { this.#element.setAttribute(this.#attribute, tokens.join(' ')); }
+    // The DOM update steps: an empty token set adds no attribute to an element without one.
+    #set(tokens) {
+      if (tokens.length !== 0 || this.#element.hasAttribute(this.#attribute)) {
+        this.#element.setAttribute(this.#attribute, tokens.join(' '));
+      }
+    }
     #check(token) {
       token = String(token);
       if (token === '') throw new DOMException('The token is empty', 'SyntaxError');
@@ -201,8 +206,9 @@ constexpr std::string_view kPrelude =
     toggle(token, force) {
       token = this.#check(token);
       const present = this.contains(token);
-      if (present && force !== true) this.remove(token);
-      else if (!present && force !== false) this.add(token);
+      const forced = force === undefined ? undefined : !!force;
+      if (present && forced !== true) this.remove(token);
+      else if (!present && forced !== false) this.add(token);
       else return present;
       return !present;
     }
@@ -836,6 +842,7 @@ constexpr std::string_view kNetworkPrelude =
     #responseType = '';
     #mime = null;
     #withCredentials = false;
+    #sending = null;  // token of the in-flight send(), cleared by open() or abort()
     #failure = null;  // the token of a network error of send() not reported yet
     #timeout = 0;
     #upload = new XMLHttpRequestUpload();
@@ -887,6 +894,7 @@ constexpr std::string_view kNetworkPrelude =
     #cancel() {
       if (this.#id !== 0) native.cancelRequest(this.#id);
       this.#id = 0;
+      this.#sending = null;
       this.#failure = null;
     }
     open(method, url, async = true) {
@@ -952,7 +960,10 @@ constexpr std::string_view kNetworkPrelude =
         this.#done();
         return;
       }
+      const sending = this.#sending = {};
       this.#progress('loadstart');
+      if (this.#sending !== sending) return;  // aborted or opened again by a loadstart handler
+      this.#sending = null;
       const callback = (response, error) => {
         this.#id = 0;
         if (response === null) {
@@ -1169,6 +1180,8 @@ constexpr std::string_view kNetworkPrelude =
   // A serialized URL: scheme, authority (user, password, host, port), path, query, fragment.
   const urlSyntax = /^([^:]+:)(\/\/(?:([^:@/]*)(?::([^@/]*))?@)?(\[[^\]]*\]|[^:/?#]*)(?::([0-9]*))?)?([^?#]*)(\?[^#]*)?(#.*)?$/;
   const parseUrl = (url, base) => native.parseUrl(String(url), base === undefined ? null : String(base));
+  // The URL parser removes every ASCII tab and newline of its input first, the input of a setter too.
+  const withoutTabsAndNewlines = value => String(value).replace(/[\t\n\r]/g, '');
   class URL {
     #href;
     #parts;
@@ -1218,13 +1231,18 @@ constexpr std::string_view kNetworkPrelude =
     set password(value) { this.#replace({ password: encodeURIComponent(String(value)) }); }
     get host() { return this.#parts.hostname + (this.#parts.port === '' ? '' : ':' + this.#parts.port); }
     set host(value) {
-      const [, hostname, port] = /^(\[[^\]]*\]|[^:/?#]*)(?::([0-9]*))?/.exec(String(value));
-      this.#replace({ hostname, port: port ?? this.#parts.port });
+      const [, hostname, port] = /^(\[[^\]]*\]|[^:/?#]*)(?::([0-9]*))?/.exec(withoutTabsAndNewlines(value));
+      // A setter keeps the port when no digit follows ':' (an empty port).
+      this.#replace({ hostname, port: port || this.#parts.port });
     }
     get hostname() { return this.#parts.hostname; }
     set hostname(value) { this.#replace({ hostname: String(value) }); }
     get port() { return this.#parts.port; }
-    set port(value) { this.#replace({ port: /^[0-9]*/.exec(String(value))[0] }); }
+    set port(value) {
+      value = withoutTabsAndNewlines(value);
+      const match = /^[0-9]+/.exec(value);
+      if (value === '' || match !== null) this.#replace({ port: match?.[0] ?? '' });
+    }
     get pathname() { return this.#parts.pathname; }
     set pathname(value) {
       value = String(value);

@@ -767,9 +767,26 @@ TEST(WebNetworkTest, XmlHttpRequestErrorsAndAbort) {
     out.push(errorOf(() => fresh.send()), errorOf(() => { fresh.withCredentials = true; }));
     fresh.abort();
     fresh.abort();
-    out.push(fresh.readyState);)"),
+    out.push(fresh.readyState);
+    const abortInLoadStart = new XMLHttpRequest();
+    abortInLoadStart.onload = () => out.push('abortInLoadStart loaded');
+    abortInLoadStart.onabort = () => out.push('abortInLoadStart aborted');
+    abortInLoadStart.onloadstart = () => abortInLoadStart.abort();
+    abortInLoadStart.open('GET', '/api?body=lost');
+    abortInLoadStart.send();
+    out.push('after abortInLoadStart ' + abortInLoadStart.readyState);
+    const reopenInLoadStart = new XMLHttpRequest();
+    reopenInLoadStart.onload = () => out.push('reopenInLoadStart ' + reopenInLoadStart.responseText);
+    reopenInLoadStart.onloadstart = () => {
+      reopenInLoadStart.onloadstart = null;
+      reopenInLoadStart.open('GET', '/api?body=new');
+      reopenInLoadStart.send();
+    };
+    reopenInLoadStart.open('GET', '/api?body=old');
+    reopenInLoadStart.send();)"),
             R"(["abort 4","after abort 0","InvalidStateError","InvalidStateError","SyntaxError","SecurityError",)"
-            R"("InvalidStateError","InvalidStateError",0,"error error 4 0","reopened second"])");
+            R"("InvalidStateError","InvalidStateError",0,"abortInLoadStart aborted","after abortInLoadStart 0",)"
+            R"("error error 4 0","reopened second","reopenInLoadStart new"])");
 }
 
 // A request that XMLHttpRequest.send() cannot make is a network error, reported as a task after send() returns, unless
@@ -1166,6 +1183,20 @@ TEST(WebNetworkTest, Url) {
     u.search = '';
     u.hash = '';
     u.host = 'h.example:81';
+    u.host = 'i.example:';
+    out.push(u.host);
+    u.host = 'j.example:abc';
+    out.push(u.host);
+    u.host = 'k.\texample:8\n3';
+    out.push(u.host);
+    u.port = '8\r4';
+    out.push(u.port);
+    u.port = '\t85';
+    out.push(u.port);
+    u.port = 'abc';
+    out.push(u.port);
+    u.port = '';
+    out.push(u.port);
     u.href = 'http://e.example/?q=1';
     out.push(u.href, u.searchParams.get('q'), u.host);
     try { u.href = 'nope'; } catch (e) { out.push(e.name); }
@@ -1179,8 +1210,8 @@ TEST(WebNetworkTest, Url) {
       R"("example.com:8443","example.com","8443","/b/c","?x=1&y=a+b","#h","a b",)"
       R"("https://user:pw@example.com:8443/b/c?x=1&y=a+b#h","{\"u\":\"https://user:pw@example.com:8443/b/c?x=1&y=a+b#h\"}",)"
       R"("https://user:pw@example.com/p%20q?z=2#top","http://a%20b@other.example/p%20q?z=2&k=v+w#top","2",)"
-      R"("http://e.example/?q=1","1","e.example","TypeError","TypeError",false,true,null,"https://e.example/x",)"
-      R"("null","a@b.example","",true,"/",false])");
+      R"("i.example:81","j.example:81","k.example:83","84","85","85","","http://e.example/?q=1","1","e.example",)"
+      R"("TypeError","TypeError",false,true,null,"https://e.example/x","null","a@b.example","",true,"/",false])");
 }
 
 TEST(WebNetworkTest, UrlSearchParams) {

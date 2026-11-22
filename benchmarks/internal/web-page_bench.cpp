@@ -201,7 +201,7 @@ void RunPage(benchmark::State& state, std::string_view statement) {
                            "; ++i) { " + std::string(statement) + "; }</script>";
   for (auto _ : state) {
     internal::Page page(session, "https://example.com/", http::StatusCodeOK, html, "text/html");
-    const internal::Page::Outcome outcome = page.run(nullptr, LoadState::NetworkIdle, SteadyClock::time_point::max());
+    internal::Page::Outcome outcome = page.run(nullptr, LoadState::NetworkIdle, SteadyClock::time_point::max());
     benchmark::DoNotOptimize(outcome);
   }
   state.SetItemsProcessed(state.iterations() * kPageLoopItems);
@@ -241,7 +241,7 @@ void RunLargeScript(benchmark::State& state, std::size_t maxScriptCacheBytes) {
   html.append("window.done = typeof f1999;</script>");
   for (auto _ : state) {
     internal::Page page(session, "https://example.com/", http::StatusCodeOK, html, "text/html");
-    const internal::Page::Outcome outcome = page.run(nullptr, LoadState::Load, SteadyClock::time_point::max());
+    internal::Page::Outcome outcome = page.run(nullptr, LoadState::Load, SteadyClock::time_point::max());
     benchmark::DoNotOptimize(outcome);
   }
   state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(html.size()));
