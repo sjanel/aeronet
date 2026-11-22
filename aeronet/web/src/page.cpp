@@ -20,6 +20,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 #include "aeronet/cctype.hpp"
@@ -37,6 +38,7 @@
 #include "aeronet/internal/web-session.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/small-vector.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/web-client-config.hpp"
@@ -121,6 +123,34 @@ RequestCredentials ScriptCredentials(const HtmlElement& script) noexcept {
                                                                                   : RequestCredentials::SameOrigin;
 }
 
+// The running script of 'scripts' (document.currentScript) for its lifetime, and the writer when parser-inserted, the
+// previous ones restored after.
+class RunningScript {
+ public:
+  RunningScript(ScriptQueue& scripts, lxb_dom_node_t* pScript, bool parserInserted) noexcept
+      : _scripts(scripts), _pCurrent(scripts.current()), _pWriter(scripts.writer()) {
+    scripts.setCurrent(pScript);
+    if (parserInserted) {
+      scripts.setWriter(pScript);
+    }
+  }
+
+  RunningScript(const RunningScript&) = delete;
+  RunningScript& operator=(const RunningScript&) = delete;
+  RunningScript(RunningScript&&) = delete;
+  RunningScript& operator=(RunningScript&&) = delete;
+
+  ~RunningScript() {
+    _scripts.setCurrent(_pCurrent);
+    _scripts.setWriter(_pWriter);
+  }
+
+ private:
+  ScriptQueue& _scripts;
+  lxb_dom_node_t* _pCurrent;
+  lxb_dom_node_t* _pWriter;
+};
+
 }  // namespace
 
 std::string_view RequestUrl(UrlResolver& resolver, const HttpRequest& request, std::string_view fragment) {
@@ -179,11 +209,18 @@ void Page::installBindings() {
 
 bool Page::tryInstallBindings() {
   JSContext* pCtx = context();
-  if (!InstallDom(*this)) {
+  {
+    // Before any script of the page can replace Symbol: the HTML element interfaces use it later.
+    const JsValue global(pCtx, JS_GetGlobalObject(pCtx));
+    const JsValue symbol(pCtx, JS_GetPropertyStr(pCtx, global.get(), "Symbol"));
+    const JsValue hasInstance(pCtx, JS_GetPropertyStr(pCtx, symbol.get(), "hasInstance"));
+    _hasInstanceAtom = JS_IsException(hasInstance.get()) ? JS_ATOM_NULL : JS_ValueToAtom(pCtx, hasInstance.get());
+  }
+  if (_hasInstanceAtom == JS_ATOM_NULL || !InstallDom(*this)) {
     return false;
   }
-  const JsValue natives(pCtx, InstallWindow(*this));
-  if (JS_IsException(natives.get()) || !InstallNetwork(pCtx, natives.get())) {
+  _natives = JsValue(pCtx, InstallWindow(*this));
+  if (JS_IsException(_natives.get()) || !InstallNetwork(pCtx, _natives.get())) {
     return false;
   }
   const WebClientConfig& config = session().config;
@@ -192,13 +229,42 @@ bool Page::tryInstallBindings() {
   if (JS_IsException(prelude.get())) {
     return false;
   }
-  JSValueConst argument = natives.get();
+  JSValueConst argument = _natives.get();
   const JsValue internals(pCtx, JS_Call(pCtx, prelude.get(), JS_UNDEFINED, 1, &argument));
   if (JS_IsException(internals.get())) {
     return false;
   }
   _dispatch = JsValue(pCtx, JS_GetPropertyStr(pCtx, internals.get(), "dispatch"));
-  return !JS_IsException(_dispatch.get());
+  if (JS_IsException(_dispatch.get())) {
+    return false;
+  }
+  _shared = JsValue(pCtx, JS_GetPropertyStr(pCtx, internals.get(), "shared"));
+  return !JS_IsException(_shared.get());
+}
+
+static_assert(std::tuple_size_v<decltype(WebSession::lazyPreludeBytecode)> == kNbLazyPreludes);
+
+JSValue Page::lazyPart(LazyPrelude part) {
+  const auto index = static_cast<std::size_t>(part);
+  if (!JS_IsUndefined(_lazyParts[index])) {
+    return _lazyParts[index];
+  }
+  JSContext* pCtx = context();
+  const WebClientConfig& config = session().config;
+  const JsValue function(
+      pCtx, PreludeFunction(pCtx, LazyPreludeSource(part), LazyPreludeName(part), session().lazyPreludeBytecode[index],
+                            JsLimits{config.maxScriptMemory, config.maxScriptStackSize}));
+  if (JS_IsException(function.get())) {
+    return JS_EXCEPTION;
+  }
+  JSValueConst args[]{_natives.get(), _shared.get()};
+  const JsValue globals(pCtx, JS_Call(pCtx, function.get(), JS_UNDEFINED, 2, args));
+  if (JS_IsException(globals.get())) {
+    return JS_EXCEPTION;
+  }
+  keep(globals.get());
+  _lazyParts[index] = globals.get();
+  return _lazyParts[index];
 }
 
 void Page::reportError(std::string_view text) {
@@ -217,7 +283,7 @@ void Page::reportPendingException(const char* context) {
 }
 
 bool Page::documentWrite(std::string_view html, bool newLine) {
-  if (_scripts.current() == nullptr) {
+  if (_scripts.writer() == nullptr) {
     log::debug("[js {}] document.write() outside of a script of the parser ignored", url());
     return true;
   }
@@ -310,7 +376,7 @@ void Page::dispatchEvent(lxb_dom_node_t* pNode, const char* type, bool bubbles) 
   const JsValue typeValue(pCtx, JS_NewString(pCtx, type));
 
   if (!JS_IsException(target.get()) && !JS_IsException(typeValue.get())) {
-    JSValueConst args[] = {target.get(), typeValue.get(), JS_NewBool(pCtx, bubbles), JS_FALSE};
+    JSValueConst args[]{target.get(), typeValue.get(), JS_NewBool(pCtx, bubbles), JS_FALSE};
     const JsValue result(pCtx, JS_Call(pCtx, _dispatch.get(), JS_UNDEFINED, 4, args));
     if (!JS_IsException(result.get())) {
       return;
@@ -355,6 +421,8 @@ Page::TaskEnd Page::runDueTasks() {
       if (!runNextTimer()) {
         continue;
       }
+    } else if (const ScriptQueue::InsertedScript inserted = _scripts.nextInserted(); inserted.pScript != nullptr) {
+      runInsertedScript(inserted);
     } else if (!_requests.empty()) {
       if (!RunNextRequest(*this)) {
         reportPendingException("request");
@@ -371,7 +439,7 @@ Page::TaskEnd Page::runDueTasks() {
 void Page::setCode(std::string_view code) {
   if (code.data() != _code.data()) {
     _code.clear();
-    _code.ensureAvailableCapacity(code.size() + 1U);
+    _code.reserve(code.size() + 1U);
     _code.unchecked_append(code);
   }
   assert(code.size() == _code.size());
@@ -381,11 +449,13 @@ void Page::setCode(std::string_view code) {
 
 std::string_view Page::setCodeFilename(std::string_view filename) {
   const auto codeSize = _code.size();
+
   _code.ensureAvailableCapacity(1U + filename.size() + 1U);
   _code.unchecked_push_back('\0');
   _code.unchecked_append(filename);
   _code.unchecked_push_back('\0');
   _code.setSize(codeSize);
+
   return {_code.data() + codeSize + 1U, filename.size()};
 }
 
@@ -420,44 +490,135 @@ bool Page::fetchScript(std::string_view url, std::string_view charset, RequestCr
   return true;
 }
 
-void Page::runScript(lxb_dom_node_t* pScript) {
-  const HtmlElement script = HtmlNodeAccess::Element(pScript);
-  const bool external = script.hasAttribute("src");
-
-  // The URL of an external script, null-terminated: in the buffer of the URL resolver, then after the code in _code.
-  std::string_view scriptUrl;
-  if (external) {
-    // An empty src is an error, not the URL of the document (HTML "prepare the script element").
-    const std::string_view src = script.attribute("src");
-    if (!src.empty()) {
-      scriptUrl = resolveUrl(src);
-    }
-    if (scriptUrl.empty() || !fetchScript(scriptUrl, script.attribute("charset"), ScriptCredentials(script))) {
-      dispatchEvent(pScript, "error", false);
-      return;
-    }
-    scriptUrl = setCodeFilename(scriptUrl);
-  } else {
-    setCode(script.textContent(_htmlBuffer));
+bool Page::connected(const lxb_dom_node_t* pNode) const noexcept {
+  while (pNode->parent != nullptr) {
+    pNode = pNode->parent;
   }
-  const std::string_view code(_code);
-  if (!_scripts.admit(code.size(), session().config.maxScriptBytes)) {
-    reportError(std::string("aeronet: script ")
-                    .append(external ? scriptUrl : std::string_view("inline"))
-                    .append(" not run: the scripts of the document exceed WebClientConfig::maxScriptBytes"));
+  return pNode == _pDocumentNode;
+}
+
+bool Page::startInsertedScripts(lxb_dom_node_t* pFirst, lxb_dom_node_t* pEnd) {
+  // Most insertions have none of them: checked first in the time of the depth of the created scripts, whatever the
+  // size of the inserted tree.
+  lxb_dom_node_t* pParent = pFirst->parent;
+  if (!connected(pParent) || !_scripts.hasCreatedIn(pFirst, pEnd)) {
+    return true;
+  }
+  // Collected first: a script that runs can change the tree. Each one is checked again when its turn comes.
+  static constexpr std::size_t kInlineScripts = 4;
+  SmallVector<lxb_dom_node_t*, kInlineScripts> scripts;
+  const auto visit = [this, &scripts](lxb_dom_node_t* pNode) {
+    if (_scripts.isCreated(pNode)) {
+      scripts.push_back(pNode);
+    }
+    return true;
+  };
+  for (lxb_dom_node_t* pNode = pFirst; pNode != pEnd; pNode = pNode->next) {
+    visit(pNode);
+    WalkDescendants(pNode, visit);
+  }
+
+  visit(pParent);  // a node inserted into a script that was empty
+
+  return std::ranges::all_of(scripts, [this](lxb_dom_node_t* pScript) { return startScript(pScript); });
+}
+
+bool Page::startScript(lxb_dom_node_t* pScript) {
+  // An earlier script of the same insertion can have removed it.
+  if (!connected(pScript)) {
+    return true;
+  }
+  const ScriptQueue::Start start = _scripts.start(pScript, url());
+  const HtmlElement script = HtmlNodeAccess::Element(pScript);
+  if (start == ScriptQueue::Start::Inline) {
+    // It runs inside the native function that inserted it.
+    setCode(script.textContent(_htmlBuffer));
+    return !admitCode("inline") || runCode(pScript, _url.c_str(), false, true);
+  }
+  if (start == ScriptQueue::Start::External) {
+    // What its preparation reads: a later change of its attributes does not change what runs.
+    _scripts.queueInserted({scriptUrl(script), script.attribute("charset"), pScript, ScriptCredentials(script)});
+  }
+  return true;
+}
+
+std::string_view Page::scriptUrl(const HtmlElement& script) {
+  const std::string_view src = script.attribute("src");
+  return src.empty() ? std::string_view{} : resolveUrl(src);
+}
+
+void Page::runParserScript(lxb_dom_node_t* pScript) {
+  const HtmlElement script = HtmlNodeAccess::Element(pScript);
+  if (script.hasAttribute("src")) {
+    runExternalScript(pScript, scriptUrl(script), script.attribute("charset"), ScriptCredentials(script), true);
+    return;
+  }
+  setCode(script.textContent(_htmlBuffer));
+  if (admitCode("inline")) {
+    static_cast<void>(runCode(pScript, _url.c_str(), true, false));
+    flushDocumentWrite(pScript);
+  }
+}
+
+void Page::runInsertedScript(const ScriptQueue::InsertedScript& script) {
+  if (!_requests.admit(session().config.maxRequests)) {
+    log::debug("[js {}] inserted script not fetched: the document made WebClientConfig::maxRequests requests", url());
+    dispatchEvent(script.pScript, "error", false);
+    return;
+  }
+  runExternalScript(script.pScript, script.url, script.charset, script.credentials, false);
+}
+
+void Page::runExternalScript(lxb_dom_node_t* pScript, std::string_view url, std::string_view charset,
+                             RequestCredentials credentials, bool parserInserted) {
+  if (url.empty() || !fetchScript(url, charset, credentials)) {
+    dispatchEvent(pScript, "error", false);
     return;
   }
 
-  _scripts.setCurrent(pScript);
-  const JsValue result = evalScript(code, external ? scriptUrl.data() : _url.c_str());
-  if (JS_IsException(result.get())) {
-    reportPendingException("script");
+  // Null-terminated, after the code in _code: 'url' can be in the buffer of the URL resolver, which the script uses.
+  const std::string_view filename = setCodeFilename(url);
+  if (!admitCode(filename)) {
+    return;
   }
-  _scripts.setCurrent(nullptr);
-  flushDocumentWrite(pScript);
-  if (external) {
-    dispatchEvent(pScript, "load", false);
+
+  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+  static_cast<void>(runCode(pScript, filename.data(), parserInserted, false));
+  if (parserInserted) {
+    flushDocumentWrite(pScript);
   }
+  dispatchEvent(pScript, "load", false);
+}
+
+bool Page::admitCode(std::string_view name) {
+  if (_scripts.admit(_code.size(), session().config.maxScriptBytes)) {
+    return true;
+  }
+  reportError(std::string("aeronet: script ")
+                  .append(name)
+                  .append(" not run: the scripts of the document exceed WebClientConfig::maxScriptBytes"));
+  return false;
+}
+
+bool Page::runCode(lxb_dom_node_t* pScript, const char* filename, bool parserInserted, bool nested) {
+  // A nested script runs inside the one that inserted it: the running scripts are restored after it.
+  const RunningScript running(_scripts, pScript, parserInserted);
+  const JsValue result = evalScript(std::string_view(_code), filename);
+  if (!JS_IsException(result.get())) {
+    return true;
+  }
+  if (nested) {
+    JSContext* pCtx = context();
+    const JSValue error = JS_GetException(pCtx);
+    const bool uncatchable = JS_IsUncatchableError(error);
+    JS_Throw(pCtx, error);
+    if (uncatchable) {
+      // Taken, the error of the deadline would let the script that inserted this one run on past it.
+      return false;
+    }
+  }
+  reportPendingException("script");
+  return true;
 }
 
 JsValue Page::evalScript(std::string_view code, const char* filename) {
@@ -566,7 +727,7 @@ Page::Outcome Page::run(const CssSelector* pSelector, LoadState until, SteadyClo
 
   const auto runScripts = [&](ScriptQueue::Kind kind) {
     for (lxb_dom_node_t* pScript = _scripts.next(kind); pScript != nullptr; pScript = _scripts.next(kind)) {
-      if (!step([this, pScript] { runScript(pScript); })) {
+      if (!step([this, pScript] { runParserScript(pScript); })) {
         return false;
       }
     }

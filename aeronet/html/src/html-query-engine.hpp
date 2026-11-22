@@ -45,6 +45,11 @@ class HtmlQueryEngine {
       return lxb_selectors_find(_pMatcher, pRoot, pList, cb, pCtx);
     }
 
+    // Calls cb with pNode if it matches pList, as lxb_selectors_match_node.
+    lxb_status_t match(lxb_dom_node_t* pNode, const lxb_css_selector_list_t* pList, lxb_selectors_cb_f cb, void* pCtx) {
+      return lxb_selectors_match_node(_pMatcher, pNode, pList, cb, pCtx);
+    }
+
    private:
     friend class HtmlQueryEngine;
 

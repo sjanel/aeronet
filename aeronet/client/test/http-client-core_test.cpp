@@ -76,7 +76,6 @@
 #ifdef AERONET_ENABLE_WEBSOCKET
 #include "aeronet/upgraded-connection.hpp"
 #include "aeronet/websocket-endpoint.hpp"
-#include "aeronet/websocket-upgrade.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -3099,7 +3098,7 @@ TEST(HttpClientErrorE2ETest, ShortContentTypeFromServerIsAccepted) {
 // by the close of the connection, whatever Content-Length says. A chunked body with a Content-Length is de-chunked, but
 // its connection is not pooled.
 TEST(HttpClientRawServerTest, ConflictingFramingHeadersAreNotTrusted) {
-  static constexpr std::string_view kResponses[] = {
+  static constexpr std::string_view kResponses[]{
       "HTTP/1.1 200 OK\r\ntransfer-encoding: gzip\r\ncontent-length: 2\r\n\r\nhello",
       "HTTP/1.0 200 OK\r\nconnection: keep-alive\r\ntransfer-encoding: chunked\r\ncontent-length: 2\r\n\r\nhello",
       "HTTP/1.1 200 OK\r\ncontent-length: 2\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
@@ -3128,7 +3127,7 @@ TEST(HttpClientRawServerTest, BytesAfterTheResponseEndAreNotTakenForTheNextRespo
     std::string_view body;
     bool head;
   };
-  static constexpr Case kCases[] = {
+  static constexpr Case kCases[]{
       {"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhe", "llo", "he", false},
       {"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n2\r\nhe\r\n0\r\n\r\n", "llo", "he", false},
       {"HTTP/1.1 204 No Content\r\n\r\n", "hello", "", false},
@@ -5276,9 +5275,13 @@ TEST(HttpClientUpgrade, RefusesAnInvalidProtocol) {
   const HttpRequest req = client.makeUpgradeRequest("ws://example.com/feed", " websocket, tcp ");
   EXPECT_EQ(req.headerValueOrEmpty(http::Upgrade), "websocket, tcp");
   // No CR or LF that would inject header lines, or a second request.
-  for (const std::string_view invalid :
-       {std::string_view{}, std::string_view{" \t"}, std::string_view{"websocket\r\nX-Evil: 1"},
-        std::string_view{"websocket\n"}, std::string_view{"web\0socket", 10}}) {
+  for (const std::string_view invalid : {
+           std::string_view{},
+           std::string_view{" \t"},
+           std::string_view{"websocket\r\nX-Evil: 1"},
+           std::string_view{"websocket\n"},
+           std::string_view{"web\0socket", 10},
+       }) {
     EXPECT_THROW(static_cast<void>(client.makeUpgradeRequest("ws://example.com/feed", invalid)), std::invalid_argument);
   }
 }

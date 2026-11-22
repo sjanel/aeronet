@@ -27,6 +27,13 @@ lxb_status_t StoreFirstMatch(lxb_dom_node_t* pNode, [[maybe_unused]] lxb_css_sel
   return LXB_STATUS_STOP;
 }
 
+// lxb_selectors_match_node() returns the status of its callback, unlike lxb_selectors_find(): OK, not STOP.
+lxb_status_t StoreMatch(lxb_dom_node_t* pNode, [[maybe_unused]] lxb_css_selector_specificity_t specificity,
+                        void* pMatch) noexcept {
+  *static_cast<lxb_dom_node_t**>(pMatch) = pNode;
+  return LXB_STATUS_OK;
+}
+
 // An exception cannot cross the C frames of lexbor: the one thrown by the callback stops the search, and is rethrown
 // after it. The callback also stops it by returning false.
 struct VisitContext {
@@ -84,6 +91,23 @@ bool internal::VisitMatches(lxb_dom_node_t* pRoot, std::string_view selector, Ht
   }
   Visit(query, pRoot, pList, callback, pCallback);
   return true;
+}
+
+internal::SelectorMatch internal::MatchSelector(lxb_dom_node_t* pElement, std::string_view selector, bool ancestors) {
+  HtmlQueryEngine::Query query = HtmlQueryEngine::StartQuery(pElement);
+  const lxb_css_selector_list_t* pList = query.parse(selector);
+  if (pList == nullptr) {
+    return {nullptr, false};
+  }
+  lxb_dom_node_t* pMatch = nullptr;
+  for (lxb_dom_node_t* pNode = pElement; pNode != nullptr && pNode->type == LXB_DOM_NODE_TYPE_ELEMENT;
+       pNode = ancestors ? pNode->parent : nullptr) {
+    internal::CheckStatus(query.match(pNode, pList, StoreMatch, static_cast<void*>(&pMatch)));
+    if (pMatch != nullptr) {
+      break;
+    }
+  }
+  return {pMatch, true};
 }
 
 HtmlElement HtmlParentNode::querySelector(std::string_view selector) const {

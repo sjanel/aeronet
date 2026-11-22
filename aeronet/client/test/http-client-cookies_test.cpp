@@ -466,7 +466,7 @@ TEST_P(HttpClientCookiesTest, MoveKeepsTheCookiesCopyDoesNot) {
   EXPECT_EQ(moved.cookieJar().size(), 0U);
 }
 
-constexpr HttpVersionMode kVersionModes[] = {
+constexpr HttpVersionMode kVersionModes[]{
     HttpVersionMode::Http1_1,
 #ifdef AERONET_ENABLE_HTTP2
     HttpVersionMode::Http2,

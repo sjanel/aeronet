@@ -418,7 +418,7 @@ Cookies::size_type EraseCookiesIf(Cookies& cookies, Pred pred) {
 void AssignCookieData(RawChars32& data, std::string_view name, std::string_view value, std::string_view domain,
                       std::string_view path) {
   data.clear();
-  data.ensureAvailableCapacity(name.size() + value.size() + domain.size() + path.size());
+  data.reserve(name.size() + value.size() + domain.size() + path.size());
   char* pData = Append(name, data.data());
   pData = Append(value, pData);
   pData = Append(domain, pData);

@@ -82,7 +82,7 @@ void BM_ProtoResponse(benchmark::State& state) {
     benchmark::DoNotOptimize(outBuffer.secondBuffer().data());
     outBuffer.clear();
   }
-  static constexpr std::string_view kNames[] = {"bodyProto", "SerializeAsString", "scratchCopy"};
+  static constexpr std::string_view kNames[]{"bodyProto", "SerializeAsString", "scratchCopy"};
   state.SetLabel(std::string(kNames[static_cast<std::size_t>(kind)]));
   state.SetItemsProcessed(state.iterations());
   state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(order.ByteSizeLong()));
@@ -98,7 +98,7 @@ void ProtoArgs(benchmark::Benchmark* bench) {
 }
 
 // Accept values of protobuf clients, curl, a JavaScript fetch() of ProtoJSON and a browser.
-constexpr std::string_view kAcceptValues[] = {
+constexpr std::string_view kAcceptValues[]{
     "application/protobuf",
     "*/*",
     "application/json",

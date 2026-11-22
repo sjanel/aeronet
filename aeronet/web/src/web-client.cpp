@@ -144,7 +144,9 @@ std::expected<WebPage, WebErrc> WebClient::navigate(std::string_view url, const 
 WebPage::WebPage(std::unique_ptr<internal::Page> pPage) noexcept : _pPage(std::move(pPage)) {}
 
 WebPage::WebPage(WebPage&& other) noexcept = default;
+
 WebPage& WebPage::operator=(WebPage&& other) noexcept = default;
+
 WebPage::~WebPage() = default;
 
 std::string_view WebPage::url() const noexcept { return _pPage->url(); }

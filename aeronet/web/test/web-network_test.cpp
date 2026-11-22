@@ -148,9 +148,6 @@ test::TestServer MakeServer() {
   router.setPath(http::Method::GET | http::Method::POST | http::Method::PUT | http::Method::DELETE |
                      http::Method::PATCH | http::Method::OPTIONS | http::Method::HEAD,
                  "/api", Api);
-  router.setPath(http::Method::GET, "/js", [](const HttpRequestView& req) {
-    return req.makeResponse(req.queryParamValue("src").value_or(""), "text/javascript");
-  });
   // A script of the cookies sent with it, and of its Referer.
   router.setPath(http::Method::GET, "/cookies.js", [](const HttpRequestView& req) {
     return req.makeResponse("window.scriptCookies = " + JsonString(req.headerValueOrEmpty(http::Cookie)) +
@@ -443,16 +440,17 @@ TEST(WebNetworkTest, RequestApi) {
             R"("b","GET","cors","same-origin","","","half","from request"])");
 }
 
-// The network and text APIs are set up on the first use of one of their globals: a script can replace one before.
+// The network and text APIs are set up on the first lookup of one of their globals, inherited by the window: a script
+// can replace one before, by its own property.
 TEST(WebNetworkTest, NetworkGlobalsAreSetUpOnFirstUse) {
   WebClient client(Config());
   for (int page = 0; page < 2; ++page) {  // the first page of the client compiles them, the next one reads them back
-    EXPECT_EQ(Out(client, R"(const lazy = name => Object.getOwnPropertyDescriptor(window, name).get !== undefined;
-      const before = ['fetch' in window, lazy('URL'), lazy('Headers')];
+    EXPECT_EQ(Out(client, R"(const own = name => Object.hasOwn(window, name);
+      const before = ['fetch' in window, 'Headers' in window, own('URL')];
       window.fetch = () => 'replaced';
-      out = [...before, lazy('fetch'), fetch(), typeof URL, lazy('URL'), lazy('Headers'), typeof Headers,
-        lazy('Headers'), URL.toString().includes('[native code]'), typeof navigator.sendBeacon];)"),
-              R"([true,true,true,false,"replaced","function",false,true,"function",false,true,"function"])");
+      out = [...before, own('fetch'), fetch(), typeof URL, own('URL'), typeof Headers, 'nope' in window,
+        URL.toString().includes('[native code]'), typeof navigator.sendBeacon];)"),
+              R"([true,true,false,true,"replaced","function",false,"function",false,true,"function"])");
   }
 }
 
@@ -1116,7 +1114,7 @@ TEST(WebNetworkTest, ScriptsAreReadBackFromTheCache) {
   const std::string code = padding +
                            "function square(n) { return n * n; }"
                            "window.out = [square(7), square.toString(), new Error('e').stack.includes('/js?src=')];";
-  const std::string html = "<script src='" + Url("/js?src=" + test::PercentEncode(code)) +
+  const std::string html = "<script src='" + Url(test::ScriptPath(code)) +
                            "'></script>"
                            "<script>" +
                            padding +

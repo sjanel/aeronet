@@ -183,7 +183,7 @@ class HttpPayload {
 
   template <class... Ts>
   struct TriviallyRelocatableTable<std::variant<Ts...>> {
-    static constexpr bool kValues[] = {amc::is_trivially_relocatable_v<Ts>...};
+    static constexpr bool kValues[]{amc::is_trivially_relocatable_v<Ts>...};
   };
 
   static_assert(amc::is_trivially_relocatable_v<FilePayload>);

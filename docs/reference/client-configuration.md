@@ -123,7 +123,7 @@ With OpenSSL, the client verifies peer certificate chains and hostnames by defau
 | `maxTimerDelay` | 1 min | Horizon of the virtual clock of the timers: a timer due later than this after the start of its document never runs. Must not be negative. |
 | `maxScriptCacheBytes` | 64 MiB | Bytecode of the scripts that the client keeps for its next pages: a script of at least 1 KiB run again (same URL and content) is read back instead of compiled, 15 to 70 times faster. The least recently used scripts are dropped beyond it. 0 keeps none. |
 | `maxIntervalRuns` | 100 | Runs of a `setInterval()` callback, after which the interval is cleared. |
-| `maxRequests` | 1000 | Requests made by the scripts of a document (`fetch()`, `XMLHttpRequest`, `navigator.sendBeacon()`): the next ones fail as network errors. |
+| `maxRequests` | 1000 | Requests made by the scripts of a document (`fetch()`, `XMLHttpRequest`, `navigator.sendBeacon()`, the external scripts that they insert): the next ones fail as network errors. |
 | `maxNavigations` | 20 | Navigations started by the pages (location assignments, `<meta http-equiv="refresh">`) in one `navigate()` call, beyond which it fails with `WebErrc::tooManyNavigations`. HTTP redirects are counted by `http.maxRedirects` instead. |
 
 With Glaze, `<aeronet/web-client-config-glaze.hpp>` makes it readable and writable as JSON or YAML, the `http` field being the [client configuration](../modules/json-and-config-files.md#client-configuration-files).

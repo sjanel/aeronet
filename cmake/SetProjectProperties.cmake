@@ -11,6 +11,14 @@ function(AeronetSetProjectProperties name)
   # compile definitions). Define it as a C string literal.
   target_compile_definitions(${name} PUBLIC "AERONET_VERSION_STR=\"${AERONET_PROJECT_VERSION}\"")
 
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    # The sources are UTF-8 (the preludes of aeronet_web and the 404 page have non-ASCII text). cl.exe reads them and
+    # encodes the narrow literals in the ANSI code page of the machine unless told otherwise: a "\u00e9" is then the
+    # byte 0xE9, invalid UTF-8, and the raw non-ASCII text is only right where the code page passes UTF-8 bytes through.
+    # GCC and Clang (clang-cl included) are UTF-8 by default.
+    target_compile_options(${name} PRIVATE /utf-8)
+  endif()
+
   # Warning levels
   if(AERONET_ENABLE_WARNINGS)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")

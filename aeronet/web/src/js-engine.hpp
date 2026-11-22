@@ -2,6 +2,7 @@
 
 #include <quickjs.h>
 
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -64,10 +65,10 @@ class JsValue {
 };
 
 // The native functions report their errors as QuickJS expects: they return JS_EXCEPTION, the exception pending in
-// their context, thrown by a JS_Throw*() function or by a QuickJS call that failed. JsMethod, JsGetter and JsSetter
-// run the body 'Fn' of a native function of the three QuickJS signatures, turning the only C++ exceptions left into an
-// out of memory error: no exception may cross the C frames of QuickJS. They are all memory exhaustion of the C++ code:
-// std::bad_alloc of an allocation, std::overflow_error of an amc container grown past its size type.
+// their context, thrown by a JS_Throw*() function or by a QuickJS call that failed. JsMethod, JsGetter, JsSetter and
+// JsMagicMethod run the body 'Fn' of a native function of the four QuickJS signatures, turning the only C++ exceptions
+// left into an out of memory error: no exception may cross the C frames of QuickJS. They are all memory exhaustion of
+// the C++ code: std::bad_alloc of an allocation, std::overflow_error of an amc container grown past its size type.
 template <JSValue (*Fn)(JSContext*, JSValueConst, int, JSValueConst*)>
 JSValue JsMethod(JSContext* pCtx, JSValueConst thisVal, int argc, JSValueConst* argv) noexcept {
   try {
@@ -90,6 +91,15 @@ template <JSValue (*Fn)(JSContext*, JSValueConst, JSValueConst)>
 JSValue JsSetter(JSContext* pCtx, JSValueConst thisVal, JSValueConst value) noexcept {
   try {
     return Fn(pCtx, thisVal, value);
+  } catch (...) {
+    return JS_ThrowOutOfMemory(pCtx);
+  }
+}
+
+template <JSValue (*Fn)(JSContext*, JSValueConst, int, JSValueConst*, int)>
+JSValue JsMagicMethod(JSContext* pCtx, JSValueConst thisVal, int argc, JSValueConst* argv, int magic) noexcept {
+  try {
+    return Fn(pCtx, thisVal, argc, argv, magic);
   } catch (...) {
     return JS_ThrowOutOfMemory(pCtx);
   }
@@ -186,6 +196,30 @@ class JsArgument : public JsString {
       : JsString(pCtx, index < argc ? argv[index] : JS_UNDEFINED) {}
 };
 
+// Property flags. The JS_PROP_* flags are distinct bits of signed int macros: added rather than or-ed
+// (bugprone-signed-bitwise).
+inline constexpr int kWritableConfigurable = JS_PROP_WRITABLE + JS_PROP_CONFIGURABLE;
+inline constexpr int kEnumerableWritable = JS_PROP_ENUMERABLE + JS_PROP_WRITABLE;
+// The flags of a property created by an assignment, and of the elements of an array.
+inline constexpr int kOrdinaryProperty = kWritableConfigurable + JS_PROP_ENUMERABLE;
+
+// 'N' values JS_UNDEFINED.
+template <std::size_t N>
+std::array<JSValue, N> UndefinedValues() noexcept {
+  std::array<JSValue, N> values;
+  values.fill(JS_UNDEFINED);
+  return values;
+}
+
+// Throws the uncatchable error of the deadline, as QuickJS-ng does when its interrupt handler stops a script. Returns
+// JS_EXCEPTION.
+inline JSValue ThrowInterrupted(JSContext* pCtx) noexcept {
+  JS_ThrowInternalError(pCtx, "interrupted");
+  const JSValue error = JS_GetException(pCtx);
+  JS_SetUncatchableError(pCtx, error);
+  return JS_Throw(pCtx, error);
+}
+
 // A JavaScript string of 'str' (UTF-8), JS_EXCEPTION on memory exhaustion.
 inline JSValue NewString(JSContext* pCtx, std::string_view str) noexcept {
   return JS_NewStringLen(pCtx, str.data(), str.size());
@@ -209,7 +243,8 @@ class JsArray {
       return false;
     }
     // JS_DefinePropertyValueUint32 frees the value on its failure too (an exception has nothing to free).
-    if (JS_IsException(value) || JS_DefinePropertyValueUint32(pCtx, _array.get(), _size++, value, kElementFlags) < 0) {
+    if (JS_IsException(value) ||
+        JS_DefinePropertyValueUint32(pCtx, _array.get(), _size++, value, kOrdinaryProperty) < 0) {
       _array = JsValue(pCtx, JS_EXCEPTION);
       return false;
     }
@@ -228,16 +263,20 @@ class JsArray {
   JSValue release() noexcept { return _array.release(); }
 
  private:
-  // The JS_PROP_* flags are distinct bits of signed int macros: added rather than or-ed (bugprone-signed-bitwise).
-  static constexpr int kElementFlags = JS_PROP_CONFIGURABLE + JS_PROP_WRITABLE + JS_PROP_ENUMERABLE;
-
   JsValue _array;
   uint32_t _size{};
 };
 
-// Registers in the runtime of pCtx a new class of objects named 'name', without finalizer: their opaque pointers are
-// not owned. Returns its id, 0 (JS_INVALID_CLASS_ID) with an out of memory error thrown on memory exhaustion.
-[[nodiscard]] JSClassID NewClass(JSContext* pCtx, const char* name) noexcept;
+// Registers in the runtime of pCtx the class 'classId' (allocated by JS_NewClassID()) of objects named 'name', without
+// finalizer: their opaque pointers are not owned. 'pExotic' (can be null) are its exotic behaviors. Returns false, with
+// an out of memory error thrown, on memory exhaustion.
+[[nodiscard]] bool RegisterJsClass(JSContext* pCtx, JSClassID classId, const char* name,
+                                   const JSClassExoticMethods* pExotic = nullptr) noexcept;
+
+// Allocates and registers a class (see RegisterJsClass()). Returns its id, 0 (JS_INVALID_CLASS_ID) with an out of
+// memory error thrown on memory exhaustion.
+[[nodiscard]] JSClassID NewClass(JSContext* pCtx, const char* name,
+                                 const JSClassExoticMethods* pExotic = nullptr) noexcept;
 
 // Defines 'functions' (getters, setters, methods) on 'object'. Returns false on memory exhaustion.
 [[nodiscard]] inline bool SetFunctions(JSContext* pCtx, JSValueConst object,

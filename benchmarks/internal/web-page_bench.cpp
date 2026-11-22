@@ -1,8 +1,10 @@
 // Cost of the JavaScript runtime of a WebClient page, without HTTP:
 //   the setup of a page (QuickJS-ng runtime and context, parsing, DOM and window bindings, prelude), with the engine
-//   alone, for the first page of a WebClient, which compiles the prelude, and with the first use of the network APIs;
+//   alone, for the first page of a WebClient, which compiles the prelude, and with the first use of the lazy parts of
+//   the prelude (network APIs, observers and media queries, Intl);
 //   a call of a native DOM binding from a script (a getter returning a cached node wrapper), against the same loop
-//   without the call;
+//   without the call; the lookup of a global that does not exist; the insertion of a tree while a script element
+//   created by a script did not start;
 //   the bindings that convert or build strings (storage, tagName, URL reflection, location and history, character
 //   data), the overhead of WebPage::evaluate(), timers run by the page loop, and document.write();
 //   a large inline script compiled at each load, against the same script read back from the script cache.
@@ -73,17 +75,43 @@ void BM_PageSetupWithNetworkApi(benchmark::State& state) {
 }
 BENCHMARK(BM_PageSetupWithNetworkApi);
 
+// The same with the first use of the observers and media queries (matchMedia()), then of Intl.
+void RunPageSetupWith(benchmark::State& state, std::string_view script) {
+  internal::WebSession session{WebClientConfig{}};
+  for (auto _ : state) {
+    internal::Page page(session, "https://example.com/", http::StatusCodeOK, kSmallPage, "text/html");
+    auto result = page.evaluate(script, std::chrono::seconds{10});
+    benchmark::DoNotOptimize(result);
+  }
+}
+
+void BM_PageSetupWithViewApi(benchmark::State& state) {
+  RunPageSetupWith(state, "matchMedia('(min-width: 768px)').matches");
+}
+BENCHMARK(BM_PageSetupWithViewApi);
+
+void BM_PageSetupWithIntl(benchmark::State& state) {
+  RunPageSetupWith(state, "new Intl.NumberFormat('en-US', {style: 'currency', currency: 'USD'}).format(1234.5)");
+}
+BENCHMARK(BM_PageSetupWithIntl);
+
+// A script replacing a global of the network part (a polyfill, an instrumented fetch()) before any use: the part is
+// not set up, against BM_PageSetup and BM_PageSetupWithNetworkApi.
+void BM_PageSetupReplacingFetch(benchmark::State& state) { RunPageSetupWith(state, "window.fetch = null"); }
+BENCHMARK(BM_PageSetupReplacingFetch);
+
 constexpr int kLoopIterations = 100000;
 
 // The time of one iteration of a script loop, whose body is 'statement' ('n' is a number, 'body' the body element, 'a'
-// a detached link with a relative href, 'text' the text node of the price).
-void RunLoop(benchmark::State& state, std::string_view statement) {
+// a detached link with a relative href, 'text' the text node of the price), after 'setup' (run once by each script).
+void RunLoop(benchmark::State& state, std::string_view statement, std::string_view setup = {}) {
   internal::WebSession session{WebClientConfig{}};
   internal::Page page(session, "https://example.com/", http::StatusCodeOK, kSmallPage, "text/html");
   const std::string script =
       "{ let n = 0; const body = document.body; const a = document.createElement('a'); a.href = '/path/to?q=1'; "
-      "const text = document.querySelector('.price').firstChild; for (let i = 0; i < " +
-      std::to_string(kLoopIterations) + "; ++i) { " + std::string(statement) + "; } n }";
+      "const text = document.querySelector('.price').firstChild; " +
+      std::string(setup) + "; for (let i = 0; i < " + std::to_string(kLoopIterations) + "; ++i) { " +
+      std::string(statement) + "; } n }";
   for (auto _ : state) {
     auto result = page.evaluate(script, std::chrono::seconds{10});
     benchmark::DoNotOptimize(result);
@@ -120,6 +148,38 @@ BENCHMARK(BM_PushState);
 void BM_CharacterData(benchmark::State& state) { RunLoop(state, "text.data = 'v' + (i & 7)"); }
 BENCHMARK(BM_CharacterData);
 
+// The comparison of the sorts: two ASCII strings compared natively, in the order of the Intl part.
+void BM_LocaleCompare(benchmark::State& state) { RunLoop(state, "n += 'Abc'.localeCompare((i & 1) ? 'abd' : 'ABC')"); }
+BENCHMARK(BM_LocaleCompare);
+
+// A move of a node: the insertion checks for the scripts that scripts created (none here).
+void BM_AppendChild(benchmark::State& state) { RunLoop(state, "body.appendChild(a)"); }
+BENCHMARK(BM_AppendChild);
+
+// A move of a tree of 100 elements, then the same with a script element created and never inserted (feature
+// detection), out of the tree: the insertion checks that created script, not each node of the tree.
+constexpr std::string_view kTree =
+    "const tree = document.createElement('ul'); for (let i = 0; i < 100; ++i) tree.appendChild(document.createElement("
+    "'li'))";
+
+void BM_AppendTree(benchmark::State& state) { RunLoop(state, "body.appendChild(tree)", kTree); }
+BENCHMARK(BM_AppendTree);
+
+void BM_AppendTreeWithACreatedScript(benchmark::State& state) {
+  RunLoop(state, "body.appendChild(tree)", std::string("const probe = document.createElement('script'); ") += kTree);
+}
+BENCHMARK(BM_AppendTreeWithACreatedScript);
+
+// The lookup of a global that does not exist (feature detection), through the lazy globals of the window, and the same
+// for a name that looks like an HTML element interface.
+void BM_MissingGlobal(benchmark::State& state) { RunLoop(state, "n += typeof requestIdleCallbackX === 'undefined'"); }
+BENCHMARK(BM_MissingGlobal);
+
+void BM_MissingHtmlInterfaceName(benchmark::State& state) {
+  RunLoop(state, "n += typeof HTMLMarqueeElement === 'undefined'");
+}
+BENCHMARK(BM_MissingHtmlInterfaceName);
+
 // The cost of WebPage::evaluate() around a script that does nothing.
 void BM_EvaluateOverhead(benchmark::State& state) {
   internal::WebSession session{WebClientConfig{}};
@@ -155,6 +215,13 @@ BENCHMARK(BM_TimersWithArguments);
 
 void BM_DocumentWrite(benchmark::State& state) { RunPage(state, "document.write('a', 'b', i & 7)"); }
 BENCHMARK(BM_DocumentWrite);
+
+// An inline script created and inserted by a script: it runs during its insertion.
+void BM_InsertedInlineScript(benchmark::State& state) {
+  RunPage(state,
+          "const s = document.createElement('script'); s.text = 'window.n = ' + (i & 7); document.body.append(s)");
+}
+BENCHMARK(BM_InsertedInlineScript);
 
 // A page of a large inline script (2000 functions, about 250 KB) loaded with its setup, the script compiled at each
 // load without the script cache of the client, read back from it with.

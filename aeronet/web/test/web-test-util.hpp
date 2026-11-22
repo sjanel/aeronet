@@ -17,14 +17,19 @@
 
 namespace aeronet::test {
 
-// A server of test pages: GET /html?src=<html> answers <html> as a text/html document, so that each test writes its
-// page inline without state shared with the server thread. Each test file adds its own routes.
+// A server of test pages: GET /html?src=<html> answers <html> as a text/html document, GET /js?src=<code> answers
+// <code> as a script, so that each test writes its pages and scripts inline without state shared with the server
+// thread. Each test file adds its own routes.
 inline TestServer MakePageServer() {
   HttpServerConfig cfg;
   cfg.withPort(0).withPollInterval(std::chrono::milliseconds{20});
   TestServer server(std::move(cfg));
-  server.router().setPath(http::Method::GET, "/html", [](const HttpRequestView& req) {
+  auto router = server.router();
+  router.setPath(http::Method::GET, "/html", [](const HttpRequestView& req) {
     return req.makeResponse(req.queryParamValue("src").value_or(""), http::ContentTypeTextHtml);
+  });
+  router.setPath(http::Method::GET, "/js", [](const HttpRequestView& req) {
+    return req.makeResponse(req.queryParamValue("src").value_or(""), "text/javascript");
   });
   return server;
 }
@@ -57,6 +62,9 @@ inline std::string PageUrl(const TestServer& server, std::string_view html, std:
   return ServerUrl(server, host) + "/html?src=" + PercentEncode(html);
 }
 
+// The path of the script 'code' served by a server of MakePageServer(), relative to its origin.
+inline std::string ScriptPath(std::string_view code) { return "/js?src=" + PercentEncode(code); }
+
 // The page of 'url', which must load.
 inline WebPage Navigate(WebClient& client, const std::string& url, const NavigateOptions& options = {}) {
   auto page = client.navigate(url, options);
@@ -76,5 +84,29 @@ inline std::string Eval(WebPage& page, std::string_view script) {
   }
   return std::move(*result);
 }
+
+// The JSON of the global 'log' of 'page', where the scripts of many tests push what they see.
+inline std::string Log(WebPage& page) { return Eval(page, "log"); }
+
+// The JSON of the name of the error thrown by 'script' in 'page', "no error" when it throws none.
+inline std::string ErrorName(WebPage& page, std::string_view script) {
+  return Eval(page,
+              "(() => { try { " + std::string(script) + "; return 'no error'; } catch (e) { return e.name; } })()");
+}
+
+// A test of a page of 'url', loaded before each test.
+class PageTest : public ::testing::Test {
+ protected:
+  explicit PageTest(const std::string& url) : page(Navigate(client, url)) {}
+
+  // The JSON result of 'script', which must not throw.
+  std::string eval(std::string_view script) { return Eval(page, script); }
+
+  // See ErrorName().
+  std::string errorName(std::string_view script) { return ErrorName(page, script); }
+
+  WebClient client;
+  WebPage page;
+};
 
 }  // namespace aeronet::test

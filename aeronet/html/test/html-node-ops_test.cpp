@@ -1,9 +1,11 @@
 // The helpers of aeronet_web in aeronet_html: NodesMemory(), UrlResolver, the URL resolution of the pages (WHATWG URL
 // parser of lexbor), DecodeScript(), the decoding of their scripts, the selector queries without exception
-// (VisitMatches()) and the insertion points of insertAdjacent*().
+// (VisitMatches(), MatchSelector()), the insertion points of insertAdjacent*(), and the nodes that HtmlDocument does
+// not create (CloneNode(), NewDocumentFragment(), NewElementNs()).
 #include "../src/html-node-ops.hpp"
 
 #include <gtest/gtest.h>
+#include <lexbor/dom/interfaces/document_fragment.h>
 #include <lexbor/dom/interfaces/node.h>
 
 #include <cstddef>
@@ -12,10 +14,12 @@
 #include <string_view>
 
 #include "../src/html-node-access.hpp"
+#include "../src/html-tree-walk.hpp"
 #include "aeronet/html-document.hpp"
 #include "aeronet/html-element.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "html-test-util.hpp"
 
 namespace aeronet::internal {
 namespace {
@@ -251,6 +255,142 @@ TEST(HtmlDecodeScriptTest, ByteOrderMarkWins) {
             "x=1");
   EXPECT_EQ(Decode(std::string_view("\xFE\xFF\0x", 4), "text/javascript", "windows-1252"), "x");
 }
+
+// The node of the first element matching 'selector' in 'doc'.
+lxb_dom_node_t* NodeOf(const HtmlDocument& doc, std::string_view selector) {
+  return HtmlNodeAccess::Node(doc.querySelector(selector));
+}
+
+// Whether pRoot or one of its descendants (not those of the template contents) has a user pointer.
+bool HasUserPointer(lxb_dom_node_t* pRoot) {
+  bool found = pRoot->user != nullptr;
+  WalkDescendants(pRoot, [&found](lxb_dom_node_t* pNode) {
+    found = found || pNode->user != nullptr;
+    return !found;
+  });
+  return found;
+}
+
+constexpr std::string_view kCloneHtml =
+    "<div id=src class='a b' data-x=1>text<!--c--><b>bold</b><template id=tpl><i>in</i><template><u>x</u>"
+    "</template></template></div>";
+
+TEST(HtmlCloneNodeTest, ShallowAndDeep) {
+  HtmlDocument doc(kCloneHtml);
+  lxb_dom_node_t* pSource = NodeOf(doc, "#src");
+  // lexbor would copy the user pointer of each node: the JavaScript wrapper of a page.
+  pSource->user = pSource;
+  pSource->first_child->user = pSource;
+  const HtmlElement shallow = HtmlNodeAccess::Element(CloneNode(pSource, false));
+  EXPECT_EQ(shallow.outerHtml(), R"(<div id="src" class="a b" data-x="1"></div>)");
+  EXPECT_EQ(HtmlNodeAccess::Node(shallow)->user, nullptr);
+  EXPECT_EQ(HtmlNodeAccess::Node(shallow)->parent, nullptr);
+  lxb_dom_node_t* pCopy = CloneNode(pSource, true);
+  EXPECT_FALSE(HasUserPointer(pCopy));
+  EXPECT_EQ(HtmlNodeAccess::Element(pCopy).outerHtml(), HtmlNodeAccess::Element(pSource).outerHtml());
+  EXPECT_EQ(NodesMemory(pCopy, nullptr), NodesMemory(pSource, pSource->next));
+  // The contents of the templates are copies too, at each level.
+  const HtmlElement copiedTemplate = HtmlNodeAccess::Element(pCopy).querySelector("template");
+  EXPECT_EQ(copiedTemplate.innerHtml(), "<i>in</i><template><u>x</u></template>");
+  EXPECT_NE(ChildrenParent(HtmlNodeAccess::Node(copiedTemplate)), ChildrenParent(NodeOf(doc, "#tpl")));
+  pSource->user = nullptr;
+  pSource->first_child->user = nullptr;
+}
+
+TEST(HtmlCloneNodeTest, CharacterDataAndFragments) {
+  HtmlDocument doc(kCloneHtml);
+  lxb_dom_node_t* pSource = NodeOf(doc, "#src");
+  lxb_dom_node_t* pText = CloneNode(pSource->first_child, true);
+  EXPECT_EQ(pText->type, LXB_DOM_NODE_TYPE_TEXT);
+  lxb_dom_node_t* pComment = CloneNode(pSource->first_child->next, false);
+  EXPECT_EQ(pComment->type, LXB_DOM_NODE_TYPE_COMMENT);
+  // A fragment is copied as a fragment without host, not as the plain node of lexbor.
+  lxb_dom_node_t* pContents = ChildrenParent(NodeOf(doc, "#tpl"));
+  lxb_dom_node_t* pFragment = CloneNode(pContents, true);
+  ASSERT_EQ(pFragment->type, LXB_DOM_NODE_TYPE_DOCUMENT_FRAGMENT);
+  EXPECT_EQ(reinterpret_cast<lxb_dom_document_fragment_t*>(pFragment)->host, nullptr);
+  EXPECT_EQ(NodesMemory(pFragment->first_child, nullptr), NodesMemory(pContents->first_child, nullptr));
+  EXPECT_EQ(CloneNode(pContents, false)->first_child, nullptr);
+  lxb_dom_node_t* pEmpty = NewDocumentFragment(pSource);
+  EXPECT_EQ(pEmpty->type, LXB_DOM_NODE_TYPE_DOCUMENT_FRAGMENT);
+  EXPECT_EQ(reinterpret_cast<lxb_dom_document_fragment_t*>(pEmpty)->host, nullptr);
+}
+
+// Iterative: a tree deeper than the stack is copied.
+TEST(HtmlCloneNodeTest, DeepTrees) {
+  HtmlDocument doc("<div id=root></div>");
+  HtmlElement parent = doc.querySelector("#root");
+  for (int depth = 0; depth < 100000; ++depth) {
+    HtmlElement child = doc.createElement(depth % 2 == 0 ? "template" : "p");
+    parent.appendChild(child);
+    // The children of a template element are its contents: the next level is in them.
+    parent = depth % 2 == 0 ? HtmlNodeAccess::Element(ChildrenParent(HtmlNodeAccess::Node(child))) : child;
+  }
+  lxb_dom_node_t* pRoot = NodeOf(doc, "#root");
+  lxb_dom_node_t* pCopy = CloneNode(pRoot, true);
+  EXPECT_EQ(NodesMemory(pCopy, nullptr), NodesMemory(pRoot, nullptr));
+}
+
+TEST(HtmlNewElementNsTest, Namespaces) {
+  HtmlDocument doc("<p></p><svg><circle/></svg>");
+  lxb_dom_node_t* pSvg = NewElementNs(NodeOf(doc, "p"), "http://www.w3.org/2000/svg", "svg");
+  EXPECT_EQ(NamespaceUri(pSvg), "http://www.w3.org/2000/svg");
+  EXPECT_EQ(pSvg->ns, NodeOf(doc, "circle")->ns);
+  EXPECT_EQ(HtmlNodeAccess::Element(pSvg).tagName(), "svg");
+  lxb_dom_node_t* pPrefixed = NewElementNs(pSvg, "urn:example", "ex:item");
+  EXPECT_EQ(NamespaceUri(pPrefixed), "urn:example");
+  EXPECT_EQ(HtmlNodeAccess::Element(pPrefixed).tagName(), "ex:item");
+  EXPECT_NE(pPrefixed->prefix, 0U);
+  lxb_dom_node_t* pPlain = NewElementNs(pSvg, {}, "item");
+  EXPECT_EQ(NamespaceUri(pPlain), "");
+  EXPECT_EQ(pPlain->prefix, 0U);
+  EXPECT_EQ(NamespaceUri(NodeOf(doc, "p")), "http://www.w3.org/1999/xhtml");
+}
+
+TEST(HtmlMatchSelectorTest, ElementAndAncestors) {
+  HtmlDocument doc("<div class=a><p id=p><b id=b>x</b></p></div>");
+  lxb_dom_node_t* pBold = NodeOf(doc, "#b");
+  SelectorMatch match = MatchSelector(pBold, "div > p b", false);
+  EXPECT_TRUE(match.valid);
+  EXPECT_EQ(match.pElement, pBold);
+  EXPECT_EQ(MatchSelector(pBold, "p", false).pElement, nullptr);
+  EXPECT_EQ(MatchSelector(pBold, "p", true).pElement, NodeOf(doc, "#p"));
+  EXPECT_EQ(MatchSelector(pBold, ".a, #p", true).pElement, NodeOf(doc, "#p"));
+  EXPECT_EQ(MatchSelector(pBold, "section", true).pElement, nullptr);
+  match = MatchSelector(pBold, "p >", true);
+  EXPECT_FALSE(match.valid);
+  EXPECT_EQ(match.pElement, nullptr);
+}
+
+#if AERONET_WANT_MALLOC_OVERRIDES
+// Each allocation fails in turn: std::bad_alloc, the source unchanged.
+TEST(HtmlCloneNodeTest, MemoryExhaustion) {
+  test::ExpectBadAllocOnEachAllocation(
+      kCloneHtml,
+      [](HtmlDocument& doc) {
+        lxb_dom_node_t* pCopy = CloneNode(NodeOf(doc, "#src"), true);
+        EXPECT_EQ(HtmlNodeAccess::Element(pCopy).querySelector("template").innerHtml(),
+                  "<i>in</i><template><u>x</u></template>");
+      },
+      [](const HtmlDocument& doc) {
+        EXPECT_EQ(doc.querySelector("#src").innerHtml(),
+                  "text<!--c--><b>bold</b><template id=\"tpl\"><i>in</i><template><u>x</u></template></template>");
+      });
+}
+
+TEST(HtmlMatchSelectorTest, MemoryExhaustion) {
+  test::ExpectBadAllocOnEachAllocation("<div><p><b>x</b></p></div>", [](HtmlDocument& doc) {
+    EXPECT_EQ(MatchSelector(NodeOf(doc, "b"), "div > p", true).pElement, NodeOf(doc, "p"));
+  });
+}
+
+TEST(HtmlNewElementNsTest, MemoryExhaustion) {
+  test::ExpectBadAllocOnEachAllocation("<p></p>", [](HtmlDocument& doc) {
+    EXPECT_EQ(NamespaceUri(NewElementNs(NodeOf(doc, "p"), "urn:new-namespace", "x:y")), "urn:new-namespace");
+    EXPECT_EQ(NewDocumentFragment(NodeOf(doc, "p"))->type, LXB_DOM_NODE_TYPE_DOCUMENT_FRAGMENT);
+  });
+}
+#endif
 
 #if AERONET_WANT_MALLOC_OVERRIDES
 // Each allocation fails in turn: std::bad_alloc, never a crash nor a wrong URL.

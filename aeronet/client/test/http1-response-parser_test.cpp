@@ -349,7 +349,7 @@ TEST(ResponseParserTest, BytesAfterTheResponseEndPreventReuse) {
     std::string_view body;
     bool head;
   };
-  static constexpr Case kCases[] = {
+  static constexpr Case kCases[]{
       {"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhe", "he", false},
       {"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n", "", false},
       {"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n2\r\nhe\r\n0\r\n\r\n", "he", false},
@@ -1601,7 +1601,7 @@ TEST(ResponseParserTest, PeekEarlyResponse) {
     std::string_view received;
     Early expected;
   };
-  static constexpr Case kCases[] = {
+  static constexpr Case kCases[]{
       {"", Early::None},
       {"HTTP/1.1 41", Early::None},
       {"HTTP/1.1 100 Continue\r\n", Early::None},
