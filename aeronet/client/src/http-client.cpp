@@ -17,6 +17,7 @@
 #include <utility>
 
 #include "aeronet/adaptive-poll-timeout.hpp"
+#include "aeronet/address-space.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/connection.hpp"
@@ -474,6 +475,7 @@ void HttpClient::ActiveConnection::reset() noexcept {
   cnx = {};
   protocol = ClientProtocol::Http1_1;
   reused = false;
+  addressSpace = AddressSpace::Loopback;
 }
 
 EventBmp HttpClient::waitEvents(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline) {
@@ -512,6 +514,7 @@ EventBmp HttpClient::waitExchangeEvents(NativeHandle fd, EventBmp interest, Stea
 }
 
 std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectNew(const HttpRequest& req,
+                                                                                   AddressSpace minAddressSpace,
                                                                                    bool upgrade) {
   // For https, build (and thereby validate) the shared TLS context up front -- before spending a connect on
   // it. A misconfiguration (bad cipher list, unusable cert/key, ...) is a hard setup error: it throws an
@@ -533,6 +536,17 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
   const bool proxied = usesProxy();
   const auto hostWithoutPort = req.host();
 
+  // The proxy resolves the host: only an address or localhost tells the address space of the server, the proxy being
+  // connected to whatever its address.
+  AddressSpace proxiedAddressSpace = AddressSpace::Loopback;
+  if (proxied) {
+    proxiedAddressSpace = HostAddressSpace(hostWithoutPort);
+    if (proxiedAddressSpace < minAddressSpace) {
+      return std::unexpected(HttpClientErrc::addressBlocked);
+    }
+    minAddressSpace = AddressSpace::Loopback;
+  }
+
   const std::span<char> connectHost =
       proxied ? std::span<char>(const_cast<char*>(_proxyHost.data()), _proxyHost.size())
               : std::span<char>(const_cast<char*>(hostWithoutPort.data()), hostWithoutPort.size());
@@ -543,12 +557,13 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
   // that resolves to several addresses (e.g. "localhost" -> ::1 then 127.0.0.1) must try them in turn instead of
   // committing to the first, whose non-blocking connect would otherwise hide a deferred ECONNREFUSED.
   const auto connectTimeoutMs = static_cast<int>(_config.connectTimeout.count());
-  ConnectResult cr = ConnectTCP(connectHost, connectPort, 0, connectTimeoutMs);
+  ConnectResult cr = ConnectTCP(connectHost, connectPort, 0, connectTimeoutMs, minAddressSpace);
   if (cr.failure || !cr.cnx) {
-    return std::unexpected(HttpClientErrc::connectFailed);
+    return std::unexpected(cr.blocked ? HttpClientErrc::addressBlocked : HttpClientErrc::connectFailed);
   }
   ActiveConnection conn;
   conn.cnx = std::move(cr.cnx);
+  conn.addressSpace = proxied ? proxiedAddressSpace : cr.addressSpace;
   const NativeHandle fd = conn.cnx.fd();
   SetNoSigPipe(fd);
   // Disable Nagle unless explicitly turned off: a request/response client wants the request flushed
@@ -667,9 +682,12 @@ HttpClientErrc HttpClient::establishProxyTunnel(Transport& transport, NativeHand
   }
 }
 
-std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::acquireConnection(const HttpRequest& req) {
+std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::acquireConnection(
+    const HttpRequest& req, AddressSpace minAddressSpace) {
   if (_config.keepAlive) {
-    if (auto it = _idle.find(req.originKey()); it != _idle.end() && !it->second.empty()) {
+    // A pooled connection to a server less public than allowed stays in the pool, for the requests that may reach it.
+    if (auto it = _idle.find(req.originKey());
+        it != _idle.end() && !it->second.empty() && it->second.back().addressSpace >= minAddressSpace) {
       auto& bucket = it->second;
       // Bucket is LIFO: back() is the most-recently-released (freshest) connection. If even it has exceeded the idle
       // limit, every older entry has too, so drop the whole bucket and reconnect.
@@ -697,7 +715,7 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::acquireC
       }
     }
   }
-  return connectNew(req);
+  return connectNew(req, minAddressSpace);
 }
 
 void HttpClient::releaseConnection(const HttpRequest& req, ActiveConnection&& conn) {
@@ -881,7 +899,8 @@ class HttpClient::UnregisterOnUnwind {
 };
 
 HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFollowed,
-                                             internal::CookieSiteContext siteContext) {
+                                             internal::CookieSiteContext siteContext, AddressSpace minAddressSpace,
+                                             AddressSpace& serverAddressSpace) {
 #ifdef AERONET_LINUX
   // TLS (OpenSSL writes on the socket itself) and file bodies (sendfile()) may raise SIGPIPE if the server resets the
   // connection, terminating the process by default: keep it pending in this thread during the exchange, then discard
@@ -905,11 +924,11 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFoll
   const auto computedBackoff = [&] { return retry.delayFor(attempt, retry.jitter > 0.0F ? nextJitterUnit() : 0.0); };
 
   for (;;) {
-    std::expected<ActiveConnection, HttpClientErrc> acquired = acquireConnection(req);
+    std::expected<ActiveConnection, HttpClientErrc> acquired = acquireConnection(req, minAddressSpace);
     if (!acquired) {
       // A fresh connect failed (acquireConnection already drained any stale pool entry and reconnected).
-      // Nothing was sent, so a backoff retry is always safe.
-      if (canBackoff()) {
+      // Nothing was sent, so a backoff retry is always safe, but useless for a server not public enough.
+      if (acquired.error() != HttpClientErrc::addressBlocked && canBackoff()) {
         sleepBackoff(computedBackoff());
         continue;
       }
@@ -917,6 +936,7 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFoll
     }
     ActiveConnection conn = std::move(*acquired);
     const bool reused = conn.reused;
+    serverAddressSpace = conn.addressSpace;
     const NativeHandle fd = conn.cnx.fd();
     // An exception escaping the exchange (thrown by a ResponseBodySink, or std::bad_alloc) closes the connection: its
     // fd must not stay registered in the event loop, where the next connection, likely given the same fd number, would
@@ -1055,7 +1075,7 @@ HttpUpgradeResult HttpClient::upgrade(HttpRequest&& req) {
   // No response goes to a sink, the one of a previous request interrupted by an exception included.
   _streamer.beginRequest(nullptr, _config, _codec);
 
-  std::expected<ActiveConnection, HttpClientErrc> acquired = connectNew(req, true);
+  std::expected<ActiveConnection, HttpClientErrc> acquired = connectNew(req, AddressSpace::Loopback, true);
   if (!acquired) {
     return std::unexpected(acquired.error());
   }
@@ -1239,14 +1259,27 @@ HttpClientResult HttpClient::requestUncached(HttpRequest&& req, std::string_view
                                              const PageRequestContext* pPage) {
   uint32_t redirectsLeft = _config.maxRedirects;
   CookieChain cookieChain = FirstCookieChain(req, pPage);
+  // The requests of a page reach the servers of its address space or of a more public one, the other requests every
+  // server.
+  AddressSpace minAddressSpace = pPage == nullptr ? AddressSpace::Loopback : pPage->addressSpace;
 
   while (true) {
     // performExchange owns the (idempotent-safe) transparent retry of a stale pooled connection; any
     // failure it surfaces here is terminal.
-    HttpClientResult result =
-        performExchange(req, _config.followRedirects && redirectsLeft != 0, cookieChain.context(req));
+    AddressSpace serverAddressSpace = minAddressSpace;
+    HttpClientResult result = performExchange(req, _config.followRedirects && redirectsLeft != 0,
+                                              cookieChain.context(req), minAddressSpace, serverAddressSpace);
     if (!result) {
       return result;
+    }
+    if (pPage != nullptr) {
+      if (!pPage->allowLessPublicRedirects) {
+        // Not less public than minAddressSpace: the redirects of this server lead to servers at least as public as it.
+        minAddressSpace = serverAddressSpace;
+      }
+      if (pPage->pAddressSpace != nullptr) {
+        *pPage->pAddressSpace = serverAddressSpace;
+      }
     }
     const HttpResponse& resp = *result;
 

@@ -105,6 +105,16 @@ AeronetAddUnitTest(
 )
 
 if(AERONET_ENABLE_HTTP_SERVER)
+    # The address spaces of the requests of web pages (Local Network Access).
+    AeronetAddUnitTest(
+        http-client-address-space_test
+        test/http-client-address-space_test.cpp
+        LIBRARIES
+        aeronet_client
+        aeronet
+        aeronet_test_support
+    )
+
     AeronetAddUnitTest(
         http-client-cookies_test
         test/http-client-cookies_test.cpp

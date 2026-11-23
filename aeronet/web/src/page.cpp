@@ -23,6 +23,7 @@
 #include <tuple>
 #include <utility>
 
+#include "aeronet/address-space.hpp"
 #include "aeronet/cctype.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/css-selector.hpp"
@@ -180,13 +181,14 @@ bool SelectorWatch::changedAndMatches(const HtmlDocument& document) {
 }
 
 Page::Page(WebSession& session, std::string_view url, http::StatusCode status, std::string_view html,
-           std::string_view contentType)
+           std::string_view contentType, AddressSpace addressSpace)
     : _session(session),
       _document(HtmlNodeAccess::ParseWithScripting(html, contentType)),
       _url(url),
       _memory(session.config.maxScriptMemory),
       _pDocumentNode(HtmlNodeAccess::Node(_document)),
       _status(status),
+      _addressSpace(addressSpace),
       _engine(JsLimits{session.config.maxScriptMemory, session.config.maxScriptStackSize}),
       _timers(_engine.context(), _memory, session.config.maxTimerDelay.count(), session.config.maxIntervalRuns) {
   if (const HtmlElement base = _document.querySelector("base[href]")) {
@@ -475,8 +477,13 @@ bool Page::fetchScript(std::string_view url, std::string_view charset, RequestCr
     request.headerAddLine("referer", referrer);
   }
   // A subresource of the document: the SameSite cookies are those of its site.
-  const HttpClientResult result =
-      http.requestUpdating(request, {.documentUrl = this->url(), .credentials = credentials});
+  const PageRequestContext context{
+      .documentUrl = this->url(),
+      .credentials = credentials,
+      .addressSpace = _addressSpace,
+      .allowLessPublicRedirects = session().config.allowLessPublicRedirects,
+  };
+  const HttpClientResult result = http.requestUpdating(request, context);
   if (!result) {
     log::debug("[js {}] script {} not fetched: {}", this->url(), url, ErrcToStr(result.error()));
     return false;

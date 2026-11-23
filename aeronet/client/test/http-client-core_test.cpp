@@ -2229,7 +2229,7 @@ TEST_F(HttpClientCompressionE2E, CompressesMidSizeModeratelyCompressibleRequestB
 // A directly compressed request body of a few MiB of incompressible data, appended in pieces, reaches the server whole
 // whatever the encoding: brotli and zstd write their output in bursts larger than the room one piece gives them.
 TEST_F(HttpClientCompressionE2E, LargeIncompressibleDirectlyCompressedRequestBody) {
-  static constexpr std::size_t kPieceSize = 64UL << 10;
+  static constexpr std::size_t kPieceSize = 64UL << 10U;
   static constexpr std::size_t kNbPieces = 40;
   const RawChars payload = test::MakeRandomPayload(kPieceSize * kNbPieces);
   for (const Encoding enc : test::SupportedEncodings()) {
@@ -2322,6 +2322,7 @@ TEST(HttpClientErrcTest, EveryCodeHasNonEmptyDescription) {
       HttpClientErrc::timeout,           HttpClientErrc::writeError,          HttpClientErrc::connectionClosed,
       HttpClientErrc::malformedResponse, HttpClientErrc::protocolUnsupported, HttpClientErrc::proxyError,
       HttpClientErrc::ioError,           HttpClientErrc::responseTooLarge,    HttpClientErrc::aborted,
+      HttpClientErrc::addressBlocked,
   };
   for (const HttpClientErrc errc : kAll) {
     EXPECT_FALSE(ErrcToStr(errc).empty()) << static_cast<int>(errc);
@@ -2341,6 +2342,7 @@ TEST(HttpClientErrcTest, DescriptionsAreStable) {
   EXPECT_EQ(ErrcToStr(HttpClientErrc::ioError), "internal I/O error");
   EXPECT_EQ(ErrcToStr(HttpClientErrc::responseTooLarge), "response too large");
   EXPECT_EQ(ErrcToStr(HttpClientErrc::aborted), "transfer aborted by the response body sink");
+  EXPECT_EQ(ErrcToStr(HttpClientErrc::addressBlocked), "server address less public than the request may reach");
 }
 
 // The "unknown" fallback guards against an out-of-range value (e.g. from a future enum extension or a

@@ -45,6 +45,9 @@ enum class WebErrc : uint8_t {
                        // the HTTP client can request (with user info or port 0, for instance)
   requestFailed,       // the request of a document failed (connection, TLS, timeout...: logged with its cause)
   tooManyNavigations,  // the pages started more navigations than WebClientConfig::maxNavigations
+  addressBlocked,      // the server of a document is less public than allowed: than WebClientConfig::addressSpace for
+                       // the URL given to navigate(), than the page for its navigations, than the server of a redirect
+                       // for its Location (see WebClientConfig::addressSpace)
 };
 
 [[nodiscard]] constexpr std::string_view ErrcToStr(WebErrc errc) noexcept {
@@ -53,8 +56,12 @@ enum class WebErrc : uint8_t {
       return "invalid http or https URL";
     case WebErrc::requestFailed:
       return "request of the document failed";
-    default:
+    case WebErrc::tooManyNavigations:
       return "too many navigations";
+    case WebErrc::addressBlocked:
+      return "server of the document less public than allowed";
+    default:
+      return "unknown error";
   }
 }
 

@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 #include "aeronet/native-handle.hpp"
 
@@ -99,6 +100,11 @@ bool IsLoopback(const sockaddr_storage& addr) noexcept;
 // The buffer must be at least kFormattedAddressCapacity bytes for safety.
 // bufLen should be > 1, otherwise it's undefined behaviour.
 uint8_t FormatAddress(const sockaddr_storage& addr, char* buf, uint8_t bufLen) noexcept;
+
+// Parse 'text', an IPv4 address in dotted-decimal form or an IPv6 address (without brackets nor zone identifier), as
+// inet_pton() does, into the family and the address of 'addr' (its other fields are left unspecified).
+// Returns false, leaving 'addr' unspecified, when 'text' is neither.
+[[nodiscard]] bool ParseAddress(std::string_view text, sockaddr_storage& addr) noexcept;
 
 // Send data on a connected socket with platform-appropriate flags
 // (MSG_NOSIGNAL on Linux, SO_NOSIGPIPE on macOS, none on Windows).

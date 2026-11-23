@@ -3,7 +3,6 @@
 #ifdef AERONET_WINDOWS
 #include <ws2tcpip.h>
 #else
-#include <arpa/inet.h>
 #include <netdb.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -18,10 +17,10 @@
 #include <span>
 #include <string_view>
 
+#include "aeronet/address-space.hpp"
 #include "aeronet/base-fd.hpp"
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/log.hpp"
-#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/safe-cast.hpp"
@@ -100,33 +99,24 @@ AddrInfoPtr ResolveTCP(std::span<char> host, uint16_t port, int family) {
 }
 
 bool IsNumericHost(std::string_view host) noexcept {
-#ifdef AERONET_WINDOWS
-  EnsureWinsockInitialized();
-#endif
-  // Large enough for any textual IPv4 or IPv6 address (INET6_ADDRSTRLEN is 46), null terminator included.
-  char buf[64];
-  // An embedded null would make inet_pton() check only the part before it.
-  if (host.empty() || host.size() >= sizeof(buf) || host.contains('\0')) {
-    return false;
-  }
-  Copy(host, buf);
-  buf[host.size()] = '\0';
-  unsigned char addr[16];
-  return ::inet_pton(AF_INET, buf, addr) == 1 || ::inet_pton(AF_INET6, buf, addr) == 1;
+  sockaddr_storage addr;
+  return ParseAddress(host, addr);
 }
 
-ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family, int connectTimeoutMs) {
+ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family, int connectTimeoutMs,
+                         AddressSpace minAddressSpace) {
   const AddrInfoPtr addresses = ResolveTCP(host, port, family);
   if (!addresses) [[unlikely]] {
     ConnectResult connectResult;
     connectResult.failure = true;
     return connectResult;
   }
-  return ConnectTCP(*addresses, connectTimeoutMs);
+  return ConnectTCP(*addresses, connectTimeoutMs, minAddressSpace);
 }
 
-ConnectResult ConnectTCP(const addrinfo& addresses, int connectTimeoutMs) {
+ConnectResult ConnectTCP(const addrinfo& addresses, int connectTimeoutMs, AddressSpace minAddressSpace) {
   ConnectResult connectResult;
+  bool tried = false;
 
   // When connectTimeoutMs > 0 the caller wants a fully-established socket: each pending connect is driven
   // to completion here so a failed candidate (e.g. localhost's ::1 against an IPv4-only server) falls back
@@ -135,6 +125,12 @@ ConnectResult ConnectTCP(const addrinfo& addresses, int connectTimeoutMs) {
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(connectTimeoutMs);
 
   for (const addrinfo* rp = &addresses; rp != nullptr; rp = rp->ai_next) {
+    connectResult.addressSpace = AddressSpaceOf(*rp->ai_addr);
+    if (connectResult.addressSpace < minAddressSpace) {
+      log::debug("ConnectTCP: address of family {} skipped: less public than allowed", rp->ai_family);
+      continue;
+    }
+    tried = true;
 #ifdef AERONET_LINUX
     // NOLINTNEXTLINE(bugprone-signed-bitwise)
     const auto socktype = rp->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC;
@@ -209,9 +205,14 @@ ConnectResult ConnectTCP(const addrinfo& addresses, int connectTimeoutMs) {
     }
   }
   // No candidate connected: never hand back a half-open / last-attempted socket on failure.
-  log::error("ConnectTCP: failed to connect to any addrinfo entry");
   connectResult.cnx = {};
   connectResult.failure = true;
+  if (!tried) {
+    log::debug("ConnectTCP: every address is less public than allowed");
+    connectResult.blocked = true;
+    return connectResult;
+  }
+  log::error("ConnectTCP: failed to connect to any addrinfo entry");
   return connectResult;
 }
 

@@ -5,6 +5,7 @@
 #include <span>
 #include <string_view>
 
+#include "aeronet/address-space.hpp"
 #include "aeronet/connection.hpp"
 
 struct addrinfo;
@@ -13,8 +14,11 @@ namespace aeronet {
 
 struct ConnectResult {
   Connection cnx;
+  AddressSpace addressSpace{AddressSpace::Loopback};  // of the address of cnx
   bool connectPending{false};
   bool failure{false};
+  // With failure: every address was less public than the minimum address space, none was tried.
+  bool blocked{false};
 };
 
 // Attempt to resolve host:port and connect to one of the returned addresses.
@@ -38,9 +42,11 @@ struct ConnectResult {
 // - port: numeric TCP port to connect to
 // - family: address family hint (0 == unspecified == AF_UNSPEC)
 // - connectTimeoutMs: > 0 enables blocking multi-address fallback within this millisecond budget
+// - minAddressSpace: the addresses less public than it (see AddressSpace) are skipped, never connected to
 // Note: the host buffer pointed by the given span SHOULD be 1 byte writable at its end,
 // as getaddrinfo expects a null-terminated string.
-ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family = 0, int connectTimeoutMs = 0);
+ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family = 0, int connectTimeoutMs = 0,
+                         AddressSpace minAddressSpace = AddressSpace::Loopback);
 
 struct AddrInfoDeleter {
   void operator()(addrinfo* addresses) const noexcept;
@@ -53,9 +59,10 @@ using AddrInfoPtr = std::unique_ptr<addrinfo, AddrInfoDeleter>;
 // Returns nullptr on failure, after logging it. Same requirement on 'host' as ConnectTCP().
 [[nodiscard]] AddrInfoPtr ResolveTCP(std::span<char> host, uint16_t port, int family = 0);
 
-// Connect to one of the given resolved addresses, with the same address fallback and connectTimeoutMs semantics as
-// ConnectTCP(host, port, ...).
-[[nodiscard]] ConnectResult ConnectTCP(const addrinfo& addresses, int connectTimeoutMs = 0);
+// Connect to one of the given resolved addresses, with the same address fallback, connectTimeoutMs and minAddressSpace
+// semantics as ConnectTCP(host, port, ...).
+[[nodiscard]] ConnectResult ConnectTCP(const addrinfo& addresses, int connectTimeoutMs = 0,
+                                       AddressSpace minAddressSpace = AddressSpace::Loopback);
 
 // Tell whether 'host' is a numeric IPv4 or IPv6 address (without brackets), that getaddrinfo resolves without query.
 [[nodiscard]] bool IsNumericHost(std::string_view host) noexcept;

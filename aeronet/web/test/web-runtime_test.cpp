@@ -2,8 +2,10 @@
 // errors, configuration.
 #include <gtest/gtest.h>
 
+#include <bit>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <limits>
 #include <new>
@@ -15,12 +17,16 @@
 
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/test_server_fixture.hpp"
 #include "aeronet/web-client-config.hpp"
 #include "aeronet/web-client.hpp"
 #include "aeronet/web-page.hpp"
 #include "web-test-util.hpp"
 
 #ifdef AERONET_ENABLE_GLAZE
+#include <glaze/glaze.hpp>
+
+#include "aeronet/address-space.hpp"
 #include "aeronet/glaze-round-trip.hpp"
 #include "aeronet/web-client-config-glaze.hpp"
 #endif
@@ -173,7 +179,7 @@ TEST(WebRuntimeTest, EndlessMicrotasksAreStoppedByTheTimeout) {
 }
 
 TEST(WebRuntimeTest, MemoryLimit) {
-  WebClient client(WebClientConfig{.maxScriptMemory = std::size_t{16} << 20});
+  WebClient client(WebClientConfig{.maxScriptMemory = std::size_t{16} << 20U});
   WebPage page = Load(client,
                       "<script>const chunks = []; for (let i = 0; i < 1000; ++i) chunks.push(new Array(1 << 20)."
                       "fill(i));</script><script>window.next = 1</script>");
@@ -189,7 +195,7 @@ TEST(WebRuntimeTest, MemoryLimitTooLowForThePageSetup) {
   bool loaded = false;
   int failures = 0;
   for (std::size_t limit = 1024; !loaded; limit += limit / 16) {
-    ASSERT_LT(limit, std::size_t{64} << 20);
+    ASSERT_LT(limit, std::size_t{64} << 20U);
     WebClient client(WebClientConfig{.maxScriptMemory = limit});
     try {
       auto page = client.navigate(test::PageUrl(gServer, "<p>x</p>"));
@@ -271,7 +277,7 @@ TEST(WebRuntimeTest, StackLimit) {
   ExpectEndlessRecursionStopped(page);
 }
 
-constexpr std::size_t kSmallMemory = std::size_t{4} << 20;
+constexpr std::size_t kSmallMemory = std::size_t{4} << 20U;
 
 // Whether 'script' fails with an out of memory error (uncatchable in QuickJS-ng 0.18, as all its internal errors). The
 // memory left for the error depends on the exact allocations of the build: when its message does not fit, QuickJS-ng
@@ -412,7 +418,7 @@ TEST(WebRuntimeTest, HtmlInterfacesOutOfMemory) {
   };
   // The largest number of objects that fit.
   int fits = 0;
-  int tooMany = 1 << 20;
+  int tooMany = static_cast<int>(1U << 20U);
   while (tooMany - fits > 1) {
     const int count = std::midpoint(fits, tooMany);
     WebPage page = newPage();
@@ -442,7 +448,9 @@ TEST(WebRuntimeTest, RejectionTrackingOutOfMemoryThrows) {
   WebPage page = LoadEmpty(client);
   // The tracked rejections (32 bytes each) grow past 4 KiB with a realloc, the only one that large of the script.
   test::FailReallocsOfAtLeast(4096);
-  EXPECT_THROW(static_cast<void>(page.evaluate("for (let i = 0; i < 200; ++i) Promise.reject(i); 0")), std::bad_alloc);
+  EXPECT_THROW(
+      { [[maybe_unused]] const auto result = page.evaluate("for (let i = 0; i < 200; ++i) Promise.reject(i); 0"); },
+      std::bad_alloc);
   test::ResetToSysRealloc();
   // The page goes on, and tracks the next rejections.
   const std::size_t errorCount = page.uncaughtErrors().size();
@@ -602,6 +610,8 @@ TEST(WebRuntimeTest, ErrorCodes) {
   EXPECT_EQ(ErrcToStr(WebErrc::invalidUrl), "invalid http or https URL");
   EXPECT_EQ(ErrcToStr(WebErrc::requestFailed), "request of the document failed");
   EXPECT_EQ(ErrcToStr(WebErrc::tooManyNavigations), "too many navigations");
+  EXPECT_EQ(ErrcToStr(WebErrc::addressBlocked), "server of the document less public than allowed");
+  EXPECT_EQ(ErrcToStr(std::bit_cast<WebErrc>(uint8_t{0xFF})), "unknown error");
 }
 
 TEST(WebRuntimeTest, InvalidConfigurations) {
@@ -615,7 +625,7 @@ TEST(WebRuntimeTest, InvalidConfigurations) {
 }
 
 // Moves through references: a failed move leaves 'source' usable, which use-after-move checks cannot know.
-WebClient MoveConstructed(WebClient& source) { return WebClient(std::move(source)); }
+WebClient MoveConstructed(WebClient& source) { return {std::move(source)}; }
 
 void MoveAssign(WebClient& target, WebClient& source) { target = std::move(source); }
 
@@ -648,6 +658,29 @@ TEST(WebRuntimeTest, ClientMoves) {
 TEST(WebRuntimeTest, EveryScalarFieldOfTheConfigRoundTrips) {
   const test::ScalarsRoundTrip roundTrip = test::MutateScalarsRoundTrip<WebClientConfig>();
   EXPECT_EQ(roundTrip.actual, roundTrip.expected);
+}
+
+// The names of the address spaces other than the default one in the configuration files, and an unknown one.
+TEST(WebRuntimeTest, AddressSpaceNamesOfTheConfig) {
+  struct Named {
+    AddressSpace addressSpace;
+    std::string_view json;
+  };
+  for (const Named& named : {
+           Named{AddressSpace::Local, R"({"addressSpace":"local"})"},
+           Named{AddressSpace::Public, R"({"addressSpace":"public"})"},
+       }) {
+    WebClientConfig config;
+    config.addressSpace = named.addressSpace;
+    const std::string json = glz::write_json(config).value_or("");
+    EXPECT_TRUE(json.contains(named.json.substr(1, named.json.size() - 2))) << json;
+    WebClientConfig read;
+    ASSERT_FALSE(glz::read_json(read, named.json)) << named.json;
+    EXPECT_EQ(read.addressSpace, named.addressSpace);
+  }
+  WebClientConfig read;
+  EXPECT_TRUE(glz::read_json(read, std::string_view(R"({"addressSpace":"intranet"})")));
+  EXPECT_TRUE(glz::read_json(read, std::string_view(R"({"addressSpace":"Public"})")));
 }
 #endif
 

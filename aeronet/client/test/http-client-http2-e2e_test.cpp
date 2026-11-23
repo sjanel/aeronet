@@ -98,6 +98,10 @@ std::string MakeLargeBody() {
   return body;
 }
 
+constexpr std::string_view kIdentityCodedBody = "identity-coded body";
+constexpr std::string_view kSameSizeCodedBody = "other body, decoded";
+static_assert(kIdentityCodedBody.size() == kSameSizeCodedBody.size());
+
 std::atomic<bool> lastSeenHttp2{false};
 
 // NOTE: HttpRequestView::clientAddress() is not usable here: requests dispatched through the HTTP/2
@@ -161,6 +165,19 @@ test::TestServer CreateTestServer() {
     std::ranges::transform(coding, coding.begin(), [](char ch) { return toupper(ch); });
     return req.makeResponse().contentEncoding(coding).body(std::string_view(test::Compress(enc, MakeLargeBody())),
                                                            "application/octet-stream");
+  });
+  // A body whose only coding is identity: nothing to decode.
+  routerProxy.setPath(http::Method::GET, "/identity-coding", [](const HttpRequestView& req) {
+    Observe(req);
+    return req.makeResponse().contentEncoding(http::identity).body(kIdentityCodedBody, "text/plain");
+  });
+  // A body of the same size, compressed by the handler.
+  routerProxy.setPath(http::Method::GET, "/same-size-coded", [](const HttpRequestView& req) {
+    Observe(req);
+    const Encoding enc = test::SupportedEncodings().front();
+    return req.makeResponse()
+        .contentEncoding(GetEncodingStr(enc))
+        .body(std::string_view(test::Compress(enc, kSameSizeCodedBody)), "text/plain");
   });
   routerProxy.setPath(http::Method::GET, "/redirect", [](const HttpRequestView& req) {
     Observe(req);
@@ -1263,6 +1280,31 @@ TEST(HttpClientHttp2E2ETest, UpperCaseCodingIsDecoded) {
   HttpClient rawClient(cfg);
   auto raw = rawClient.get(Url("/upper-case-coding")).value();
   EXPECT_EQ(raw.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(test::SupportedEncodings().front()));
+}
+
+// Identity-only codings decode nothing: the body is installed from the receive buffer, never from the decompression
+// scratch, even when the latter holds as many bytes of a previous response.
+TEST(HttpClientHttp2E2ETest, IdentityCodingInstallsTheReceivedBody) {
+  HttpClient client = MakeHttp2Client();
+  auto resp = client.get(Url("/identity-coding")).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), kIdentityCodedBody);
+  EXPECT_TRUE(resp.hasBodyCaptured());  // the receive buffer allocation, transferred
+  EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
+
+  if (test::SupportedEncodings().empty()) {
+    return;
+  }
+  // A sink leaves its decoded body in the decompression scratch.
+  test::CollectingBodySink sink;
+  auto sinkResult = client.get(Url("/same-size-coded"), sink);
+  ASSERT_TRUE(sinkResult) << ErrcToStr(sinkResult.error());
+  EXPECT_EQ(sink.body, kSameSizeCodedBody);
+
+  resp = client.get(Url("/identity-coding")).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), kIdentityCodedBody);
+  EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
 }
 
 TEST(HttpClientHttp2E2ETest, KeepAliveDisabledReconnectsPerRequest) {
