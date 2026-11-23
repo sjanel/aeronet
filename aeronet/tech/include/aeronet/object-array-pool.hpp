@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "aeronet/asan-poison.hpp"
+#include "aeronet/compiler-config.hpp"
 
 namespace aeronet {
 
@@ -20,6 +21,8 @@ namespace aeronet {
 // allocated array, or to arrays destroyed by shrinkLastAllocated / clear, are reported as 'use-after-poison'.
 template <class T, class SizeType = std::size_t>
 class ObjectArrayPool {
+  static_assert(alignof(T) <= alignof(std::max_align_t), "blocks come from malloc: over-aligned types not supported");
+
  public:
   using size_type = SizeType;
 
@@ -51,7 +54,8 @@ class ObjectArrayPool {
   }
 
   // Moves the objects of other to this pool, along with their blocks: nothing is copied, their pointers stay valid and
-  // belong to this pool. The next allocations continue in the current block of other. other is left without blocks.
+  // belong to this pool. The next allocations continue in the current block of other. other is left without blocks,
+  // with its initial capacity.
   void splice(ObjectArrayPool& other) noexcept;
 
   // Allocates and default constructs an array of nbElems objects in the pool with the provided arguments.
@@ -97,16 +101,19 @@ class ObjectArrayPool {
   // Clears the pool and release all allocated blocks.
   // All live objects are destroyed so all pointers previously returned by
   // allocateAndDefaultConstruct become invalid.
+  // The initial capacity is the one given at construction, even if the first block was larger.
   void reset() noexcept;
 
  private:
   struct Block {
     T* begin() noexcept { return reinterpret_cast<T*>(reinterpret_cast<std::byte*>(this + 1) + kMallocPadding); }
 
-    Block* pPrevBlock;
     Block* pNextBlock;
     size_type size;
     size_type capacity;
+    // Initial capacity of the pool (_totalCapacity before its first block), restored by reset(): the capacity of the
+    // first block is larger when the first array is. Only read in the first block of a pool.
+    size_type poolInitialCapacity;
   };
 
   static constexpr size_type kSlotAlign = static_cast<size_type>(std::alignment_of_v<T>);
@@ -125,7 +132,8 @@ class ObjectArrayPool {
     return newBlockCapacity;
   }
 
-  void getOrCreateNewBlock(size_type nbElems) {
+  // Slow path of allocateAndDefaultConstruct, kept out of line so that its inlined fast path stays small.
+  AERONET_NOINLINE void getOrCreateNewBlock(size_type nbElems) {
     if (_pCurrentBlock != nullptr) {
       Block* pNextBlock = _pCurrentBlock->pNextBlock;
       while (pNextBlock != nullptr) {
@@ -148,7 +156,6 @@ class ObjectArrayPool {
       throw std::bad_alloc();
     }
 
-    pNewBlock->pPrevBlock = _pCurrentBlock;
     pNewBlock->pNextBlock = nullptr;
     pNewBlock->size = 0;
     pNewBlock->capacity = newBlockCapa;
@@ -159,6 +166,7 @@ class ObjectArrayPool {
       _pCurrentBlock->pNextBlock = pNewBlock;
       _totalCapacity += newBlockCapa;
     } else {
+      pNewBlock->poolInitialCapacity = _totalCapacity;
       _pFirstBlock = pNewBlock;
       _totalCapacity = newBlockCapa;
     }
@@ -200,6 +208,9 @@ void ObjectArrayPool<T, SizeType>::splice(ObjectArrayPool& other) noexcept {
   }
   if (_pFirstBlock == nullptr) {
     swap(other);
+    // Each pool keeps its own initial capacity: other gets it back from the first block, which keeps the one of this
+    // pool instead.
+    std::swap(other._totalCapacity, _pFirstBlock->poolInitialCapacity);
     return;
   }
 
@@ -210,12 +221,11 @@ void ObjectArrayPool<T, SizeType>::splice(ObjectArrayPool& other) noexcept {
     pLastBlock = pLastBlock->pNextBlock;
   }
   pLastBlock->pNextBlock = other._pFirstBlock;
-  other._pFirstBlock->pPrevBlock = pLastBlock;
   _pCurrentBlock = other._pCurrentBlock;
   _totalCapacity += other._totalCapacity;
 
-  // As after reset(): the initial capacity of other is the one of its first block.
-  other._totalCapacity = other._pFirstBlock->capacity;
+  // As after reset().
+  other._totalCapacity = other._pFirstBlock->poolInitialCapacity;
   other._pFirstBlock = nullptr;
   other._pCurrentBlock = nullptr;
 }
@@ -261,7 +271,7 @@ void ObjectArrayPool<T, SizeType>::reset() noexcept {
     clear();
 
     // Resets total capacity to its initial value (at construction of the pool)
-    _totalCapacity = _pFirstBlock->capacity;
+    _totalCapacity = _pFirstBlock->poolInitialCapacity;
 
     Block* pBlock = _pFirstBlock;
     while (pBlock != nullptr) {

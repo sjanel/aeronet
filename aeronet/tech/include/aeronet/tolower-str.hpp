@@ -46,21 +46,21 @@ constexpr void tolower(char* buf, std::size_t len) {
   if (HasAvx2()) {
     // Process 32 bytes at a time when AVX2 is available.
     for (; charPos + 32 <= len; charPos += 32) {
-      auto* chunk = reinterpret_cast<uint64_t*>(buf + charPos);
+      uint64_t* chunk = reinterpret_cast<uint64_t*>(buf + charPos);
       AsciiLowerMask4(chunk);
     }
   }
 #elif defined(__ARM_NEON) || defined(__ARM_NEON__)
   // Process 16 bytes at a time
   for (; charPos + 16 <= len; charPos += 16) {
-    auto* chunk = reinterpret_cast<uint64_t*>(buf + charPos);
+    uint64_t* chunk = reinterpret_cast<uint64_t*>(buf + charPos);
     AsciiLowerMask2(chunk);
   }
 #endif
 
   // Process 8 bytes at a time
   for (; charPos + 8 <= len; charPos += sizeof(uint64_t)) {
-    auto* chunk = reinterpret_cast<uint64_t*>(buf + charPos);
+    uint64_t* chunk = reinterpret_cast<uint64_t*>(buf + charPos);
     *chunk = AsciiLowerMask(*chunk);
   }
 

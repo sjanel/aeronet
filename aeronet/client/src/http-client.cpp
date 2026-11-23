@@ -281,7 +281,7 @@ HttpClient::HttpClient(HttpClient&& rhs) noexcept
 HttpClient::HttpClient(const HttpClient& rhs) : HttpClient(rhs._config) {}
 
 HttpClient& HttpClient::operator=(HttpClient&& rhs) noexcept {
-  if (&rhs != this) {
+  if (&rhs != this) [[likely]] {
     _config = std::move(rhs._config);
     _loop = std::move(rhs._loop);
     _loopFd = rhs._loopFd;
@@ -312,7 +312,7 @@ HttpClient& HttpClient::operator=(HttpClient&& rhs) noexcept {
 }
 
 HttpClient& HttpClient::operator=(const HttpClient& rhs) {
-  if (&rhs != this) {
+  if (&rhs != this) [[likely]] {
     *this = HttpClient(rhs._config);
   }
   return *this;
@@ -360,6 +360,7 @@ HttpClientResult HttpClient::requestProcess(HttpRequest&& req, ResponseBodySink*
       return HttpResponse(*pCachedHttpResponse);
     }
   }
+
   HttpClientResult result = requestUncached(std::move(req), isCacheEligible ? &cacheKey : nullptr);
   // Cache only genuine 2xx responses; transport errors and non-success statuses are never stored.
   // Both HTTP/1.1 (Http1ResponseParser::decideFraming(), gated on _statusCode >= 200) and HTTP/2 (interim HEADERS are

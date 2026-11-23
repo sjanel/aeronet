@@ -282,6 +282,31 @@ TEST(ObjectArrayPoolSpliceTest, SpliceMovesBlocksWithoutMovingObjects) {
   EXPECT_EQ(pool.capacity(), poolCapa + 16U);
 }
 
+TEST(ObjectArrayPoolSpliceTest, SpliceKeepsTheInitialCapacityOfEachPool) {
+  ObjectArrayPool<char> pool(8);
+  (void)pool.allocateAndDefaultConstruct(1);
+  ObjectArrayPool<char> other(4);
+  (void)other.allocateAndDefaultConstruct(50);  // first block larger than the initial capacity of other
+
+  pool.splice(other);
+  EXPECT_EQ(pool.capacity(), 58U);
+  EXPECT_EQ(other.capacity(), 0U);
+  (void)other.allocateAndDefaultConstruct(1);
+  EXPECT_EQ(other.capacity(), 4U);  // not the 50 of its previous first block
+
+  // Into a pool without block: the first block of other becomes the one of this pool.
+  ObjectArrayPool<char> empty(16);
+  ObjectArrayPool<char> large(4);
+  (void)large.allocateAndDefaultConstruct(50);
+  empty.splice(large);
+  EXPECT_EQ(empty.capacity(), 50U);
+  (void)large.allocateAndDefaultConstruct(1);
+  EXPECT_EQ(large.capacity(), 4U);
+  empty.reset();
+  (void)empty.allocateAndDefaultConstruct(1);
+  EXPECT_EQ(empty.capacity(), 16U);
+}
+
 TEST(ObjectArrayPoolStressTest, BulkAllocateAndReset) {
   ObjectArrayPool<char> pool;
 
@@ -297,6 +322,23 @@ TEST(ObjectArrayPoolStressTest, BulkAllocateAndReset) {
 
   pool.reset();
   EXPECT_EQ(pool.capacity(), 0U);
+}
+
+TEST(ObjectArrayPoolTest, ResetRestoresTheInitialCapacityAfterALargerFirstBlock) {
+  ObjectArrayPool<std::string> pool(8);
+  std::string* pFirst = pool.allocateAndDefaultConstruct(100);  // first block sized for this array
+  pFirst[99] = "large";
+  EXPECT_EQ(pool.capacity(), 100U);
+
+  pool.reset();
+  EXPECT_EQ(pool.capacity(), 0U);
+  (void)pool.allocateAndDefaultConstruct(1);
+  EXPECT_EQ(pool.capacity(), 8U);  // the capacity given at construction, not the one of the previous first block
+
+  // Same after another reset, now that the first block has the initial capacity.
+  pool.reset();
+  (void)pool.allocateAndDefaultConstruct(3);
+  EXPECT_EQ(pool.capacity(), 8U);
 }
 
 TEST(ObjectArrayPoolShrinkTest, TrivialTypeShrinkAndReuse) {
