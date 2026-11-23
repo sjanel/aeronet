@@ -435,7 +435,7 @@ AERONET_NOINLINE http::StatusCode UnknownMethodStatus(const char* pFirst, const 
 http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, HeadParseState& headParseState,
                                                  RawChars& tmpBuffer, uint32_t maxHeadersBytes,
                                                  bool mergeAllowedForUnknownRequestHeaders,
-                                                 tracing::SpanPtr traceSpan) {
+                                                 const tracing::TelemetryContext* pTelemetry) {
   char* pFirst = inBuffer.data();
   char* pLast = pFirst + inBuffer.size();
 
@@ -617,17 +617,20 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, HeadP
 
   // At this point, we have a complete request head, and we point to a CRLF.
 
-  if (traceSpan) {
-    traceSpan->setAttribute("http.method", http::MethodToStr(_method));
-    traceSpan->setAttribute("http.target", path());
-    traceSpan->setAttribute("http.scheme", "http");
+  // The span is created once the head is complete: not for each read of a head received in several parts (an
+  // OpenTelemetry span is exported when destroyed, even if never ended), nor for a rejected head.
+  if (pTelemetry != nullptr) {
+    _traceSpan = pTelemetry->createSpan("http.request");
+  }
+  if (_traceSpan) {
+    _traceSpan->setAttribute("http.method", http::MethodToStr(_method));
+    _traceSpan->setAttribute("http.target", path());
+    _traceSpan->setAttribute("http.scheme", "http");
 
     if (hostIt != _headers.end()) {
-      traceSpan->setAttribute("http.host", hostIt->second);
+      _traceSpan->setAttribute("http.host", hostIt->second);
     }
   }
-
-  _traceSpan = std::move(traceSpan);
   _headSpanSize = static_cast<std::size_t>(pFirst + http::CRLF.size() - inBuffer.data());
 
   resetBodyState();

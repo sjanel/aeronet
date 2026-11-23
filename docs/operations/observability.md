@@ -187,7 +187,7 @@ Without handler code, each server emits:
 
 | Signal | Name | Content |
 | --- | --- | --- |
-| Span | `http.request` | One per request, with `http.method`, `http.target`, `http.scheme`, `http.host`, `http.status_code`, and `http.duration_us`. |
+| Span | `http.request` | One per request, created once its head is received (whatever the number of reads), none for a rejected head, with `http.method`, `http.target`, `http.scheme`, `http.host`, `http.status_code`, and `http.duration_us`. |
 | Span | `aeronet.middleware` | One per middleware call, with its phase, scope, index, and whether it short-circuited, threw, or ran for a streaming route. |
 | Counters | `aeronet.connections.accepted`, `aeronet.events.processed`, `aeronet.events.errors`, `aeronet.bytes.read` | Connection and event loop activity. `aeronet.events.errors` counts the failed polls, each of which stops its server (see [Stopping](../guides/server-lifecycle.md#stopping)). |
 | Counters | `aeronet.connections.closed_for_*` | Connections closed by a timeout (`keep_alive`, `stalled_output` for a response that made no progress for `keepAliveTimeout`, `header_read_timeout`, `body_read_timeout`, `request_timeout`, `handshake_timeout`, `lingering_close_timeout`, `websocket_idle_timeout`, `websocket_close_timeout`, `http2_settings_timeout`, `http2_ping_timeout`), a drain (`drain`), or [`MSG_ZEROCOPY`](performance.md#msg_zerocopy) sends without progress (`zerocopy_stall`). |
@@ -238,7 +238,7 @@ Read [Health probes](health-probes.md), then use the [Kubernetes deployment guid
 
 ## Tests
 
-- OpenTelemetry export end to end: [tests/opentelemetry-e2e_test.cpp](../../tests/opentelemetry-e2e_test.cpp).
+- OpenTelemetry export end to end, with one `http.request` span for a head received in several reads (`OneSpanPerRequestWhateverTheReadsOfItsHead`): [tests/opentelemetry-e2e_test.cpp](../../tests/opentelemetry-e2e_test.cpp).
 - DogStatsD: [dogstatsd_test.cpp](../../aeronet/objects/test/dogstatsd_test.cpp).
 - Counter batching: [counter-accumulator_test.cpp](../../aeronet/objects/test/counter-accumulator_test.cpp), the `DogStatsDCounters*` tests of [opentelemetry-integration_test.cpp](../../aeronet/objects/test/opentelemetry-integration_test.cpp), `HttpServerTelemetry.DogStatsDMetricsSentAtMaintenanceTick` in [tests/http-core_test.cpp](../../tests/http-core_test.cpp) and `HttpClientE2ETest.TelemetryCountersSentAfterEachRequest` in [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp).
 - Access log: [access-log-writer_test.cpp](../../aeronet/server/test/access-log-writer_test.cpp).

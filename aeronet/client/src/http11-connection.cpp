@@ -293,7 +293,7 @@ class ClientConnection::Http11RequestWriter {
   // as from a server ignoring expectations. A final response answers the request without it.
   Step awaitContinue() {
     const SteadyClock::time_point continueDeadline =
-        std::min(_deadline, SteadyClock::now() + _client.config().expectContinueTimeout);
+        std::min(_deadline, DeadlineAfter(SteadyClock::now(), _client.config().expectContinueTimeout));
     while (_early == Http1ResponseParser::EarlyResponse::None) {
       if (_client.waitExchangeEvents(_fd, EventIn, continueDeadline) == 0U) {
         return SteadyClock::now() < _deadline ? Step::Continue : Step::Timeout;

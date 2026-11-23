@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <system_error>
@@ -207,6 +208,13 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
       assert(state.pendingRequest.headParseState == HttpRequestView::HeadParseState::None);
       const std::size_t emptyLinesSize = LeadingEmptyLinesSize(std::string_view(input.data(), input.size()));
       if (emptyLinesSize == kWaitForRequestLine) {
+        if (consumedInput.nbBytes != 0) {
+          // They follow a request answered by this call (some clients send one after the body of a POST request): the
+          // complete ones are consumed with it, so that an idle keep-alive connection does not keep its input buffer.
+          // Only a CR may be left, the start of another one. Received alone, they wait in the input buffer (see
+          // LeadingEmptyLinesSize()).
+          consumedInput.nbBytes += input.size() - (input.size() % http::CRLF.size());
+        }
         break;
       }
       consumedInput.nbBytes += emptyLinesSize;
@@ -394,9 +402,8 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::readHead(Connecti
         return LoopAction::Break;
       }
     }
-    statusCode =
-        request.initTrySetHead(input, headParseState, ctx.sharedBuffers.buf, ctx.config.maxHeaderBytes,
-                               ctx.config.mergeUnknownRequestHeaders, ctx.telemetry.createSpan("http.request"));
+    statusCode = request.initTrySetHead(input, headParseState, ctx.sharedBuffers.buf, ctx.config.maxHeaderBytes,
+                                        ctx.config.mergeUnknownRequestHeaders, &ctx.telemetry);
     if (statusCode == HttpRequestView::kStatusNeedMoreData) {
       return LoopAction::Break;
     }
@@ -431,7 +438,7 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::readHead(Connecti
 
   // Parse content-length. We are strict here - even if transfer encoding is present, we reject for empty or invalid
   // content-length header value.
-  if (const auto optContentLength = request.headerValue(http::ContentLength)) {
+  if (const std::optional<std::string_view> optContentLength = request.headerValue(http::ContentLength)) {
     std::string_view lenViewAll = *optContentLength;
     std::size_t declaredContentLen;
     const auto [ptr, err] =
@@ -445,7 +452,7 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::readHead(Connecti
     request._body = std::string_view{};
   }
 
-  const auto optTransferEncoding = request.headerValue(http::TransferEncoding);
+  const std::optional<std::string_view> optTransferEncoding = request.headerValue(http::TransferEncoding);
   if (optTransferEncoding) {
     if (!acceptChunkedTransferEncoding(cnxIt, *optTransferEncoding)) {
       return LoopAction::Break;
@@ -641,6 +648,7 @@ Http1Pipeline::LoopAction Http1Pipeline::serveStreamingRequest(ConnectionIt cnxI
     }
     // Part of the response was sent: close the connection without completing the body (no final chunk, or a short
     // Content-Length), so that the client knows that it is incomplete.
+    ctx.maintenance.endRequestTimers(state);
     endRequest(state, http::StatusCodeInternalServerError);
     state.requestDrainAndClose();
     return LoopAction::Break;
@@ -649,6 +657,8 @@ Http1Pipeline::LoopAction Http1Pipeline::serveStreamingRequest(ConnectionIt cnxI
     writer.end();
   }
 
+  // The timers of the next request start with its first bytes, or right away for a request pipelined behind this one.
+  ctx.maintenance.endRequestTimers(state);
   endRequest(state, writer.status());
 
   // A close-delimited body (HTTP/1.0 without Content-Length) ends with the connection, announced by its head.

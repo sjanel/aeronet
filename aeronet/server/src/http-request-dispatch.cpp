@@ -166,7 +166,7 @@ HttpResponse RequestPipeline::runRequestMiddleware(HttpRequestView& request, con
 
   HttpResponse result = internal::HttpResponseAccess::MakeUnallocated();
 
-  auto applyChain = [&, streaming](std::span<const RequestMiddleware> middlewareChain, bool isGlobal) {
+  const auto applyChain = [&, streaming](std::span<const RequestMiddleware> middlewareChain, bool isGlobal) {
     for (uint32_t hookIdx = 0; hookIdx < middlewareChain.size(); ++hookIdx) {
       auto spanScope = StartMiddlewareSpan(request, MiddlewareMetrics::Phase::Pre, hookIdx, isGlobal, streaming,
                                            _pTelemetry->createSpan("aeronet.middleware"));

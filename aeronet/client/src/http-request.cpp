@@ -362,8 +362,10 @@ const char* HttpRequest::setNewUrl(const internal::UrlParseResult& res) {
   const bool hostIsIpv6 = res.host.contains(':');
   const auto hostHeaderSize = ComputeHostHeaderSize(res.host, hostIsIpv6, res.hasNonDefaultPort(), portNbDigits);
 
-  const auto newHostHeaderEndPos =
-      _originKeyLen + methodLen + 1U + TargetSize(res.target) + 1U + http::HTTP11Sv.size() + hostHeaderSize;
+  // Origin key, "<METHOD> ", target (prefixed with the origin key again in absolute-form for a cleartext proxy, see
+  // InitData()), " HTTP/1.1" and the Host header line.
+  const std::size_t newHostHeaderEndPos = _originKeyLen + methodLen + 1U + (hasNonTlsProxy ? _originKeyLen : 0U) +
+                                          TargetSize(res.target) + 1U + http::HTTP11Sv.size() + hostHeaderSize;
   const int32_t diffLen = static_cast<int32_t>(newHostHeaderEndPos) - static_cast<int32_t>(oldHostHeaderEndPos);
 
   HeadGrowthManager headGrowthManager(*this, diffLen);

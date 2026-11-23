@@ -56,7 +56,7 @@ The most important changes. Upgrade especially if one of these applies to you:
 
 - **Pipelining and close**: requests pipelined behind a slow reader are no longer answered `414` or `408` (the server stops reading while output waits, as for HTTP/2), a client half-closing right after its request receives the whole response, the lingering close also waits for the input still in the socket (RFC 9112 §9.6), and a `406` keeps the connection open. See [Connections and keep-alive](guides/server-lifecycle.md#connections-and-keep-alive) and [Lingering close](guides/server-lifecycle.md#lingering-close).
 - **Slow readers**: a client that stops reading a file response, or any response with `enableKeepAlive` off, is closed once the response made no progress for `keepAliveTimeout` (new `aeronet.connections.closed_for_stalled_output` counter), and a client reading slowly but steadily is no longer closed in the middle of a response.
-- **Timeouts**: those of a pipelined request count from its own start (they counted from the boot of the host, wrong after 49.7 days of uptime), and per-route timeouts close to `PathEntryConfig::kMaxRequestTimeout` no longer expire within milliseconds. See [Limits and timeouts](guides/requests.md#limits-and-timeouts) and [Per-route options](guides/routing.md#per-route-options).
+- **Timeouts**: those of a pipelined request count from its own start (they counted from the boot of the host, wrong after 49.7 days of uptime), and per-route timeouts close to `PathEntryConfig::kMaxRequestTimeout` no longer expire within milliseconds. A per-route `timeout()` counts from the reception of the head, as over HTTP/2 (each read of the body pushed it back, so a slow upload never reached it), and ends with a streamed response (it then closed the idle connection with a `408`, and the next request had no header read timeout). See [Limits and timeouts](guides/requests.md#limits-and-timeouts) and [Per-route options](guides/routing.md#per-route-options).
 
 #### Responses
 
@@ -127,12 +127,16 @@ The most important changes. Upgrade especially if one of these applies to you:
 - **HTTP/2**: connection-specific headers are no longer sent, responses carrying them fail with `malformedResponse`, repeated `Set-Cookie` fields stay separate, and no false error is logged when a sink stops a small response. See [HTTP/2](modules/http-client.md#http2) and [Streaming response bodies](modules/http-client.md#streaming-response-bodies).
 - **A host longer than 65535 bytes is an invalid URL** (`std::invalid_argument`, or `invalidUrl` for a redirect, instead of `std::overflow_error`); the new `HttpRequest::IsValidUrl()` checks a URL without exception. See [Requests](modules/http-client.md#requests).
 - **Request targets of redirects and of URLs without a path**: a `Location` holding only a query (`?page=2`) replaces the query of the request (it was appended: `/list?page=1?page=2`), a URL without a path (`http://host?q=1`) is requested as `/?q=1` (the request line carried `?q=1`, which servers reject), and a relative redirect through a cleartext proxy keeps the absolute URL as target (the proxy got the path alone). See [Redirects](modules/http-client.md#redirects).
+- **An absolute redirect through a cleartext proxy no longer corrupts the request head**: the `Host` header was cut and the next headers lost, and a longer URL was written past the buffer. See [Redirects](modules/http-client.md#redirects).
+- **`std::chrono::milliseconds::max()` for `requestTimeout` or `inactivityTimeout` no longer fails the request at once**: the deadline overflowed. See [Timeouts](modules/http-client.md#timeouts).
+- **The headers of an interim `1xx` response (`103 Early Hints`) are no longer added to the final response.** See [Responses](modules/http-client.md#responses).
 - **A redirected cached request is stored under the key of the request of the caller**: it was never served from the cache, and a redirect to a longer URL read freed memory. See [Response cache](modules/http-client.md#response-cache).
 
 #### TLS, server and platforms
 
 - **HTTP/1.1 over TLS sets `TCP_NODELAY` under the default `Auto`**, as documented (only HTTP/2 did): the first response of a connection took 43.6 ms instead of 2.5 ms, and 16 to 64 KiB responses were served at 2.3k requests/s instead of 60-86k. See [Settings](operations/performance.md#settings).
 - **A failing `epoll_wait()` stops the server** instead of spinning at 100% CPU, an interrupted `sendfile()` is retried at once instead of stalling its response, and the exception of a failed event-loop registration carries its own error code. See [Stopping](guides/server-lifecycle.md#stopping).
+- **One OpenTelemetry `http.request` span per request**: a head received in several reads exported an empty span per read, and a rejected head an empty one. See [Built-in instrumentation](operations/observability.md#built-in-instrumentation).
 - **The lines of the built-in logger no longer interleave** between threads. See [Logging](operations/observability.md#logging).
 - **The total `ServerStats` of `MultiHttpServer::stats()` counts kTLS.** See [Observability](protocols/tls.md#observability).
 

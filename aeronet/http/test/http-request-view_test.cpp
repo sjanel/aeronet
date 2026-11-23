@@ -125,8 +125,10 @@ class HttpRequestViewTest : public ::testing::Test {
     inBuffer = std::move(raw);
     headParseState = HeadParseState::None;  // a new request
     RawChars tmpBuffer;
-    auto ret = req.initTrySetHead(inBuffer, headParseState, tmpBuffer, 4096U, mergeAllowedForUnknownRequestHeaders,
-                                  std::move(span));
+    // Without telemetry context, the span of the request is kept as is.
+    req._traceSpan = std::move(span);
+    auto ret =
+        req.initTrySetHead(inBuffer, headParseState, tmpBuffer, 4096U, mergeAllowedForUnknownRequestHeaders, nullptr);
     if (ret == http::StatusCodeOK) {
       req.finalizeBeforeHandlerCall({});
     }

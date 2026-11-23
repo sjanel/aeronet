@@ -8,6 +8,7 @@
 
 #include "aeronet/compiler-config.hpp"
 #include "aeronet/connection-state.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/connection-storage.hpp"
@@ -124,9 +125,9 @@ std::chrono::steady_clock::time_point ConnectionMaintenance::nextIdleCheck(
 #ifdef AERONET_ENABLE_OPENSSL
   if (state.transport.isTls() && !state.tlsBuffersReleased) {
     const HttpServerConfig& config = _pCtx->config;
-    const auto releaseDelay = config.tls.idleBufferReleaseDelay;
+    const std::chrono::milliseconds releaseDelay = config.tls.idleBufferReleaseDelay;
     if (releaseDelay < config.keepAliveTimeout) {
-      const auto releaseAt = state.lastActivity + releaseDelay;
+      const std::chrono::steady_clock::time_point releaseAt = state.lastActivity + releaseDelay;
       if (releaseAt > _pCtx->connections.now) {
         return releaseAt;  // active since: checked again once idle for releaseDelay
       }
@@ -229,7 +230,7 @@ bool ConnectionMaintenance::closeExpiredKeepAliveConnections() {
     }
 
     // The writes of the HTTP/1 output count as activity (see ConnectionIo::flushOutbound()).
-    const auto currentExpiry = state.lastActivity + config.keepAliveTimeout;
+    const std::chrono::steady_clock::time_point currentExpiry = state.lastActivity + config.keepAliveTimeout;
     if (currentExpiry > now) {
       _deadlines.upsert(state, expired.fd, nextIdleCheck(state, currentExpiry));
       continue;
@@ -350,11 +351,12 @@ void ConnectionMaintenance::trackRequestDeadline(ConnectionState& state,
   if (state.requestDeadlineMs == ConnectionState::kInactiveRelativeMs) {
     ++_sweepState.requestDeadlineConnections;
   }
-  // Set again each time the request is served with more of its body: counted from its start, the largest timeout
-  // (PathEntryConfig::kMaxRequestTimeout, to which longer ones are capped) no longer fits in 32 bits once some time
-  // elapsed. Capped to about 49.7 days.
-  const auto deadline =
-      std::chrono::duration_cast<std::chrono::milliseconds>(state.lastActivity - state.headerStartTp) +
+  // Counted from the reception of its head (HttpRequestView::reqStart(), as over HTTP/2), set when the head is parsed:
+  // the same deadline each time the request is served with more of its body. Relative to headerStartTp, the largest
+  // timeout (PathEntryConfig::kMaxRequestTimeout, to which longer ones are capped) may not fit in 32 bits: capped to
+  // about 49.7 days.
+  const std::chrono::milliseconds deadline =
+      std::chrono::duration_cast<std::chrono::milliseconds>(state.request.reqStart() - state.headerStartTp) +
       std::min(requestTimeout, PathEntryConfig::kMaxRequestTimeout);
   state.requestDeadlineMs = static_cast<uint32_t>(
       std::clamp<std::chrono::milliseconds::rep>(deadline.count(), 0, ConnectionState::kInactiveRelativeMs - 1));
