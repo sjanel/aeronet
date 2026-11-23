@@ -359,7 +359,7 @@ class HttpClient {
   // read whole and returned like a regular one, its connection closed. The connection is never pooled; redirects are
   // not followed and nothing is retried. The cookies of the jar are sent, and the ones of the response stored, as by
   // request(). A transport failure (connect, TLS, timeout, malformed response...) is returned as an HttpClientErrc.
-  // `req` is not moved from: it is left as sent, with the cookies of the jar.
+  // `req` is not moved from: its headers are those sent, except the cookies of the jar, added on the wire only.
   HttpUpgradeResult upgrade(HttpRequest&& req);
 
   // Convenience verbs.

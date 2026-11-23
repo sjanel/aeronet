@@ -50,9 +50,10 @@ struct UrlParseResult;
 // request URL, which is not part of the HTTP request itself, but is used for internal purposes.
 class HttpRequest final : public HttpMessage {
  public:
-  // Whether 'url' can be requested: an absolute http or https URL without user info, with a non-zero port, a host of at
-  // most 65535 bytes and a valid request target (no space nor control character, complete percent-escapes) within the
-  // length limit. HttpClient::makeRequest() throws std::invalid_argument for another one.
+  // Whether 'url' can be requested: an absolute http or https URL without user info, with a non-zero port, a valid host
+  // of at most 65535 bytes (a name or an IPv4 address of unreserved characters, sub-delims and percent-escapes, or an
+  // IPv6 address in brackets, RFC 3986 §3.2.2) and a valid request target (no space nor control character, complete
+  // percent-escapes) within the length limit. HttpClient::makeRequest() throws std::invalid_argument for another one.
   [[nodiscard]] static bool IsValidUrl(std::string_view url) noexcept;
 
   // --------/
@@ -118,7 +119,8 @@ class HttpRequest final : public HttpMessage {
   // Synonym for statusLineSize().
   [[nodiscard]] std::size_t statusLineLength() const noexcept { return statusLineSize(); }
 
-  // Get the current target stored in this HttpRequest.
+  // Get the current request-target: its origin-form ("/path?query", "/" for an empty path) or "*", in absolute-form
+  // ("http://host:port/path?query", "http://host:port" for "*") for a cleartext request to a forward proxy.
   [[nodiscard]] std::string_view target() const noexcept { return {targetBeg(), targetEnd()}; }
 
   // Get the current file stored in this HttpRequest, or nullptr if no file is set.
@@ -149,8 +151,11 @@ class HttpRequest final : public HttpMessage {
   //    \_____________________/
   //           originKey
 
-  // Replaces the request target. The target must be valid per HTTP specifications.
-  // For a request to a non TLS proxy, the target must be an absolute-form URL (scheme://host:port/path?query).
+  // Replaces the request-target with 'target', in origin-form ("/path?query", "?query" being written "/?query") or "*"
+  // (asterisk-form, for OPTIONS). The target is written in absolute-form for a cleartext request to a forward proxy:
+  // the absolute-form of the origin of the request returned by target() is accepted too. Throws std::invalid_argument
+  // for another target (an absolute-form of another origin...), or one with a space, a control character, an incomplete
+  // percent-escape or beyond the length limit.
   HttpRequest& target(std::string_view target) &;
 
   // Rvalue overload of target(target).
@@ -793,6 +798,10 @@ class HttpRequest final : public HttpMessage {
   [[nodiscard]] const char* targetEnd() const noexcept {
     return _data.data() + headersStartPos() - http::HTTP10Sv.size() - 1U;
   }
+
+  // Whether the target is in absolute-form, the origin key followed by its origin-form part (empty for "*"): a request
+  // to a cleartext forward proxy (RFC 9112 §3.2.2).
+  [[nodiscard]] bool hasAbsoluteFormTarget() const noexcept { return _opts.hasProxy() && !isTlsRequest(); }
 
   const char* setNewUrl(const internal::UrlParseResult& res);
 

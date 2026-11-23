@@ -194,6 +194,7 @@ ObjectArrayPool<T, SizeType>& ObjectArrayPool<T, SizeType>::operator=(ObjectArra
 
 template <class T, class SizeType>
 void ObjectArrayPool<T, SizeType>::splice(ObjectArrayPool& other) noexcept {
+  assert(this != &other);
   if (other._pFirstBlock == nullptr) {
     return;
   }

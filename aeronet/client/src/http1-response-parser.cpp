@@ -49,6 +49,16 @@ void ScanConnectionTokens(std::string_view trimmedValue, bool& closeSeen, bool& 
 
 }  // namespace
 
+void Http1ResponseParser::AppendContentCodings(HttpResponse& resp, std::string_view codings) {
+  if (codings.empty()) {
+    return;  // an empty list element is ignored (RFC 9110 §5.6.1.2)
+  }
+  const std::string_view stored = resp.headerValueOrEmpty(http::ContentEncoding);
+  static constexpr std::string_view kListSep = ", ";
+  resp.appendHeaderValueUnchecked(stored.data() + stored.size(), codings,
+                                  stored.empty() ? std::string_view{} : kListSep);
+}
+
 void Http1ResponseParser::InstallBodyStorage(HttpResponse& resp, std::string_view body, std::string_view contentType,
                                              RawChars* owner) {
   if (owner == nullptr || body.empty()) {
@@ -526,6 +536,13 @@ Http1ResponseParser::Status Http1ResponseParser::parseResponse(std::span<char> b
       } else if (name == http::ContentEncoding) {
         // Content codings are case-insensitive (RFC 9110 §8.4.1): lower-case them in place before storing.
         tolower(lineFirst + (value.data() - line.data()), value.size());
+        if (_headerFlags.hasContentEncoding) {
+          // A repeated field continues the list of codings (RFC 9110 §5.3): the line of the response holds them all, in
+          // their order, so that the body is decoded with each of them.
+          AppendContentCodings(resp, value);
+          continue;
+        }
+        _headerFlags.hasContentEncoding = !isInterim();
       } else if (!http::IsValidHeaderName(name)) {
         return Status::Error;
       }

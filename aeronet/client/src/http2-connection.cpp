@@ -160,8 +160,7 @@ class Http2ClientEngine : private EventSink {
     if (!_conn.isOpen() || _goAwayReceived || _nextStreamId > kMaxStreamId) {
       return false;
     }
-    const uint32_t maxStreams = _conn.localSettings().maxStreamsPerConnection;
-    return (_nextStreamId - 1U) / 2U < maxStreams;
+    return (_nextStreamId - 1U) / 2U < _conn.localSettings().maxStreamsPerConnection;
   }
 
   // Drain protocol input that arrived while this connection was idle. This is deliberately non-blocking:

@@ -25,8 +25,9 @@ constexpr bool IsHttpScheme(std::string_view scheme, bool& tls) {
 }
 
 // Parse the "host[:port][/path][?query]" slice that follows "scheme://" (or a "//" network-path
-// reference) for an already-resolved scheme.
-// Returns an empty host on malformed input.
+// reference) for an already-resolved scheme. The host of an IPv6 literal ("[::1]") is given without its brackets: a
+// host holding a ':' is one, as a reg-name or an IPv4 address cannot (RFC 3986 §3.2.2). The characters of the host are
+// not checked here. Returns an empty host on malformed input.
 constexpr void ParseAuthority(std::string_view rest, UrlParseResult& res) {
   // Strip fragment (never transmitted).
   if (const auto hashPos = rest.find('#'); hashPos != std::string_view::npos) {
@@ -57,9 +58,14 @@ constexpr void ParseAuthority(std::string_view rest, UrlParseResult& res) {
       }
       portPart = afterBracket.substr(1);
     }
-    res.host = authority.substr(1, close - 1);
+    const std::string_view address = authority.substr(1, close - 1);
+    if (!address.contains(':')) {
+      return;  // not an IPv6 address, the only IP-literal supported
+    }
+    res.host = address;
   } else {
-    const auto colon = authority.rfind(':');
+    // The first ':' ends the host: an IPv6 address without its brackets leaves a port that is not a number.
+    const auto colon = authority.find(':');
     if (colon == std::string_view::npos) {
       res.host = authority;
     } else {

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -28,7 +29,6 @@
 #include "aeronet/timestring.hpp"
 #include "aeronet/tolower-str.hpp"
 #include "aeronet/toupperlower.hpp"
-#include "aeronet/vector.hpp"
 #include "url-parse.hpp"
 
 namespace aeronet {
@@ -65,13 +65,20 @@ constexpr std::string_view LowerCaseInto(std::string_view str, std::span<char> b
   return {buf.data(), str.size()};
 }
 
+// 'host' without the dot ending a fully qualified domain name ("example.com." for "example.com"): its labels are the
+// ones before that dot, so that "com." is a top-level domain as "com" is.
+constexpr std::string_view WithoutTrailingDot(std::string_view host) noexcept {
+  return host.substr(0, host.size() - static_cast<std::size_t>(host.ends_with('.')));
+}
+
 // Whether 'host' is an IP address: an IPv6 one has colons (its brackets are removed from URL hosts), and as no
 // top-level domain is numeric, a last label of digits makes an IPv4 one.
 constexpr bool IsIpAddress(std::string_view host) noexcept {
   if (host.contains(':')) {
     return true;
   }
-  const std::string_view lastLabel = host.substr(host.rfind('.') + 1);
+  const std::string_view name = WithoutTrailingDot(host);
+  const std::string_view lastLabel = name.substr(name.rfind('.') + 1);
   return !lastLabel.empty() && std::ranges::all_of(lastLabel, isdigit);
 }
 
@@ -89,25 +96,28 @@ constexpr std::string_view kCountryCodeSecondLevels[]{
 };
 
 // The registrable domain of the lower-case 'host': example.com for www.example.com, example.co.uk for
-// www.example.co.uk. Empty when 'host' is itself a public suffix: a single label ("com", "localhost") or a country-code
-// second-level domain ("co.uk"). An IP address is its own registrable domain.
+// www.example.co.uk, with the trailing dot of a fully qualified name (example.com. for www.example.com.). Empty when
+// 'host' is itself a public suffix: a single label ("com", "localhost", "com.") or a country-code second-level domain
+// ("co.uk"), or when it ends with an empty label. An IP address is its own registrable domain.
 std::string_view RegistrableDomain(std::string_view host) noexcept {
   if (IsIpAddress(host)) {
     return host;
   }
-  const std::size_t lastDot = host.rfind('.');
-  if (lastDot == std::string_view::npos || lastDot == 0) {
+  // The labels are found in 'name', a prefix of 'host': the positions are the same in both.
+  const std::string_view name = WithoutTrailingDot(host);
+  const std::size_t lastDot = name.rfind('.');
+  if (lastDot == std::string_view::npos || lastDot == 0 || lastDot + 1 == name.size()) {
     return {};
   }
   // Start of the last two labels, npos when the host has only two.
-  std::size_t dotBefore = host.rfind('.', lastDot - 1);
+  std::size_t dotBefore = name.rfind('.', lastDot - 1);
   const std::size_t secondLevelPos = dotBefore == std::string_view::npos ? 0 : dotBefore + 1;
-  const std::string_view secondLevel = host.substr(secondLevelPos, lastDot - secondLevelPos);
-  if (host.size() - lastDot - 1 == 2 && std::ranges::contains(kCountryCodeSecondLevels, secondLevel)) {
+  const std::string_view secondLevel = name.substr(secondLevelPos, lastDot - secondLevelPos);
+  if (name.size() - lastDot - 1 == 2 && std::ranges::contains(kCountryCodeSecondLevels, secondLevel)) {
     if (dotBefore == std::string_view::npos || dotBefore == 0) {
       return {};
     }
-    dotBefore = host.rfind('.', dotBefore - 1);
+    dotBefore = name.rfind('.', dotBefore - 1);
   }
   return dotBefore == std::string_view::npos ? host : host.substr(dotBefore + 1);
 }
@@ -141,13 +151,15 @@ constexpr std::string_view DefaultPath(std::string_view requestPath) noexcept {
 }
 
 // The path of a request target, without its query: the target is in origin-form ("/path?query", or "?query" for a URL
-// without path), or in absolute-form ("http://host:port/path?query") for a request sent to a forward proxy. An empty
-// path is "/" (RFC 9110 §4.2.3).
+// without path), in absolute-form ("http://host:port/path?query") for a request sent to a forward proxy, or "*" (the
+// asterisk-form of OPTIONS, a URL without path). An empty path is "/" (RFC 9110 §4.2.3).
 constexpr std::string_view TargetPath(std::string_view target) noexcept {
   if (!target.starts_with('/') && !target.starts_with('?')) {
     // The path of the absolute-form starts at the first '/' or '?' after the scheme and the authority, which hold none.
-    assert(target.contains("://"));
-    target.remove_prefix(std::min(target.find_first_of("/?", target.find("://") + 3), target.size()));
+    const std::size_t schemeEnd = target.find("://");
+    target.remove_prefix(schemeEnd == std::string_view::npos
+                             ? target.size()
+                             : std::min(target.find_first_of("/?", schemeEnd + 3), target.size()));
   }
   const std::string_view path = target.substr(0, target.find('?'));
   return path.empty() ? std::string_view{"/"} : path;
@@ -315,6 +327,7 @@ struct ParsedSetCookie {
   std::string_view domain;  // without leading dot, any case, empty when absent: a host-only cookie
   std::string_view path;    // empty when absent or not starting with '/'
   SysTimePoint expiry{kSessionExpiry};
+  bool hasPath{false};  // a Path attribute is present, with a valid value or not
   bool secure{false};
   bool httpOnly{false};
   CookieSameSite sameSite{CookieSameSite::Default};
@@ -393,7 +406,9 @@ bool ParseSetCookie(std::string_view setCookieValue, SysTimePoint now, ParsedSet
         out.domain = value.substr(value.starts_with('.') ? 1U : 0U);
       }
     } else if (name == "path") {
+      // An invalid value gives the default path (RFC 6265bis §5.6.4): the cookie has a Path attribute all the same.
       out.path = value.starts_with('/') ? value : std::string_view{};
+      out.hasPath = true;
     } else if (name == "secure") {
       out.secure = true;
     } else if (name == "httponly") {
@@ -538,7 +553,9 @@ bool CookieJar::store(internal::CookieRequestUrl url, std::string_view setCookie
     return false;
   }
   const std::string_view path = parsed.path.empty() ? DefaultPath(url.path) : parsed.path;
-  if (namePrefix.starts_with(kHostNamePrefix) && (parsed.name.empty() || !parsed.secure || !hostOnly || path != "/")) {
+  // A __Host- cookie has a Path attribute of "/" (RFC 6265bis §5.7 step 21): a default path of "/" does not do.
+  if (namePrefix.starts_with(kHostNamePrefix) &&
+      (parsed.name.empty() || !parsed.secure || !hostOnly || !parsed.hasPath || path != "/")) {
     return false;
   }
 
@@ -720,6 +737,7 @@ void CookieJar::evict(Cookies* pCookies, std::size_t maxCount, SysTimePoint now)
   } else {
     eraseExpired(now);
   }
+
   const uint32_t count = pCookies != nullptr ? pCookies->size() : _nbCookies;
   if (count <= maxCount) {
     return;
@@ -727,15 +745,20 @@ void CookieJar::evict(Cookies* pCookies, std::size_t maxCount, SysTimePoint now)
 
   // The least recently used cookies are those whose last access is below the one of rank 'nbToEvict'.
   const std::size_t nbToEvict = count - (maxCount - (maxCount / 10U));
+
   // Allocated per call: evicting a tenth below the limit leaves 'maxCount / 10' insertions before the next call, and a
   // member buffer would keep the memory of the largest eviction.
-  vector<uint64_t> lastAccesses;
-  lastAccesses.reserve(count);
-  const auto collect = [&lastAccesses](const Cookies& cookies) {
+  std::unique_ptr<uint64_t[]> lastAccesses = std::make_unique_for_overwrite<uint64_t[]>(count);
+  uint64_t* pLastAccesses = lastAccesses.get();
+  uint32_t nbLastAccesses = 0;
+
+  const auto collect = [pLastAccesses, &nbLastAccesses](const Cookies& cookies) {
     for (const StoredCookie& cookie : cookies) {
-      lastAccesses.push_back(cookie.lastAccess);
+      pLastAccesses[nbLastAccesses] = cookie.lastAccess;
+      ++nbLastAccesses;
     }
   };
+
   if (pCookies != nullptr) {
     collect(*pCookies);
   } else {
@@ -743,13 +766,17 @@ void CookieJar::evict(Cookies* pCookies, std::size_t maxCount, SysTimePoint now)
       collect(cookies);
     }
   }
-  const auto thresholdIt = lastAccesses.begin() + static_cast<std::ptrdiff_t>(nbToEvict - 1U);
-  std::ranges::nth_element(lastAccesses, thresholdIt);
+
+  const auto thresholdIt = pLastAccesses + static_cast<std::ptrdiff_t>(nbToEvict - 1U);
+
+  std::nth_element(pLastAccesses, thresholdIt, pLastAccesses + nbLastAccesses);
+
   const uint64_t threshold = *thresholdIt;
+
   // Cookies sent by the same request share their last access: those at the threshold go in their order until enough.
   std::size_t nbAtThreshold =
-      nbToEvict - static_cast<std::size_t>(
-                      std::ranges::count_if(lastAccesses, [threshold](uint64_t access) { return access < threshold; }));
+      nbToEvict - static_cast<std::size_t>(std::count_if(pLastAccesses, pLastAccesses + nbLastAccesses,
+                                                         [threshold](uint64_t access) { return access < threshold; }));
   const auto evictFrom = [this, threshold, &nbAtThreshold](Cookies& cookies) {
     _nbCookies -= EraseCookiesIf(cookies, [threshold, &nbAtThreshold](const StoredCookie& cookie) {
       if (cookie.lastAccess < threshold) {

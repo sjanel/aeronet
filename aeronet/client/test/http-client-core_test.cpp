@@ -2758,6 +2758,39 @@ TEST(HttpClientProxyE2ETest, CookiesUseThePathOfTheAbsoluteFormTarget) {
   EXPECT_FALSE(head.contains("\r\ncookie:")) << head;
 }
 
+// The asterisk-form of OPTIONS (a URL without path) is sent in absolute-form without path to the proxy, with the
+// cookies of the root path.
+TEST(HttpClientProxyE2ETest, AsteriskTargetInAbsoluteFormSendsTheCookiesOfTheRootPath) {
+  TinyProxy proxy("HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n");
+  HttpClientConfig cfg;
+  cfg.withProxy(ProxyUrl(proxy.port())).withCookies();
+  HttpClient client(cfg);
+  ASSERT_TRUE(client.cookieJar().setCookie("http://origin.invalid/", "root=1; Path=/"));
+  ASSERT_TRUE(client.cookieJar().setCookie("http://origin.invalid/", "dir=1; Path=/dir"));
+
+  const auto result =
+      client.request(client.makeRequest(http::Method::OPTIONS, "http://origin.invalid/dir/x").target("*"));
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  const std::string head = proxy.lastCapturedHead();
+  EXPECT_TRUE(head.starts_with("OPTIONS http://origin.invalid:80 HTTP/1.1\r\n")) << head;
+  EXPECT_TRUE(head.contains("\r\ncookie: root=1\r\n")) << head;
+}
+
+// A received Location may hold spaces, tabs and bytes above 0x7F, but its host cannot: in the absolute-form target sent
+// to the proxy, it would split the request line. The redirect is not followed.
+TEST(HttpClientProxyE2ETest, RedirectToAnInvalidHostIsNotFollowed) {
+  TinyProxy proxy("HTTP/1.1 302 Found\r\nlocation: http://a b/x\r\ncontent-length: 0\r\n\r\n");
+  HttpClientConfig cfg;
+  cfg.withProxy(ProxyUrl(proxy.port()));
+  HttpClient client(cfg);
+
+  const auto result = client.get("http://origin.invalid/start");
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::invalidUrl);
+  const std::string head = proxy.lastCapturedHead();
+  EXPECT_TRUE(head.starts_with("GET http://origin.invalid:80/start HTTP/1.1\r\n")) << head;
+}
+
 // The absolute-form target spells out a default port too ("http://host:80/..."), and keep-alive reuse works
 // through the proxy (both requests land on the one pooled connection the proxy terminates).
 TEST(HttpClientProxyE2ETest, HttpOriginDefaultPortAndKeepAliveReuse) {
@@ -3032,6 +3065,22 @@ class RequestHeadRecorder {
 };
 
 }  // namespace
+
+// The asterisk-form of OPTIONS (a URL without path) sends the cookies of the root path.
+TEST(HttpClientCookiesE2ETest, AsteriskTargetSendsTheCookiesOfTheRootPath) {
+  RequestHeadRecorder server;
+  HttpClient client(HttpClientConfig{}.withCookies());
+  const std::string url = MakeUrl(server.port(), "/dir/x");
+  ASSERT_TRUE(client.cookieJar().setCookie(url, "root=1; Path=/"));
+  ASSERT_TRUE(client.cookieJar().setCookie(url, "dir=1; Path=/dir"));
+
+  const auto result = client.request(client.makeRequest(http::Method::OPTIONS, url).target("*"));
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  const auto heads = server.heads();
+  ASSERT_EQ(heads.size(), 1U);
+  EXPECT_TRUE(heads[0].starts_with("OPTIONS * HTTP/1.1\r\n")) << heads[0];
+  EXPECT_TRUE(heads[0].contains("\r\ncookie: root=1\r\n")) << heads[0];
+}
 
 // A hard DNS resolution failure: .invalid is reserved (RFC 6761) and never resolves, so ConnectTCP
 // reports an immediate failure. Exercises connectNew()'s failure branch and the subsequent
@@ -5029,6 +5078,35 @@ TEST(HttpClientSinkE2ETest, Http2ResetAfterTheHeadIsNotRetried) {
   EXPECT_EQ(connections.load(std::memory_order_relaxed), 1);
 }
 
+// The codings of several Content-Encoding lines form a single list: the body is decoded with each of them, buffered or
+// delivered to a sink.
+TEST(HttpClientSinkE2ETest, RepeatedContentEncodingLinesAreDecoded) {
+  if (test::SupportedEncodings().empty()) {
+    GTEST_SKIP() << "no codec compiled in";
+  }
+  const Encoding enc = test::SupportedEncodings().front();
+  const std::string payload = test::MakePatternedPayload(50000);
+  const RawChars once = test::Compress(enc, payload);
+  const RawChars twice = test::Compress(enc, std::string_view(once));
+  const std::string coding(GetEncodingStr(enc));
+  RawServer server([response = EncodedResponse(coding + "\r\ncontent-encoding: " + coding, std::string_view(twice))](
+                       NativeHandle fd, int) {
+    test::RecvHead(fd);
+    SendAll(fd, response);
+  });
+  HttpClient client;
+  const auto buffered = client.get(MakeUrl(server.port()));
+  ASSERT_TRUE(buffered) << ErrcToStr(buffered.error());
+  EXPECT_EQ(buffered->bodyInMemory(), payload);
+  EXPECT_FALSE(buffered->headerValue(http::ContentEncoding));
+
+  test::CollectingBodySink sink;
+  const auto streamed = client.get(MakeUrl(server.port()), sink);
+  ASSERT_TRUE(streamed) << ErrcToStr(streamed.error());
+  EXPECT_EQ(sink.body, payload);
+  EXPECT_TRUE(sink.contentEncoding.empty());
+}
+
 // Over HTTP/2, stacked content codings are buffered, decoded whole, then delivered.
 TEST(HttpClientSinkE2ETest, Http2StackedContentCodingsAreBufferedThenDelivered) {
   if (test::SupportedEncodings().empty()) {
@@ -5195,6 +5273,26 @@ TEST(HttpClientConfigTest, InvalidProxyUrlThrowsAtConstruction) {
   HttpClientConfig cfg;
   cfg.withProxy("ftp://proxy.local:3128");  // non-http scheme
   EXPECT_THROW(HttpClient{cfg}, HttpClientException);
+}
+
+// A proxy URL without a host, or with an invalid port, throws too: the requests would otherwise go to their origins, in
+// the absolute-form meant for the proxy. An IPv6 address needs its brackets.
+TEST(HttpClientConfigTest, ProxyUrlWithoutValidHostThrowsAtConstruction) {
+  for (std::string_view proxyUrl : {
+           "http://",
+           "http://:3128",
+           "http://proxy.local:0",
+           "http://proxy.local:x",
+           "http://::1:3128",
+           "http://user@proxy.local:3128",
+       }) {
+    HttpClientConfig cfg;
+    cfg.withProxy(proxyUrl);
+    EXPECT_THROW(HttpClient{cfg}, HttpClientException) << proxyUrl;
+  }
+  HttpClientConfig cfg;
+  cfg.withProxy("http://[::1]:3128");
+  EXPECT_NO_THROW(HttpClient{cfg});
 }
 
 TEST(HttpClientConfigTest, HttpsProxyRejectedAtConstruction) {

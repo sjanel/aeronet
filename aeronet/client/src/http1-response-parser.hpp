@@ -165,7 +165,8 @@ class Http1ResponseParser {
     bool connectionKeepAliveSeen{false};
     bool hasContentLength{false};
     bool hasTransferEncoding{false};
-    bool chunked{false};  // the final transfer coding is chunked
+    bool chunked{false};             // the final transfer coding is chunked
+    bool hasContentEncoding{false};  // a Content-Encoding line was stored in the response
   };
 
   // Whether the head being parsed is the 101 (Switching Protocols) response of an upgrade request: a final response.
@@ -195,6 +196,9 @@ class Http1ResponseParser {
   static RawChars* WholeBufferOwner(std::string_view body, RawChars& candidate) noexcept {
     return body.size() == candidate.size() && body.data() == candidate.data() ? &candidate : nullptr;
   }
+
+  // Append the lower-case 'codings' of a repeated Content-Encoding line to the Content-Encoding line of 'resp'.
+  static void AppendContentCodings(HttpResponse& resp, std::string_view codings);
 
   // Install body by rotating a suitably-sized owner allocation into the response. A missing or oversized
   // owner falls back to a copy, retaining oversized scratch for later reuse. `body` may be the complete
