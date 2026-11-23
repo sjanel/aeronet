@@ -185,17 +185,51 @@ TEST_F(HttpRequestTest, IsValidUrlMatchesMakeRequest) {
   const std::string maxHost(std::numeric_limits<uint16_t>::max(), 'h');
   const std::string tooLongHost = maxHost + 'h';
   const std::string tooLongTarget(1UL << 24U, 'a');
-  for (const std::string& url :
-       {std::string("http://host"), std::string("https://example.com:8443/a?b=c#frag"),
-        std::string("http://[::1]:8080/"), std::string("HTTP://Host/%2F"), "http://" + maxHost + "/"}) {
+  for (const std::string& url : {
+           std::string("http://host"),
+           std::string("https://example.com:8443/a?b=c#frag"),
+           std::string("http://[::1]:8080/"),
+           std::string("HTTP://Host/%2F"),
+           "http://" + maxHost + "/",
+           std::string("http://ex_am-ple.c0m~/"),
+           std::string("http://a!$&'()*+,;=b/"),
+           std::string("http://ex%41mple/"),
+           std::string("http://[::ffff:192.0.2.1]/"),
+           std::string("http://192.0.2.1:8080?q"),
+       }) {
     EXPECT_TRUE(HttpRequest::IsValidUrl(url)) << url.substr(0, 64);
     EXPECT_NO_THROW(static_cast<void>(makeRequest(http::Method::GET, url))) << url.substr(0, 64);
   }
-  for (const std::string& url :
-       {std::string(), std::string("invalid-url"), std::string("ftp://host/"), std::string("http://"),
-        std::string("http://user@host/"), std::string("http://host:0/"), std::string("http://host:65536/"),
-        std::string("http://host/a b"), std::string("http://host/%zz"), std::string("http://host/%"),
-        std::string("http://host/\x7F"), "http://" + tooLongHost + "/", "http://host/" + tooLongTarget}) {
+  for (const std::string& url : {
+           std::string(),
+           std::string("invalid-url"),
+           std::string("ftp://host/"),
+           std::string("http://"),
+           std::string("http://user@host/"),
+           std::string("http://host:0/"),
+           std::string("http://host:65536/"),
+           std::string("http://host/a b"),
+           std::string("http://host/%zz"),
+           std::string("http://host/%"),
+           std::string("http://host/\x7F"),
+           "http://" + tooLongHost + "/",
+           "http://host/" + tooLongTarget,
+           // Hosts that split the head of the request, or neither a name nor an IP address (RFC 3986 §3.2.2).
+           std::string("http://evil\r\nX-Injected:1/"),
+           std::string("http://a b/"),
+           std::string("http://a\tb/"),
+           std::string("http://a\x7F/"),
+           std::string("http://h\xC3\xA9/"),
+           std::string("http://a\"b/"),
+           std::string("http://a<b>/"),
+           std::string("http://%zz/"),
+           std::string("http://h%4/"),
+           std::string("http://::1/"),
+           std::string("http://a:b:80/"),
+           std::string("http://[example.com]/"),
+           std::string("http://[::1%25eth0]/"),
+           std::string("http://[::g]/"),
+       }) {
     EXPECT_FALSE(HttpRequest::IsValidUrl(url)) << url.substr(0, 64);
     EXPECT_THROW(static_cast<void>(makeRequest(http::Method::GET, url)), std::invalid_argument) << url.substr(0, 64);
   }
@@ -958,7 +992,7 @@ TEST_F(HttpRequestTest, ConstFinalizePreservesCompressionStateForReuse) {
 // body of a few MiB of incompressible data, set then appended in pieces, is compressed whole, and a const finalization
 // restores the encoder state for the next appends.
 TEST_F(HttpRequestTest, LargeIncompressibleDirectlyCompressedBody) {
-  static constexpr std::size_t kPieceSize = 64UL << 10;
+  static constexpr std::size_t kPieceSize = 64UL << 10U;
   static constexpr std::size_t kNbPieces = 32;
   CompressionConfig codecConfig;
   codecConfig.minBytes = 1;
@@ -1259,6 +1293,24 @@ TEST_F(HttpRequestTest, ResolveRedirectNetworkRelativeInvalid) {
   EXPECT_FALSE(res);
 }
 
+// A Location may hold spaces, tabs and bytes above 0x7F, but not in its host: through a cleartext proxy, the host would
+// split the request line.
+TEST_F(HttpRequestTest, ResolveRedirectRejectsInvalidHosts) {
+  for (bool withProxy : {false, true}) {
+    if (withProxy) {
+      config.withProxy("http://proxy.example.com:8080");
+    }
+    SCOPED_TRACE(withProxy);
+    auto req = makeRequest(http::Method::GET, "http://example.com/x");
+    const HttpRequest before = req;
+    for (std::string_view location : {"http://a b/x", "//a b/x", "http://a\tb/", "https://h\xC3\xA9/", "//a\"b/"}) {
+      SCOPED_TRACE(location);
+      EXPECT_EQ(ResolveRedirectOutcome(req, location), RedirectOutcome::Invalid);
+      ExpectSameRequest(req, before);
+    }
+  }
+}
+
 TEST_F(HttpRequestTest, ResolveRedirectNetworkRelativeTls) {
   auto req = makeRequest(http::Method::GET, "https://example.com/x");
   auto res = HttpRequestTest::ResolveRedirect(req, "//other.com/y");
@@ -1393,12 +1445,30 @@ TEST_F(HttpRequestTest, ResolveRedirectRelativePathReplacesExistingQuery) {
   EXPECT_EQ(req.target(), "/dir/next");
 }
 
+// The asterisk-form has no path: a relative reference is resolved against "/" (RFC 3986 section 5.2.3), also in
+// absolute-form through a cleartext proxy.
 TEST_F(HttpRequestTest, ResolveRedirectRelativePathFromAsteriskTarget) {
-  auto req = makeRequest(http::Method::OPTIONS, "https://example.com/").target("*");
-  auto res = HttpRequestTest::ResolveRedirect(req, "next");
+  for (bool withProxy : {false, true}) {
+    if (withProxy) {
+      config.withProxy("http://proxy.example.com:8080");
+    }
+    SCOPED_TRACE(withProxy);
+    const std::string_view prefix = withProxy ? "http://example.com:80" : "";
+    for (std::string_view location : {"next", "?q=1", "/abs"}) {
+      auto req = makeRequest(http::Method::OPTIONS, "http://example.com/").target("*");
+      EXPECT_EQ(req.target(), withProxy ? prefix : "*");
+      EXPECT_TRUE(ResolveRedirect(req, location));
+      EXPECT_EQ(req.target(), std::string(prefix) + (location.starts_with('/') ? "" : "/") + std::string(location));
+    }
+  }
+}
 
-  EXPECT_TRUE(res);
-  EXPECT_EQ(req.target(), "*next");
+// A reference to the same document, such as a fragment, leaves the target as it is (RFC 3986 section 5.2.2).
+TEST_F(HttpRequestTest, ResolveRedirectToFragmentKeepsTheTarget) {
+  auto req = makeRequest(http::Method::GET, "http://example.com/dir/page?q=1");
+  const HttpRequest before = req;
+  EXPECT_EQ(ResolveRedirectOutcome(req, "#section"), RedirectOutcome::SameOrigin);
+  ExpectSameRequest(req, before);
 }
 
 TEST_F(HttpRequestTest, ResolveRedirectRelativeWithQuestionMarkEmptyPath) {
@@ -1532,21 +1602,114 @@ TEST_F(HttpRequestTest, ResolveRedirectRejectedAbsoluteUrlLeavesRequestUnchanged
   EXPECT_EQ(req.bodyInMemory(), "some body");
 }
 
-TEST_F(HttpRequestTest, ResolveRedirectRelativePathCompletesPercentEscapeOfKeptPrefix) {
-  // Without any '/', the relative resolution keeps the first char of the target. When it is a '%', the location has
-  // to provide the 2 hex digits of its escape.
-  auto req = makeRequest(http::Method::GET, "http://example.com/");
-  req.target("%41");
+// A relative reference with an invalid percent-escape is rejected without modifying the request.
+TEST_F(HttpRequestTest, ResolveRedirectRelativeRejectsIncompletePercentEscapes) {
+  auto req = makeRequest(http::Method::GET, "http://example.com/dir/%41?q=%42");
   const HttpRequest before = req;
 
-  for (std::string_view location : {"", "4", "zz", "4z", "z4", "42 "}) {
+  for (std::string_view location : {"%", "%4", "%zz", "a%4z", "?%z4", "/%42 "}) {
     SCOPED_TRACE(location);
     EXPECT_FALSE(ResolveRedirect(req, location));
     ExpectSameRequest(req, before);
   }
 
-  EXPECT_TRUE(ResolveRedirect(req, "42x"));
-  EXPECT_EQ(req.target(), "%42x");
+  EXPECT_TRUE(ResolveRedirect(req, "%42x"));
+  EXPECT_EQ(req.target(), "/dir/%42x");
+  EXPECT_TRUE(ResolveRedirect(req, "?r=%43"));
+  EXPECT_EQ(req.target(), "/dir/%42x?r=%43");
+}
+
+// The setter takes an origin-form target or "*": the path of a target without one is "/".
+TEST_F(HttpRequestTest, TargetSetterForms) {
+  auto req = makeRequest(http::Method::GET, "http://example.com/a");
+  req.target("/b?c=d");
+  EXPECT_EQ(req.target(), "/b?c=d");
+  req.target("?q=1");
+  EXPECT_EQ(req.target(), "/?q=1");
+  EXPECT_TRUE(CompleteRequestForHttp11(req).starts_with("GET /?q=1 HTTP/1.1\r\nhost: example.com\r\n"));
+  req.method(http::Method::OPTIONS).target("*");
+  EXPECT_EQ(req.target(), "*");
+  EXPECT_TRUE(CompleteRequestForHttp11(req).starts_with("OPTIONS * HTTP/1.1\r\nhost: example.com\r\n"));
+
+  // Another form (absolute-form or authority-form) is rejected without modifying the request.
+  const HttpRequest before = req;
+  for (std::string_view target : {"", "%41", "path", "**", "http://example.com:80/x", "example.com:80"}) {
+    SCOPED_TRACE(target);
+    EXPECT_THROW(req.target(target), std::invalid_argument);
+    ExpectSameRequest(req, before);
+  }
+}
+
+// Through a cleartext proxy, the target is written in absolute-form, whether given in origin-form or in the
+// absolute-form of the origin of the request. Through the CONNECT tunnel of an https request, it stays in origin-form.
+TEST_F(HttpRequestTest, TargetSetterThroughAProxy) {
+  config.withProxy("http://proxy.example.com:8080");
+  auto req = makeRequest(http::Method::GET, "http://example.com/a");
+  req.target("/b");
+  EXPECT_EQ(req.target(), "http://example.com:80/b");
+  EXPECT_TRUE(
+      CompleteRequestForHttp11(req).starts_with("GET http://example.com:80/b HTTP/1.1\r\nhost: example.com\r\n"));
+  req.target("http://example.com:80/c?d=e");
+  EXPECT_EQ(req.target(), "http://example.com:80/c?d=e");
+  req.target("?q=1");
+  EXPECT_EQ(req.target(), "http://example.com:80/?q=1");
+  req.target("http://example.com:80?r=2");
+  EXPECT_EQ(req.target(), "http://example.com:80/?r=2");
+  // The absolute-form of "*" has no path (RFC 9112 section 3.2.4).
+  req.method(http::Method::OPTIONS).target("*");
+  EXPECT_EQ(req.target(), "http://example.com:80");
+  EXPECT_TRUE(
+      CompleteRequestForHttp11(req).starts_with("OPTIONS http://example.com:80 HTTP/1.1\r\nhost: example.com\r\n"));
+  req.target("http://example.com:80");
+  EXPECT_EQ(req.target(), "http://example.com:80");
+  req.target("/after");
+  EXPECT_EQ(req.target(), "http://example.com:80/after");
+  EXPECT_EQ(req.hostHeaderValue(), "example.com");
+
+  const HttpRequest before = req;
+  for (std::string_view target : {
+           "http://other.com:80/x",
+           "http://example.com:8080/x",
+           "http://example.com/x",
+           "http://example.com:80x",
+           "http://example.com:80*",
+           "https://example.com:80/x",
+       }) {
+    SCOPED_TRACE(target);
+    EXPECT_THROW(req.target(target), std::invalid_argument);
+    ExpectSameRequest(req, before);
+  }
+
+  auto tlsReq = makeRequest(http::Method::GET, "https://example.com/a");
+  tlsReq.target("/b");
+  EXPECT_EQ(tlsReq.target(), "/b");
+  EXPECT_THROW(tlsReq.target("https://example.com:443/b"), std::invalid_argument);
+}
+
+// The origin key starts the internal buffer and, in absolute-form, the target too: the longest target leaves room for
+// both in the head before the headers, whatever the method, and so does the longest redirect.
+TEST_F(HttpRequestTest, LongestTargetFitsInAbsoluteForm) {
+  config.withProxy("http://proxy.example.com:8080");
+  static constexpr std::string_view kOrigin = "http://host:80";
+  // 2^24 positions minus the longest method ("OPTIONS"), 2 spaces, "HTTP/1.1" and the origin key twice.
+  const std::size_t maxTargetLen = (1UL << 24U) - 1U - 7U - 2U - 8U - (2U * kOrigin.size());
+  const std::string longestPath(maxTargetLen - 1U, 'a');
+
+  auto req = makeRequest(http::Method::OPTIONS, "http://host/" + longestPath);
+  EXPECT_EQ(req.target().size(), kOrigin.size() + maxTargetLen);
+  EXPECT_TRUE(req.target().starts_with(std::string(kOrigin) + "/aaa"));
+  EXPECT_EQ(req.hostHeaderValue(), "host");
+  EXPECT_THROW(makeRequest(http::Method::OPTIONS, "http://host/" + longestPath + "a"), std::invalid_argument);
+  EXPECT_THROW(makeRequest(http::Method::GET, "http://host/" + longestPath + "a"), std::invalid_argument);
+
+  auto smallReq = makeRequest(http::Method::OPTIONS, "http://host/");
+  EXPECT_THROW(smallReq.target("/" + longestPath + "a"), std::invalid_argument);
+  EXPECT_FALSE(ResolveRedirect(smallReq, "/" + longestPath + "a"));
+  EXPECT_FALSE(ResolveRedirect(smallReq, "http://host/" + longestPath + "a"));
+  EXPECT_TRUE(ResolveRedirect(smallReq, "/" + longestPath));
+  EXPECT_EQ(smallReq.target().size(), kOrigin.size() + maxTargetLen);
+  smallReq.target("/" + longestPath);
+  EXPECT_EQ(smallReq.hostHeaderValue(), "host");
 }
 
 }  // namespace aeronet

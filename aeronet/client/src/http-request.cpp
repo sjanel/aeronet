@@ -25,6 +25,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/url-parsed-result.hpp"
 #include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/search-crlf.hpp"
@@ -45,19 +46,8 @@ bool StartsWithHexPair(const char* pData, const char* pEnd) noexcept {
 }
 
 // Checks the chars of (a part of) a request-target, which may be empty.
-// If 'afterPercent' is true, 'chars' directly follows a '%' and must start with the 2 hex digits completing its escape.
-bool IsValidRequestTargetChars(std::string_view chars, bool afterPercent = false) noexcept {
-  const char* pData = chars.data();
-  const char* pEnd = pData + chars.size();
-
-  if (afterPercent) {
-    if (!StartsWithHexPair(pData, pEnd)) {
-      return false;
-    }
-    pData += 2;
-  }
-
-  while (pData != pEnd) {
+bool IsValidRequestTargetChars(std::string_view chars) noexcept {
+  for (const char *pData = chars.data(), *pEnd = pData + chars.size(); pData != pEnd;) {
     const char ch = *pData++;
 
     // RFC 9112 §3.2: a request-target contains no SP and no CTL (DEL included).
@@ -81,14 +71,37 @@ bool IsValidRequestTarget(std::string_view target) noexcept {
   return !target.empty() && IsValidRequestTargetChars(target);
 }
 
-// Maximum request-target length, so that the head up to the headers (origin key + request line) fits in
-// headerPosNbBits bits.
+// Whether 'host', parsed by ParseAuthority(), can be written in the Host header and in a request-target: an IPv6
+// address (hex digits, ':' and the '.' of an embedded IPv4 address), or a reg-name or an IPv4 address made of
+// unreserved characters, sub-delims and percent-escapes (RFC 3986 §3.2.2). A space or a control character, which would
+// split the head of the request, never is.
+bool IsValidHost(std::string_view host) noexcept {
+  if (host.contains(':')) {
+    return std::ranges::all_of(host, [](char ch) { return IsHexDigit(ch) || ch == ':' || ch == '.'; });
+  }
+  for (const char *pData = host.data(), *pEnd = pData + host.size(); pData != pEnd;) {
+    const char ch = *pData++;
+    if (ch == '%') {
+      if (!StartsWithHexPair(pData, pEnd)) {
+        return false;
+      }
+      pData += 2;
+    } else if (!url::IsRegNameChar(ch)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Maximum length of the origin-form of a request-target, so that the head up to the headers fits in headerPosNbBits
+// bits: the origin key, then the request line, whose target is prefixed by the origin key again in absolute-form (to a
+// cleartext forward proxy).
 constexpr uint32_t MaxTargetLen(uint8_t headerPosNbBits, uint32_t originKeyLen) {
   static constexpr std::uint32_t kMaxMethodStrLen = static_cast<uint32_t>(
       std::ranges::max_element(http::kMethodStrings, {}, [](std::string_view str) { return str.size(); })->size());
 
   return static_cast<uint32_t>((1U << headerPosNbBits) - 1U - kMaxMethodStrLen - 2U - http::HTTP10Sv.size() -
-                               originKeyLen);
+                               (std::size_t{2} * originKeyLen));
 }
 
 // The size of the request-target of the parsed 'target': the path of a URL without one is "/" (RFC 9112 section 3.2.1),
@@ -126,6 +139,9 @@ constexpr const char* CheckUrl(const internal::UrlParseResult& res, uint8_t head
   }
   if (res.host.size() > std::numeric_limits<uint16_t>::max()) {
     return "URL host exceeds maximum length";
+  }
+  if (!IsValidHost(res.host)) {
+    return "Invalid URL host";
   }
   return CheckTarget(res.target, headerPosNbBits, OriginKeyLen(res));
 }
@@ -309,14 +325,31 @@ HttpRequest& HttpRequest::method(http::Method method) & {
 }
 
 HttpRequest& HttpRequest::target(std::string_view target) & {
-  CheckTargetOrThrow(target, HttpMessage::kHeaderPosNbBits, _originKeyLen);
+  static constexpr std::string_view kAsterisk = "*";
+  const bool absoluteForm = hasAbsoluteFormTarget();
+  // The origin-form part of 'target', or "*". The absolute-form of the origin of this request that target() returns is
+  // accepted too, the origin key being followed by an origin-form part or by nothing, for "*" (RFC 9112 §3.2.4).
+  std::string_view originForm = target;
+  if (absoluteForm && target.starts_with(originKey()) &&
+      (target.size() == _originKeyLen || target[_originKeyLen] == '/' || target[_originKeyLen] == '?')) {
+    originForm = target.size() == _originKeyLen ? kAsterisk : target.substr(_originKeyLen);
+  }
+  const bool asterisk = originForm == kAsterisk;
+  if (!asterisk && !originForm.starts_with('/') && !originForm.starts_with('?')) {
+    // An empty target, an absolute-form of another origin, or the target of another method (CONNECT).
+    throw std::invalid_argument("Invalid HTTP request target");
+  }
+  CheckTargetOrThrow(originForm, HttpMessage::kHeaderPosNbBits, _originKeyLen);
 
-  const auto oldTarget = this->target();
+  // The path of a URL without one is "/" (see TargetSize()), and the asterisk-form is an absolute-form without path.
+  const bool addSlash = originForm.starts_with('?');
+  if (asterisk && absoluteForm) {
+    originForm = {};
+  }
+  const std::size_t newTargetLen = (absoluteForm ? _originKeyLen : 0U) + (addSlash ? 1U : 0U) + originForm.size();
+  const std::size_t oldTargetLen = this->target().size();
 
-  const auto oldTargetLen = oldTarget.size();
-  const auto newTargetLen = target.size();
-
-  const int32_t diffLen = static_cast<int32_t>(newTargetLen) - static_cast<int32_t>(oldTargetLen);
+  const int64_t diffLen = static_cast<int64_t>(newTargetLen) - static_cast<int64_t>(oldTargetLen);
 
   HeadGrowthManager headGrowthManager(*this, diffLen);
 
@@ -327,7 +360,14 @@ HttpRequest& HttpRequest::target(std::string_view target) & {
   // Move everything after the URI (starting with the space before HTTP/x.x).
   std::memmove(pData + offset + newTargetLen, pData + offset + oldTargetLen, _data.size() - (offset + oldTargetLen));
 
-  Copy(target, pData + offset);
+  char* pTarget = pData + offset;
+  if (absoluteForm) {
+    pTarget = Append(pData, _originKeyLen, pTarget);  // the origin key, at the start of the buffer
+  }
+  if (addSlash) {
+    *pTarget++ = '/';
+  }
+  Copy(originForm, pTarget);
 
   adjustHeadersAndBodyStart(diffLen);
 
@@ -416,41 +456,42 @@ HttpRequest::RedirectOutcome HttpRequest::resolveRedirect(std::string_view locat
     location = location.substr(0, hashPos);
   }
 
-  const std::string_view oldTarget = target();
-  const auto oldTargetLen = oldTarget.size();
-
-  // Number of leading chars of the old target kept in the new one, followed by 'location'.
-  uint32_t prefixLen;
-
-  if (location.starts_with('/')) {
-    // Absolute path: keep origin, replace target. An absolute-form target (to a cleartext proxy) keeps its origin key.
-    prefixLen = _opts.hasProxy() && !isTlsRequest() ? _originKeyLen : 0U;
-  } else if (location.starts_with('?')) {
-    // Keep the path, replace the query (RFC 3986 section 5.2.2).
-    prefixLen = static_cast<uint32_t>(std::min(oldTarget.find('?'), oldTargetLen));
-  } else {
-    // Keep only the directory (including the trailing '/').
-    std::string_view base = oldTarget;
-    if (const auto questionMarkPos = base.find('?'); questionMarkPos != std::string_view::npos) {
-      base = base.substr(0, questionMarkPos);
-    }
-    const auto lastSlashPos = base.rfind('/');
-    prefixLen = lastSlashPos == std::string_view::npos ? 1U : static_cast<uint32_t>(lastSlashPos + 1);
+  if (location.empty()) {
+    // A reference to the same document (RFC 3986 section 5.2.2): the target is unchanged.
+    return RedirectOutcome::SameOrigin;
   }
 
-  const auto newTargetLen = prefixLen + location.size();
-  assert(newTargetLen != 0);
+  const std::string_view oldTarget = target();
+  const std::size_t oldTargetLen = oldTarget.size();
+  // An absolute-form target (to a cleartext proxy) keeps its origin key, followed by the origin-form part.
+  const std::size_t originFormPos = hasAbsoluteFormTarget() ? _originKeyLen : 0U;
+  const std::string_view originForm = oldTarget.substr(originFormPos);
 
-  // Validate the new target before touching the buffer, so that a rejected redirect leaves this request unchanged.
-  // The kept prefix comes from the old target, which is valid: it can only end inside a percent-escape when it is
-  // reduced to its first char, a '%' whose 2 hex digits must then start 'location'.
-  const bool prefixEndsWithPercent = prefixLen != 0 && oldTarget[prefixLen - 1] == '%';
-  if (!IsValidRequestTargetChars(location, prefixEndsWithPercent) ||
-      newTargetLen > MaxTargetLen(HttpMessage::kHeaderPosNbBits, _originKeyLen)) {
+  // Number of leading chars of the old target kept in the new one, followed by 'location', after a '/' when 'addSlash'.
+  std::size_t prefixLen = originFormPos;
+  bool addSlash = false;
+  if (!originForm.starts_with('/')) {
+    // The asterisk-form has no path: a relative reference is resolved against "/", as a URL with an authority and an
+    // empty path is (RFC 3986 section 5.2.3).
+    addSlash = !location.starts_with('/');
+  } else if (location.starts_with('?')) {
+    // Keep the path, replace the query (RFC 3986 section 5.2.2).
+    prefixLen += std::min(originForm.find('?'), originForm.size());
+  } else if (!location.starts_with('/')) {
+    // Keep only the directory of the path (including its last '/').
+    prefixLen += originForm.substr(0, originForm.find('?')).rfind('/') + 1U;
+  }
+
+  const std::size_t newTargetLen = prefixLen + (addSlash ? 1U : 0U) + location.size();
+
+  // Validate the new target before touching the buffer, so that a rejected redirect leaves this request unchanged. The
+  // kept prefix comes from the old target, which is valid, and ends between two percent-escapes.
+  if (!IsValidRequestTargetChars(location) ||
+      newTargetLen - originFormPos > MaxTargetLen(HttpMessage::kHeaderPosNbBits, _originKeyLen)) {
     return RedirectOutcome::Invalid;
   }
 
-  const int32_t diffLen = static_cast<int32_t>(newTargetLen) - static_cast<int32_t>(oldTargetLen);
+  const int64_t diffLen = static_cast<int64_t>(newTargetLen) - static_cast<int64_t>(oldTargetLen);
 
   HeadGrowthManager headGrowthManager(*this, diffLen);
 
@@ -461,7 +502,11 @@ HttpRequest::RedirectOutcome HttpRequest::resolveRedirect(std::string_view locat
                _data.size() - oldTargetLen - static_cast<std::size_t>(pTarget - _data.data()));
 
   // Write 'location' after the kept prefix.
-  Copy(location, pTarget + prefixLen);
+  pTarget += prefixLen;
+  if (addSlash) {
+    *pTarget++ = '/';
+  }
+  Copy(location, pTarget);
 
   adjustHeadersAndBodyStart(diffLen);
   _data.adjustSize(diffLen);

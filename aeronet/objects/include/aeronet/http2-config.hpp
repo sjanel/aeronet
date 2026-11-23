@@ -282,7 +282,7 @@ struct Http2Config {
   /// After this limit, the connection will be gracefully closed with GOAWAY.
   /// Must be at least 1.
   /// Default: 1,000,000 streams.
-  uint32_t maxStreamsPerConnection{1000000};
+  uint32_t maxStreamsPerConnection{1000000U};
 
   /// Server only: number of streams of the client ended by a reset from which the connection is closed with
   /// ENHANCE_YOUR_CALM (RFC 9113 §10.5), once they are more than half of the streams it opened. A client resetting each
@@ -295,7 +295,7 @@ struct Http2Config {
   /// server (INTERNAL_ERROR) or of a CONNECT target (CONNECT_ERROR), and a reset of a stream already answered.
   /// std::numeric_limits<uint32_t>::max() means no limit: a connection has at most 2^30 streams of the client.
   /// Default: 1000.
-  uint32_t maxResetStreams{1000};
+  uint32_t maxResetStreams{1000U};
 
   // ============================
   // Priority (RFC 9218 / RFC 9113 §5.3)

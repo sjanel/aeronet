@@ -9,8 +9,10 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-request.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/vector.hpp"
 
@@ -33,8 +35,12 @@ class CookieJarTest : public ::testing::Test {
 
   // The cookies that HttpClient sends with a GET request to 'url', which marks them as sent.
   std::string send(CookieJar& cookieJar, std::string_view url) {
-    cookieJar.prepareRequestCookies(client.makeRequest(http::Method::GET, url), internal::CookieSiteContext::SameSite,
-                                    kNow);
+    return sendRequest(cookieJar, client.makeRequest(http::Method::GET, url));
+  }
+
+  // The cookies that HttpClient sends with 'request', which marks them as sent.
+  static std::string sendRequest(CookieJar& cookieJar, const HttpRequest& request) {
+    cookieJar.prepareRequestCookies(request, internal::CookieSiteContext::SameSite, kNow);
     return std::string(cookieJar.requestCookies());
   }
 
@@ -228,6 +234,32 @@ TEST_F(CookieJarTest, PublicSuffixHostsOnlyHaveHostOnlyCookies) {
   }
 }
 
+// A fully qualified name ends with a dot: its labels are those before it, so that a top-level or a country-code domain
+// stays a public suffix ("com.", "co.uk."), and its cookies are not those of the name without the dot.
+TEST_F(CookieJarTest, TrailingDotHostsKeepThePublicSuffixes) {
+  EXPECT_FALSE(set("http://evil.com./", "a=1; Domain=com."));
+  EXPECT_FALSE(set("http://evil.co.uk./", "b=2; Domain=co.uk."));
+  EXPECT_FALSE(set("http://evil.com./", "c=3; Domain=com"));
+  EXPECT_TRUE(jar.empty());
+  EXPECT_EQ(header("http://bank.com./"), "");
+
+  EXPECT_TRUE(set("http://www.example.com./", "d=4; Domain=example.com."));
+  EXPECT_FALSE(set("http://www.example.com./", "e=5; Domain=example.com"));
+  EXPECT_EQ(header("http://example.com./"), "d=4");
+  EXPECT_EQ(header("http://shop.example.com./"), "d=4");
+  EXPECT_EQ(header("http://example.com/"), "");
+  EXPECT_EQ(header("http://other.com./"), "");
+
+  // The public suffix itself only has host-only cookies.
+  EXPECT_TRUE(set("http://com./", "f=6; Domain=com."));
+  EXPECT_EQ(header("http://com./"), "f=6");
+  EXPECT_EQ(header("http://bank.com./"), "");
+  // An IP address, its own registrable domain, and a name ending with an empty label cannot share theirs.
+  EXPECT_FALSE(set("http://192.168.1.10./", "g=7; Domain=168.1.10."));
+  EXPECT_FALSE(set("http://x.a../", "h=8; Domain=a.."));
+  EXPECT_EQ(jar.size(), 2U);
+}
+
 TEST_F(CookieJarTest, IpAddressHosts) {
   EXPECT_TRUE(set("http://192.168.1.10/", "a=1"));
   EXPECT_TRUE(set("http://192.168.1.10/", "b=2; Domain=192.168.1.10"));
@@ -300,6 +332,20 @@ TEST_F(CookieJarTest, UrlsWithoutPathHaveTheRootPath) {
   EXPECT_EQ(header("http://example.com:8080?x=/dir/page"), "a=1");  // the slashes of the query are not of a path
   EXPECT_EQ(header("http://example.com/?x=1"), "a=1");
   EXPECT_EQ(send(jar, "http://example.com?x=/dir/page"), "a=1");
+}
+
+// The asterisk-form of an OPTIONS request, a URL without path, has the root path, also in absolute-form to a proxy.
+TEST_F(CookieJarTest, AsteriskTargetHasTheRootPath) {
+  EXPECT_TRUE(set("http://example.com/", "a=1; Path=/"));
+  EXPECT_TRUE(set("http://example.com/", "b=2; Path=/dir"));
+  EXPECT_EQ(sendRequest(jar, client.makeRequest(http::Method::OPTIONS, "http://example.com/dir/x").target("*")), "a=1");
+
+  HttpClient proxied(HttpClientConfig{}.withProxy("http://proxy.example.com:8080"));
+  HttpRequest request = proxied.makeRequest(http::Method::OPTIONS, "http://example.com/dir/x");
+  EXPECT_EQ(sendRequest(jar, request), "b=2; a=1");
+  request.target("*");
+  EXPECT_EQ(request.target(), "http://example.com:80");
+  EXPECT_EQ(sendRequest(jar, request), "a=1");
 }
 
 TEST_F(CookieJarTest, LongestPathsFirstThenOldestFirst) {
@@ -514,7 +560,12 @@ TEST_F(CookieJarTest, CookieNamePrefixes) {
   EXPECT_FALSE(set("https://www.example.com/", "__SECURE-d=1"));  // case-insensitive
   // __Host-: Secure, host-only, Path=/.
   EXPECT_TRUE(set("https://www.example.com/", "__Host-e=1; Secure; Path=/"));
-  EXPECT_TRUE(set("https://www.example.com/", "__Host-f=1; Secure"));  // the default path of "/" is "/"
+  EXPECT_TRUE(set("https://www.example.com/dir/page", "__Host-f=1; Secure; Path=/"));
+  // The Path attribute is required (RFC 6265bis §5.7 step 21): a default path of "/" does not do, but an invalid value
+  // giving it does, as the last Path attribute is then the default path.
+  EXPECT_FALSE(set("https://www.example.com/", "__Host-o=1; Secure"));
+  EXPECT_TRUE(set("https://www.example.com/", "__Host-p=1; Secure; Path=/dir; Path"));
+  EXPECT_FALSE(set("https://www.example.com/dir/page", "__Host-q=1; Secure; Path=page"));  // default path "/dir"
   EXPECT_FALSE(set("https://www.example.com/", "__Host-g=1; Secure; Path=/; Domain=www.example.com"));
   EXPECT_FALSE(set("https://www.example.com/dir/page", "__Host-h=1; Secure"));  // default path "/dir"
   EXPECT_FALSE(set("https://www.example.com/", "__Host-i=1; Secure; Path=/dir"));
@@ -524,12 +575,12 @@ TEST_F(CookieJarTest, CookieNamePrefixes) {
   // A nameless cookie cannot look like a prefixed one.
   EXPECT_FALSE(set("https://www.example.com/", "__Secure-l; Secure"));
   EXPECT_FALSE(set("https://www.example.com/", "=__Host-m; Secure; Path=/"));
-  EXPECT_EQ(jar.size(), 4U);
+  EXPECT_EQ(jar.size(), 5U);
   // Names shorter than a prefix, or close to one, are not prefixed.
   EXPECT_TRUE(set("http://www.example.com/dir/page", "__Host=1"));
   EXPECT_TRUE(set("http://www.example.com/", "__Secure=1"));
   EXPECT_TRUE(set("http://www.example.com/", "_Secure-n=1"));
-  EXPECT_EQ(jar.size(), 7U);
+  EXPECT_EQ(jar.size(), 8U);
 }
 
 TEST_F(CookieJarTest, EvictsLeastRecentlyUsedCookiesOfADomain) {

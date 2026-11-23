@@ -146,6 +146,10 @@ internal::UrlParseResult FinalizeProxyUrl(HttpClientConfig& config) {
     }
 
     internal::ParseAuthority(proxyUrl, res);
+    if (res.host.empty()) {
+      // Without it, the requests would go to their origins, in the absolute-form meant for the proxy.
+      throw HttpClientException("Invalid forward proxy URL");
+    }
   }
   return res;
 }

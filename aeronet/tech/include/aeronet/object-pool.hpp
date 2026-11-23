@@ -141,7 +141,7 @@ class ObjectPool {
   // move-constructible, calling code will not see this overload.
   // The given pointer MUST be non-null and MUST be a pointer previously
   // returned by allocateAndConstruct().
-  [[nodiscard]] T release(T* pObj) noexcept
+  [[nodiscard]] T release(T* pObj) noexcept(std::is_nothrow_move_constructible_v<T>)
     requires std::is_move_constructible_v<T>;
 
   // Returns the current capacity (number of allocated slots) of the pool.
@@ -291,7 +291,7 @@ void ObjectPool<T, SizeType>::destroyAndRelease(T* pObj) noexcept {
 }
 
 template <class T, class SizeType>
-T ObjectPool<T, SizeType>::release(T* pObj) noexcept
+T ObjectPool<T, SizeType>::release(T* pObj) noexcept(std::is_nothrow_move_constructible_v<T>)
   requires std::is_move_constructible_v<T>
 {
   T ret(std::move(*pObj));

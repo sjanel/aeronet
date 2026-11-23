@@ -143,6 +143,38 @@ TEST(ResponseParserTest, ContentEncodingValueIsLowerCased) {
   EXPECT_EQ(resp.bodyInMemory(), "hi");
 }
 
+// Repeated Content-Encoding lines are a single list of codings (RFC 9110 §5.3), kept in a single line, in their order,
+// with the empty elements ignored: those of an interim response are not kept. Received at once or line by line.
+TEST(ResponseParserTest, RepeatedContentEncodingLinesFormASingleList) {
+  static constexpr std::string_view kRaw =
+      "HTTP/1.1 103 Early Hints\r\ncontent-encoding: br\r\ncontent-encoding: zstd\r\n\r\n"
+      "HTTP/1.1 200 OK\r\ncontent-encoding:\r\nContent-Encoding: GZip\r\nx-a: 1\r\ncontent-encoding:\r\n"
+      "CONTENT-ENCODING: Br\r\ncontent-encoding: identity, zstd\r\ncontent-length: 2\r\n\r\nok";
+  for (const bool lineByLine : {false, true}) {
+    HttpResponse resp;
+    RawChars bodyBuf;
+    Http1ResponseParser parser(bodyBuf);
+    parser.reset(false);
+    std::string received;
+    Http1ResponseParser::Status st = Http1ResponseParser::Status::NeedMore;
+    for (std::size_t pos = 0; pos < kRaw.size() && st == Http1ResponseParser::Status::NeedMore;) {
+      const std::size_t lineEnd = lineByLine ? std::min(kRaw.find('\n', pos) + 1U, kRaw.size()) : kRaw.size();
+      received.append(kRaw.substr(pos, lineEnd - pos));
+      pos = lineEnd;
+      st = parser.parse(received, false, resp, kMax);
+    }
+    EXPECT_EQ(st, Http1ResponseParser::Status::Complete) << lineByLine;
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), "gzip, br, identity, zstd") << lineByLine;
+    int nbContentEncodingLines = 0;
+    for (const auto& header : resp.headers()) {
+      nbContentEncodingLines += static_cast<int>(header.name == http::ContentEncoding);
+    }
+    EXPECT_EQ(nbContentEncodingLines, 1) << lineByLine;
+    EXPECT_EQ(resp.headerValueOrEmpty("x-a"), "1") << lineByLine;
+    EXPECT_EQ(resp.bodyInMemory(), "ok") << lineByLine;
+  }
+}
+
 TEST(ResponseParserTest, NoBodyOn204) {
   HttpResponse resp;
   auto st = parseAll("HTTP/1.1 204 No Content\r\n\r\n", resp);
@@ -1132,6 +1164,31 @@ TEST(ResponseParserDecompress, MixedCaseCodingsAreDecoded) {
     EXPECT_EQ(parser.parse(raw, false, resp, kMaxResponseBytes), Http1ResponseParser::Status::Complete) << coding;
     EXPECT_EQ(resp.bodyInMemory(), payload) << coding;
     EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty()) << coding;
+  }
+}
+
+// A body coded twice, its codings given on two Content-Encoding lines, is decoded with both, in the reverse order.
+TEST(ResponseParserDecompress, DecodesCodingsOfRepeatedContentEncodingLines) {
+  const std::string payload = test::MakePatternedPayload(4096);
+  for (const Encoding first : test::SupportedEncodings()) {
+    for (const Encoding second : test::SupportedEncodings()) {
+      const RawChars once = test::Compress(first, payload);
+      const RawChars twice = test::Compress(second, std::string_view(once));
+      std::string raw = "HTTP/1.1 200 OK\r\ncontent-encoding: ";
+      raw.append(GetEncodingStr(first)).append("\r\ncontent-encoding: ").append(GetEncodingStr(second));
+      raw.append("\r\ncontent-length: ").append(std::to_string(twice.size())).append("\r\n\r\n");
+      raw.append(std::string_view(twice));
+
+      Decode decode;
+      Http1ResponseParser parser(decode.bodyBuf);
+      parser.reset(false);
+      parser.setDecodeContext(decode.ctx());
+      HttpResponse resp;
+      EXPECT_EQ(parser.parse(raw, false, resp, kMaxResponseBytes), Http1ResponseParser::Status::Complete)
+          << GetEncodingStr(first) << ' ' << GetEncodingStr(second);
+      EXPECT_EQ(resp.bodyInMemory(), payload) << GetEncodingStr(first) << ' ' << GetEncodingStr(second);
+      EXPECT_FALSE(resp.headerValue(http::ContentEncoding)) << GetEncodingStr(first) << ' ' << GetEncodingStr(second);
+    }
   }
 }
 
