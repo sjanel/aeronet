@@ -12,7 +12,10 @@
 
 #include "aeronet/http-request-view-test-access.hpp"
 #include "aeronet/http-request-view.hpp"
+#include "aeronet/raw-bytes.hpp"
 #include "aeronet/websocket-config.hpp"
+#include "aeronet/websocket-constants.hpp"
+#include "aeronet/websocket-frame.hpp"
 #include "aeronet/websocket-handler.hpp"
 
 namespace aeronet {
@@ -178,6 +181,42 @@ TEST(WebSocketEndpointTest, WithFullConfig_EmptyProtocols) {
 
   EXPECT_TRUE(static_cast<bool>(endpoint.factory));
   EXPECT_TRUE(endpoint.supportedProtocols.empty());
+}
+
+// ============================================================================
+// Callbacks shared by all the connections
+// ============================================================================
+
+// Creates three handlers with the factory of 'endpoint' (three connections), each receiving a message: all of them must
+// deliver it to the callbacks of the endpoint, not only the first one.
+void ReceiveOneMessagePerConnection(const WebSocketEndpoint& endpoint) {
+  const HttpRequestView request = test::HttpRequestViewTestAccess::Make();
+  static constexpr std::string_view kMessage = "message";
+  for (int connection = 0; connection < 3; ++connection) {
+    auto handler = endpoint.factory(request);
+    ASSERT_NE(handler, nullptr);
+    RawBytes frame;
+    websocket::BuildFrame(frame, websocket::Opcode::Binary, std::as_bytes(std::span(kMessage)), true, true,
+                          websocket::MaskingKey{0x01020304U});
+    EXPECT_EQ(handler->processInput(std::span<const std::byte>(frame.data(), frame.size())).bytesConsumed,
+              frame.size());
+  }
+}
+
+TEST(WebSocketEndpointTest, EveryConnectionGetsTheCallbacks) {
+  int nbMessages = 0;
+  websocket::WebSocketCallbacks callbacks;
+  callbacks.onMessage = [&nbMessages](std::span<const std::byte> /*payload*/, bool /*isBinary*/) { ++nbMessages; };
+  const std::array<std::string, 1> protocols = {"chat"};
+
+  ReceiveOneMessagePerConnection(WebSocketEndpoint::WithCallbacks(callbacks));
+  EXPECT_EQ(nbMessages, 3);
+  ReceiveOneMessagePerConnection(WebSocketEndpoint::WithConfigAndCallbacks(websocket::WebSocketConfig(), callbacks));
+  EXPECT_EQ(nbMessages, 6);
+  ReceiveOneMessagePerConnection(WebSocketEndpoint::WithProtocolsAndCallbacks(protocols, callbacks));
+  EXPECT_EQ(nbMessages, 9);
+  ReceiveOneMessagePerConnection(WebSocketEndpoint::WithFullConfig(websocket::WebSocketConfig(), protocols, callbacks));
+  EXPECT_EQ(nbMessages, 12);
 }
 
 // ============================================================================

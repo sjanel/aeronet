@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <span>
 #include <string_view>
 #include <thread>
@@ -45,6 +46,21 @@ namespace {
 
 // Maximum number of buffers gathered in a write of the HTTP/1 output (up to 2 per message: its head and its payload).
 constexpr std::size_t kMaxGatheredBuffers = ZeroCopyState::kMaxBuffers;
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+// Tells the WebSocket handler of a connection being closed that its transport closes: its application gets onClose
+// with AbnormalClosure, unless the connection already ended (closing handshake, failure). Its callback may throw: the
+// connection closes anyway, possibly while the server stops.
+void NotifyWebSocketTransportClosing(IProtocolHandler& handler, NativeHandle fd) {
+  try {
+    handler.onTransportClosing();
+  } catch (const std::exception& ex) {
+    log::error("Exception in the WebSocket onClose callback of fd # {}: {}", fd, ex.what());
+  } catch (...) {
+    log::error("Unknown exception in the WebSocket onClose callback of fd # {}", fd);
+  }
+}
+#endif
 
 }  // namespace
 
@@ -643,6 +659,12 @@ void ConnectionIo::releaseConnection(ConnectionIt cnxIt) {
   const auto fd = cnxIt->fd();
   ctx.eventLoop.del(fd);
   ConnectionState& state = ctx.connections.connectionState(cnxIt);
+#ifdef AERONET_ENABLE_WEBSOCKET
+  // Not the other protocol handlers: the tunnels of an HTTP/2 connection are closed by TunnelManager::closeTunnelsOf().
+  if (state.protocol == ProtocolType::WebSocket) {
+    NotifyWebSocketTransportClosing(*state.protocolHandler, fd);
+  }
+#endif
   // The input buffer of the event loop may be lent to it: a close does not always come at the end of a read.
   releaseServedInBuffer(state);
 #ifdef AERONET_LINUX

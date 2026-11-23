@@ -413,13 +413,14 @@ TEST_F(WebSocketClientTest, CallbacksSendOnAnotherConnection) {
   EXPECT_EQ(eventsB.messages[0], "from A: one");
 }
 
-// Poll 'client' until a callback throws a std::runtime_error, for 10 s at most. Returns whether one did.
+// Poll 'client' until a callback throws an Exception, for 10 s at most. Returns whether one did.
+template <class Exception = std::runtime_error>
 bool PollUntilACallbackThrows(WebSocketClient& client) {
   const auto deadline = std::chrono::steady_clock::now() + 10s;
   while (std::chrono::steady_clock::now() < deadline) {
     try {
       client.poll(10ms);
-    } catch (const std::runtime_error&) {
+    } catch (const Exception&) {
       return true;
     }
   }
@@ -468,6 +469,33 @@ TEST_F(WebSocketClientTest, ThrowingOnOpenEndsTheConnection) {
   EXPECT_EQ(client.nbConnections(), 0U);
   EXPECT_EQ(client.poll(0ms), 0U);
   EXPECT_EQ(events.nbClose, 0);
+}
+
+// connect() and poll() cannot run from a callback of poll() (a reconnection from onClose, say): they throw
+// std::logic_error, which ends the connection whose callback called them, like any exception of a callback.
+TEST_F(WebSocketClientTest, ConnectAndPollFromACallbackThrow) {
+  for (const bool callPoll : {false, true}) {
+    WebSocketClient client(PlainConfig());
+    Events events;
+    WebSocketClientCallbacks callbacks = kRecording;
+    if (callPoll) {
+      callbacks.onMessage = [](WebSocketConnection& cnx, std::span<const std::byte> /*payload*/, bool /*isBinary*/) {
+        static_cast<void>(cnx.client().poll(0ms));
+      };
+    } else {
+      callbacks.onMessage = [](WebSocketConnection& cnx, std::span<const std::byte> /*payload*/, bool /*isBinary*/) {
+        static_cast<void>(cnx.client().connect("ws://127.0.0.1:1/", kRecording));
+      };
+    }
+    WebSocketConnectResult result = client.connect(url("/echo"), callbacks, &events);
+    ASSERT_TRUE(result);
+    EXPECT_TRUE(result.pConnection->sendText("hello"));
+    EXPECT_TRUE(PollUntilACallbackThrows<std::logic_error>(client)) << "poll: " << callPoll;
+    EXPECT_EQ(client.nbConnections(), 0U);
+    EXPECT_EQ(events.nbClose, 0);
+    // The client is usable again.
+    EXPECT_EQ(client.poll(0ms), 0U);
+  }
 }
 
 TEST_F(WebSocketClientTest, MovedClientKeepsItsConnections) {
@@ -743,6 +771,32 @@ TEST(WebSocketClientScripted, UnansweredCloseFrameEndsTheConnectionAfterCloseTim
   ASSERT_TRUE(PollUntil(client, [&client] { return client.nbConnections() == 0; }));
   EXPECT_EQ(events.closeCode, CloseCode::AbnormalClosure);
   EXPECT_EQ(events.closeReason, "no Close frame from the server within closeTimeout");
+}
+
+// After the Close frame of the server, the client waits for the server to close the TCP connection, for closeTimeout:
+// max() waits as long as needed (the deadline does not overflow).
+TEST(WebSocketClientScripted, DrainingWithoutCloseTimeoutWaitsForTheServer) {
+  auto hold = std::make_shared<Hold>();
+  test::RawServer server([hold](NativeHandle fd, int /*connIndex*/) {
+    AnswerUpgrade(fd, {}, ServerFrame(websocket::Opcode::Close, "\x03\xe8"));
+    hold->wait();  // then the connection closes
+  });
+  ReleaseAtExit releaseAtExit(hold);
+  websocket::WebSocketConfig config = PlainConfig();
+  config.closeTimeout = std::chrono::milliseconds::max();
+  WebSocketClient client(config);
+  Events events;
+  ASSERT_TRUE(client.connect(RawUrl(server), kRecording, &events));
+  ASSERT_TRUE(PollUntil(client, [&events] { return events.nbClose == 1; }));
+  EXPECT_EQ(events.closeCode, CloseCode::Normal);
+
+  const auto until = std::chrono::steady_clock::now() + 100ms;
+  while (std::chrono::steady_clock::now() < until) {
+    ASSERT_EQ(client.poll(10ms), 1U);  // draining
+  }
+  hold->release();
+  EXPECT_TRUE(PollUntil(client, [&client] { return client.nbConnections() == 0; }));
+  EXPECT_EQ(events.nbClose, 1);
 }
 
 #ifdef AERONET_LINUX

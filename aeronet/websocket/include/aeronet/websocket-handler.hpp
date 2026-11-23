@@ -28,10 +28,10 @@ class DeflateContext;
 #endif
 
 /// Callbacks for WebSocket events.
-/// All callbacks are invoked on the event loop thread.
+/// All callbacks are invoked on the event loop thread. A connection ends with exactly one call of onClose or onError.
 struct WebSocketCallbacks {
   /// Called when a complete message (text or binary) is received.
-  /// @param payload   The complete message payload (fragments reassembled)
+  /// @param payload   The complete message payload (fragments reassembled), a view only valid during the call
   /// @param isBinary  True if binary message, false if text message
   /// Note: For text messages, the payload is guaranteed to be valid UTF-8.
   std::function<void(std::span<const std::byte> payload, bool isBinary)> onMessage;
@@ -45,14 +45,16 @@ struct WebSocketCallbacks {
   /// @param payload Pong payload (up to 125 bytes)
   std::function<void(std::span<const std::byte> payload)> onPong;
 
-  /// Called when a Close frame is received.
-  /// The handler automatically handles the close handshake.
+  /// Called when the connection ends: on the Close frame of the peer, answered automatically (its code,
+  /// NoStatusReceived without code), or with AbnormalClosure when the transport closes without closing handshake
+  /// (connection lost, idle timeout, unanswered Close frame after closeTimeout, server stopping, see
+  /// WebSocketHandler::onTransportClosing()). Nothing can be sent anymore.
   /// @param code   Close status code
   /// @param reason Close reason string
   std::function<void(CloseCode code, std::string_view reason)> onClose;
 
   /// Called when a protocol error occurs.
-  /// The connection will be closed after this callback.
+  /// The connection will be closed after this callback, without onClose.
   /// @param code    Error close code (e.g., ProtocolError, InvalidPayloadData)
   /// @param message Error description
   std::function<void(CloseCode code, std::string_view message)> onError;
@@ -112,7 +114,12 @@ class WebSocketHandler final : public IProtocolHandler {
 
   void releaseInput() override;
 
+  /// Ends the connection: unless onClose or onError was called, calls onClose with AbnormalClosure.
   void onTransportClosing() override;
+
+  /// A callback threw while the input was processed: the connection fails with InternalError (1011), the rest of the
+  /// input is ignored, and onTransportClosing() reports its end.
+  void onInputProcessingException() override;
 
   bool drainOutputBuffer(HttpMessageData& dest) override;
 
@@ -208,6 +215,15 @@ class WebSocketHandler final : public IProtocolHandler {
   Timeout checkTimeouts(std::chrono::steady_clock::time_point now, std::chrono::steady_clock::time_point lastActivity);
 
  private:
+  friend struct WebSocketHandlerTestAccess;
+
+  /// Whether the input of the peer is processed, and the end of the connection reported to the application.
+  enum class End : uint8_t {
+    None,          // the input is processed
+    InputIgnored,  // a callback threw: the input is ignored, onTransportClosing() reports the end
+    Reported,      // onClose or onError was called (closing handshake done, or connection failed): input ignored
+  };
+
   /// Close handshake state machine.
   enum class CloseState : uint8_t {
     Open,           // Normal operation
@@ -241,8 +257,12 @@ class WebSocketHandler final : public IProtocolHandler {
   /// Complete a message (called when FIN=1 after fragment reassembly or decompression).
   ProtocolProcessResult completeMessage();
 
-  /// Fail the WebSocket connection (RFC 6455 §7.1.7): report the error to onError, then send a Close frame with code.
-  void failConnection(CloseCode code, std::string_view message);
+  /// Forget the message being received (complete or not), and free the memory of its buffers if they grew too large.
+  void resetMessage() noexcept;
+
+  /// Fail the WebSocket connection (RFC 6455 §7.1.7): report the error to onError, send a Close frame with code, and
+  /// forget the message being received. Returns the Close action.
+  ProtocolProcessResult failConnection(CloseCode code, std::string_view message);
 
   /// Queue a frame for sending.
   void queueFrame(Opcode opcode, std::span<const std::byte> payload, bool fin = true);
@@ -284,6 +304,7 @@ class WebSocketHandler final : public IProtocolHandler {
   CloseCode _closeCode{CloseCode::Normal};
   CloseState _closeState{CloseState::Open};
   bool _messageCompressed{false};  // True if current message was received with RSV1 set
+  End _end{End::None};
 };
 
 /// Create a WebSocket handler for server-side use.

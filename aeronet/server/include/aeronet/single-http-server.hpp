@@ -515,6 +515,10 @@ class SingleHttpServer {
   // Returns true if the connection should be closed.
   bool processSpecialProtocolHandler(ConnectionIt cnxIt);
 
+  // The protocol handler of the connection whose socket is 'fd' threw while processing its input (logged): the
+  // connection closes once the handler said why (WebSocket: Close frame with InternalError). Returns true.
+  bool closeAfterInputProcessingException(NativeHandle fd);
+
   // Serves the input already in the input buffer of a connection whose output is not blocked: the complete requests
   // (HTTP/2 frames) left by the output backpressure or the fairness budget, that no event reports.
   void processBufferedInput(NativeHandle fd);

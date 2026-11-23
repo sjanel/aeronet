@@ -109,6 +109,11 @@ class IProtocolHandler {
     }
   }
 
+  /// Called when processInput() threw (an exception of an application callback, or an allocation failure): what was
+  /// processed of the input is unknown, and the connection closes once its pending output is written. By default this
+  /// output is discarded, the state of the protocol being unknown.
+  virtual void onInputProcessingException() { discardPendingOutput(); }
+
   /// Called when the underlying transport is about to be closed.
   /// Allows cleanup of protocol-specific state.
   virtual void onTransportClosing() = 0;

@@ -33,6 +33,16 @@ TEST(WebSocketConfigTest, IdleTimeoutMustBePositive) {
   EXPECT_NO_THROW(config.validate());
 }
 
+TEST(WebSocketConfigTest, CloseTimeoutMustNotBeNegative) {
+  WebSocketConfig config;
+  config.closeTimeout = std::chrono::milliseconds{-1};
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+  config.closeTimeout = std::chrono::milliseconds{0};  // closed once the Close frame is sent
+  EXPECT_NO_THROW(config.validate());
+  config.closeTimeout = std::chrono::milliseconds::max();  // waits for the peer forever
+  EXPECT_NO_THROW(config.validate());
+}
+
 TEST(WebSocketConfigTest, SmallestLimitsAreValid) {
   WebSocketConfig config;
   config.maxMessageSize = 1;

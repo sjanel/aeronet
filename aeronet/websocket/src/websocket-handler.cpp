@@ -14,6 +14,7 @@
 
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/protocol-handler.hpp"
+#include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/secure-random.hpp"
 #include "aeronet/timedef.hpp"
@@ -36,10 +37,22 @@ namespace {
 // output buffer: below, the copy is cheaper than the separate buffer to write.
 constexpr std::size_t kMinUnbufferedPayloadSize = 4096;
 
+// Largest capacity a buffer of the received messages keeps once a message is done with. A larger one is freed: else a
+// peer could leave maxMessageSize bytes allocated per connection, and with permessage-deflate from a few kilobytes of
+// compressed data (a compression bomb). Of the order of the zlib streams of a connection (32 KiB windows).
+constexpr std::size_t kMaxRetainedBufferCapacity = 64UL * 1024UL;
+
 // Tells whether 'part' lies within 'whole' (std::less_equal is a total order, even for unrelated pointers).
 bool IsWithin(std::span<const std::byte> part, std::span<const std::byte> whole) {
   constexpr std::less_equal<> kLessEqual;
   return kLessEqual(whole.data(), part.data()) && kLessEqual(part.data() + part.size(), whole.data() + whole.size());
+}
+
+// Frees the memory of 'buffer', whose content is not needed anymore, if it exceeds kMaxRetainedBufferCapacity.
+void ReleaseIfOversized(RawBytes& buffer) noexcept {
+  if (buffer.capacity() > kMaxRetainedBufferCapacity) {
+    buffer = RawBytes();
+  }
 }
 
 }  // namespace
@@ -109,7 +122,9 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
     WebSocketHandler& _handler;
   } inputScope(*this, data);
 
-  while (!data.empty()) {
+  const std::size_t inputSize = data.size();
+  // Once the connection ended (onClose or onError called), the loop stops.
+  while (_end == End::None && !data.empty()) {
     const auto frameResult = ParseFrame(data, _config.maxFrameSize, _config.isServerSide, allowRsv1);
 
     if (frameResult.status == FrameParseResult::Status::Incomplete) {
@@ -117,37 +132,34 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
     }
 
     if (frameResult.status == FrameParseResult::Status::ProtocolError) {
-      // Protocol violation - close with error
-      failConnection(CloseCode::ProtocolError, frameResult.pErrorMessage);
-      result.action = ProtocolProcessResult::Action::Close;
+      result.action = failConnection(CloseCode::ProtocolError, frameResult.pErrorMessage).action;
       break;
     }
 
     if (frameResult.status == FrameParseResult::Status::PayloadTooLarge) {
-      failConnection(CloseCode::MessageTooBig, "Frame payload too large");
-      result.action = ProtocolProcessResult::Action::Close;
+      result.action = failConnection(CloseCode::MessageTooBig, "Frame payload too large").action;
       break;
     }
 
-    // Frame complete - process it
-    ProtocolProcessResult frameProcessResult = processFrame(frameResult);
+    const ProtocolProcessResult frameProcessResult = processFrame(frameResult);
 
     result.bytesConsumed += frameResult.bytesConsumed;
     data = data.subspan(frameResult.bytesConsumed);
 
-    // Check if we need to stop processing
-    // processFrame() never returns CloseImmediate in the WebSocket protocol (only HTTP/2 does)
+    // processFrame() never returns CloseImmediate in the WebSocket protocol (only HTTP/2 does), and Close only once the
+    // connection ended.
     assert(frameProcessResult.action != ProtocolProcessResult::Action::CloseImmediate);
-    if (frameProcessResult.action == ProtocolProcessResult::Action::Close) {
+    assert(frameProcessResult.action != ProtocolProcessResult::Action::Close || _end == End::Reported);
+    if (frameProcessResult.action != ProtocolProcessResult::Action::Continue) {
       result.action = frameProcessResult.action;
-      break;
-    }
-
-    if (frameProcessResult.action == ProtocolProcessResult::Action::ResponseReady) {
-      result.action = ProtocolProcessResult::Action::ResponseReady;
     }
   }
 
+  if (_end != End::None) {
+    // The closing handshake is complete or the connection failed: nothing more of the peer is processed (RFC 6455
+    // §5.5.1, §7.1.7), its bytes are discarded. A client answering a Close frame gets ResponseReady, to send its own.
+    result.bytesConsumed = inputSize;
+  }
   result.outputRefersToInput = unbufferedPayloadInInput();
   return result;
 }
@@ -173,16 +185,12 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
   if (header.opcode == Opcode::Continuation) {
     // Continuation frame - must be in a fragmented message
     if (!_message.inProgress) {
-      failConnection(CloseCode::ProtocolError, "Unexpected continuation frame");
-      result.action = ProtocolProcessResult::Action::Close;
-      return result;
+      return failConnection(CloseCode::ProtocolError, "Unexpected continuation frame");
     }
   } else {
     // Text or Binary - must NOT be in a fragmented message
     if (_message.inProgress) {
-      failConnection(CloseCode::ProtocolError, "Expected continuation frame");
-      result.action = ProtocolProcessResult::Action::Close;
-      return result;
+      return failConnection(CloseCode::ProtocolError, "Expected continuation frame");
     }
 
     // Fast path: single complete non-fragmented non-compressed frame.
@@ -194,9 +202,7 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
     // With permessage-deflate, RSV1 tells whether the message is compressed (only allowed when negotiated).
     if (header.fin && !header.rsv1) {
       if (payload.size() > _config.maxMessageSize) {
-        failConnection(CloseCode::MessageTooBig, "Message too large");
-        result.action = ProtocolProcessResult::Action::Close;
-        return result;
+        return failConnection(CloseCode::MessageTooBig, "Message too large");
       }
       // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
       const std::span<std::byte> mutablePayload(const_cast<std::byte*>(payload.data()), payload.size());
@@ -205,9 +211,7 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
         const bool isValidUtf8 =
             header.masked ? UnmaskAndValidateUtf8(mutablePayload, header.maskingKey) : IsValidUtf8(payload);
         if (!isValidUtf8) {
-          failConnection(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
-          result.action = ProtocolProcessResult::Action::Close;
-          return result;
+          return failConnection(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
         }
       } else if (header.masked) {
         ApplyMask(mutablePayload, header.maskingKey);
@@ -235,11 +239,7 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
   // Check message size limit (fragmented / compressed path)
   const std::size_t newSize = _message.buffer.size() + payload.size();
   if (newSize > _config.maxMessageSize) {
-    failConnection(CloseCode::MessageTooBig, "Message too large");
-    result.action = ProtocolProcessResult::Action::Close;
-    _message.inProgress = false;
-    _message.buffer.clear();
-    return result;
+    return failConnection(CloseCode::MessageTooBig, "Message too large");
   }
 
   // Append payload to message buffer, unmasked in the same pass as copied
@@ -264,11 +264,7 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
       _message.utf8TailSize = static_cast<uint8_t>(tailSize);
     }
     if (!isValidUtf8) {
-      failConnection(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
-      result.action = ProtocolProcessResult::Action::Close;
-      _message.inProgress = false;
-      _message.buffer.clear();
-      return result;
+      return failConnection(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
     }
   }
 
@@ -311,11 +307,12 @@ ProtocolProcessResult WebSocketHandler::handleControlFrame(const FrameHeader& he
       const auto closeInfo = ParseClosePayload(payload);
       if (closeInfo.pErrorMessage != nullptr) {
         // Invalid Close frame (code that may not be sent, reason that is not UTF-8...): not echoed
-        failConnection(closeInfo.code, closeInfo.pErrorMessage);
-        result.action = ProtocolProcessResult::Action::Close;
-        break;
+        return failConnection(closeInfo.code, closeInfo.pErrorMessage);
       }
 
+      // The input is not processed anymore (the loop of processInput() stops here).
+      assert(_closeState == CloseState::Open || _closeState == CloseState::CloseSent);
+      _end = End::Reported;
       if (_closeState == CloseState::Open) {
         // Peer initiated close - respond with Close. Both Close frames are then exchanged: a server closes the TCP
         // connection right after sending its response, so that it holds the TIME_WAIT state and not the client
@@ -326,7 +323,7 @@ ProtocolProcessResult WebSocketHandler::handleControlFrame(const FrameHeader& he
         _closeState = CloseState::Closed;
         result.action =
             _config.isServerSide ? ProtocolProcessResult::Action::Close : ProtocolProcessResult::Action::ResponseReady;
-      } else if (_closeState == CloseState::CloseSent) {
+      } else {
         // We initiated, peer responded - handshake complete
         _closeState = CloseState::Closed;
         result.action = ProtocolProcessResult::Action::Close;
@@ -356,16 +353,9 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
     const char* errMsg = _deflateContext->decompress(_message.buffer, _compressBuffer, _config.maxMessageSize);
     if (errMsg != nullptr) {
       // A message decompressing beyond maxMessageSize is too big, not invalid: its output then holds more bytes.
-      if (_compressBuffer.size() > _config.maxMessageSize) {
-        failConnection(CloseCode::MessageTooBig, "Message too large");
-      } else {
-        failConnection(CloseCode::InvalidPayloadData, "Decompression failed");
-      }
-      result.action = ProtocolProcessResult::Action::Close;
-      _message.inProgress = false;
-      _message.buffer.clear();
-      _messageCompressed = false;
-      return result;
+      return _compressBuffer.size() > _config.maxMessageSize
+                 ? failConnection(CloseCode::MessageTooBig, "Message too large")
+                 : failConnection(CloseCode::InvalidPayloadData, "Decompression failed");
     }
     // The message buffer holds the decompressed message: the compression buffer must stay free for the messages that
     // onMessage sends (an echo of this one would otherwise be compressed into its own memory).
@@ -377,26 +367,30 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
 
   // A decompressed text message is validated whole (an uncompressed one was, fragment by fragment)
   if (_message.opcode == Opcode::Text && _messageCompressed && !IsValidUtf8(messageData)) {
-    failConnection(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
-    result.action = ProtocolProcessResult::Action::Close;
-    _message.inProgress = false;
-    _message.buffer.clear();
-    _messageCompressed = false;
-    return result;
+    return failConnection(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
   }
 
-  // Invoke callback
   if (_callbacks.onMessage) {
     _callbacks.onMessage(messageData, _message.opcode == Opcode::Binary);
   }
 
-  // Reset message state
-  _message.inProgress = false;
-  _message.buffer.clear();
-  _messageCompressed = false;
+  resetMessage();
 
   result.action = ProtocolProcessResult::Action::Continue;
   return result;
+}
+
+void WebSocketHandler::resetMessage() noexcept {
+  _message.inProgress = false;
+  _message.buffer.clear();
+  _messageCompressed = false;
+  ReleaseIfOversized(_message.buffer);
+#ifdef AERONET_ENABLE_ZLIB
+  // The decompressed message or its compressed data, unless it holds the payload of a message being sent (sendData()).
+  if (_unbufferedPayload.empty() || unbufferedPayloadInInput()) {
+    ReleaseIfOversized(_compressBuffer);
+  }
+#endif
 }
 
 void WebSocketHandler::onOutputWritten(std::size_t bytesWritten) {
@@ -447,10 +441,27 @@ void WebSocketHandler::releaseInput() {
 }
 
 void WebSocketHandler::onTransportClosing() {
-  _closeState = CloseState::Closed;
+  _closeState = CloseState::Closed;  // nothing can be sent anymore, onClose included
   _unbufferedPayload = {};
-  _message.inProgress = false;
-  _message.buffer.clear();
+  resetMessage();
+  if (_end != End::Reported) {
+    // Closed without closing handshake: AbnormalClosure, the code reported when no Close frame was received (RFC 6455
+    // §7.1.5).
+    _end = End::Reported;
+    if (_callbacks.onClose) {
+      _callbacks.onClose(CloseCode::AbnormalClosure, "connection closed without closing handshake");
+    }
+  }
+}
+
+void WebSocketHandler::onInputProcessingException() {
+  // What the callbacks did with the input is unknown: nothing more of it is processed, and the peer learns that the
+  // server failed (RFC 6455 §7.4.1). The frames already queued are sent before the Close frame.
+  if (_end == End::None) {
+    _end = End::InputIgnored;
+  }
+  resetMessage();
+  sendClose(CloseCode::InternalError);
 }
 
 bool WebSocketHandler::drainOutputBuffer(HttpMessageData& dest) {
@@ -509,7 +520,10 @@ bool WebSocketHandler::sendData(Opcode opcode, std::span<const std::byte> payloa
     appendUnbufferedPayload();
     _compressBuffer.clear();
     const char* errMsg = _deflateContext->compress(payload, _compressBuffer);
-    if (errMsg == nullptr && _compressBuffer.size() < payload.size()) {
+    // A message that does not shrink is sent uncompressed, unless the compression keeps its context: the window of the
+    // peer must then hold it, the next messages referring to it. A failed compression stream keeps failing: the
+    // messages sent uncompressed from then on refer to nothing.
+    if (errMsg == nullptr && (_compressBuffer.size() < payload.size() || _deflateContext->keepsCompressionContext())) {
       const bool shouldMask = !_config.isServerSide;
       const MaskingKey mask = shouldMask ? nextMaskingKey() : MaskingKey{};
       if (_compressBuffer.size() < kMinUnbufferedPayloadSize) {
@@ -568,11 +582,18 @@ bool WebSocketHandler::sendPong(std::span<const std::byte> payload) {
   return true;
 }
 
-void WebSocketHandler::failConnection(CloseCode code, std::string_view message) {
+ProtocolProcessResult WebSocketHandler::failConnection(CloseCode code, std::string_view message) {
+  // The input is not processed anymore (the loop of processInput() stops).
+  assert(_end == End::None);
+  _end = End::Reported;
   if (_callbacks.onError) {
     _callbacks.onError(code, message);
   }
   sendClose(code, message);
+  resetMessage();
+  ProtocolProcessResult result;
+  result.action = ProtocolProcessResult::Action::Close;
+  return result;
 }
 
 bool WebSocketHandler::sendClose(CloseCode code, std::string_view reason) {
