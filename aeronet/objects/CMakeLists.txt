@@ -187,6 +187,11 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    span-sampler_test
+    test/span-sampler_test.cpp
+)
+
+AeronetAddUnitTest(
     decompression-config_test
     src/decompression-config.cpp
     test/decompression-config_test.cpp

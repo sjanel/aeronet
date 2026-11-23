@@ -458,6 +458,9 @@ TEST(OpenTelemetryEndToEnd, OneSpanPerRequestWhateverTheReadsOfItsHead) {
   // Several export intervals: the spans of both requests, if any, are exported meanwhile.
   int nbRequestSpans = 0;
   int nbSpansWithMethod = 0;
+  int nbSpansWithStatus = 0;
+  int nbSpansWithDuration = 0;
+  std::string scheme;
   for (const auto deadline = std::chrono::steady_clock::now() + 600ms; std::chrono::steady_clock::now() < deadline;) {
     try {
       const auto req = collector.waitForRequest(100ms);
@@ -476,6 +479,12 @@ TEST(OpenTelemetryEndToEnd, OneSpanPerRequestWhateverTheReadsOfItsHead) {
             for (const auto& attr : span.attributes()) {
               if (attr.key() == "http.method" && attr.value().string_value() == "GET") {
                 ++nbSpansWithMethod;
+              } else if (attr.key() == "http.status_code" && attr.value().int_value() == 200) {
+                ++nbSpansWithStatus;
+              } else if (attr.key() == "http.duration_us") {
+                ++nbSpansWithDuration;
+              } else if (attr.key() == "http.scheme") {
+                scheme = attr.value().string_value();
               }
             }
           }
@@ -487,6 +496,10 @@ TEST(OpenTelemetryEndToEnd, OneSpanPerRequestWhateverTheReadsOfItsHead) {
   }
   EXPECT_EQ(nbRequestSpans, 1);
   EXPECT_EQ(nbSpansWithMethod, 1);
+  EXPECT_EQ(nbSpansWithStatus, 1);
+  EXPECT_EQ(scheme, "http");
+  // The duration of a request is the one of its span.
+  EXPECT_EQ(nbSpansWithDuration, 0);
 }
 
 // Spans end on the event loop thread. Exporting them there would stall all the connections of the server until the

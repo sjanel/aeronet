@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <random>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -19,6 +20,7 @@
 #include "aeronet/tracing/tracer.hpp"
 #include "counter-accumulator.hpp"
 #include "dogstatsd-metrics.hpp"
+#include "span-sampler.hpp"
 
 // Detect SDK and processor support
 #if __has_include( \
@@ -28,7 +30,7 @@
 #include <opentelemetry/sdk/trace/batch_span_processor.h>
 #include <opentelemetry/sdk/trace/batch_span_processor_options.h>
 #include <opentelemetry/sdk/trace/sampler.h>
-#include <opentelemetry/sdk/trace/samplers/trace_id_ratio.h>
+#include <opentelemetry/sdk/trace/samplers/always_on.h>
 #include <opentelemetry/sdk/trace/tracer_provider.h>
 #include <opentelemetry/trace/span.h>
 #include <opentelemetry/trace/tracer_provider.h>
@@ -142,12 +144,19 @@ class OtelSpan final : public Span {
   opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> _span;
 };
 
+// Seed of the span sampler: the samplers of the servers of a process draw different sequences.
+uint64_t RandomSeed() {
+  std::random_device randomDevice;
+  return (static_cast<uint64_t>(randomDevice()) << 32U) ^ randomDevice();
+}
+
 }  // namespace
 
 // TelemetryContext implementation details
 class TelemetryContextImpl {
  public:
-  explicit TelemetryContextImpl(const TelemetryConfig& cfg) : _dogstatsd(cfg) {}
+  explicit TelemetryContextImpl(const TelemetryConfig& cfg)
+      : _spanSampler(cfg.sampleRate, RandomSeed()), _dogstatsd(cfg) {}
 
   TelemetryContextImpl(const TelemetryContextImpl&) = delete;
   TelemetryContextImpl(TelemetryContextImpl&&) = delete;
@@ -243,6 +252,8 @@ class TelemetryContextImpl {
 
   opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider> _tracerProvider;
   opentelemetry::nostd::shared_ptr<opentelemetry::trace::Tracer> _tracer;
+  // Applies TelemetryConfig::sampleRate before the SDK is called (whose sampler records all the spans it gets).
+  detail::SpanSampler _spanSampler;
 
 #ifdef AERONET_HAVE_METRICS_SDK
   std::unique_ptr<opentelemetry::sdk::metrics::MeterProvider> _meterProvider;
@@ -306,9 +317,10 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) {
   auto processor = std::unique_ptr<opentelemetry::sdk::trace::SpanProcessor>(
       new opentelemetry::sdk::trace::BatchSpanProcessor(std::move(exporter), batchOpts));
 
-  // Create provider - NO global singleton, keep it in this instance
-  auto sampler = std::unique_ptr<opentelemetry::sdk::trace::Sampler>(
-      new opentelemetry::sdk::trace::TraceIdRatioBasedSampler(cfg.sampleRate));
+  // Create provider - NO global singleton, keep it in this instance. The spans are sampled before being started (see
+  // TelemetryContextImpl::_spanSampler): the SDK records all those it gets. Its trace id ratio sampler would start each
+  // unsampled span anyway (an allocation for a span that does nothing), and aeronet's attributes on it.
+  auto sampler = std::unique_ptr<opentelemetry::sdk::trace::Sampler>(new opentelemetry::sdk::trace::AlwaysOnSampler());
 
   ctx._tracerProvider = opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider>(
       new opentelemetry::sdk::trace::TracerProvider(std::move(processor), telemetryResource, std::move(sampler)));
@@ -391,7 +403,7 @@ TelemetryContext::TelemetryContext(TelemetryContext&&) noexcept = default;
 TelemetryContext& TelemetryContext::operator=(TelemetryContext&&) noexcept = default;
 
 SpanPtr TelemetryContext::createSpan(std::string_view name) const noexcept {
-  if (!_impl || !_impl->_tracer) {
+  if (!_impl || !_impl->_tracer || !_impl->_spanSampler.sample()) {
     return nullptr;
   }
   return std::make_unique<OtelSpan>(_impl->_tracer->StartSpan(OtelSv(name)));

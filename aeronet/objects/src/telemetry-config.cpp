@@ -34,7 +34,8 @@ void TelemetryConfig::validate() {
   if (!otelEnabled) {
     return;
   }
-  if (sampleRate < 0.0F || sampleRate > 1.0F) {
+  // NOLINTNEXTLINE(readability-simplify-boolean-expr)
+  if (!(sampleRate >= 0.0F && sampleRate <= 1.0F)) {  // NaN too
     log::critical("Invalid sample rate {}, must be between 0 and 1", sampleRate);
     throw std::invalid_argument("Invalid sample rate");
   }

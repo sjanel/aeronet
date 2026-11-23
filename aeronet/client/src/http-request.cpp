@@ -366,7 +366,7 @@ const char* HttpRequest::setNewUrl(const internal::UrlParseResult& res) {
   // InitData()), " HTTP/1.1" and the Host header line.
   const std::size_t newHostHeaderEndPos = _originKeyLen + methodLen + 1U + (hasNonTlsProxy ? _originKeyLen : 0U) +
                                           TargetSize(res.target) + 1U + http::HTTP11Sv.size() + hostHeaderSize;
-  const int32_t diffLen = static_cast<int32_t>(newHostHeaderEndPos) - static_cast<int32_t>(oldHostHeaderEndPos);
+  const int64_t diffLen = static_cast<int64_t>(newHostHeaderEndPos) - static_cast<int64_t>(oldHostHeaderEndPos);
 
   HeadGrowthManager headGrowthManager(*this, diffLen);
 

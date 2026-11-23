@@ -233,16 +233,16 @@ class HttpRequestViewTest : public ::testing::Test {
   // Test helpers that require friend access to HttpRequestView private members
   struct FakeSpan : public tracing::Span {
     static inline int64_t lastStatusCode = -1;
-    static inline int64_t lastDurationUs = -1;
+    static inline int nbIntAttributes = 0;
     static inline bool ended = false;
     static inline bool sawHttpHost = false;
     static inline std::string lastHttpHost;
+    static inline std::string lastHttpScheme;
 
     void setAttribute(std::string_view key, int64_t val) noexcept override {
+      ++nbIntAttributes;
       if (key == "http.status_code") {
         lastStatusCode = val;
-      } else if (key == "http.duration_us") {
-        lastDurationUs = val;
       }
     }
 
@@ -250,6 +250,8 @@ class HttpRequestViewTest : public ::testing::Test {
       if (key == "http.host") {
         sawHttpHost = true;
         lastHttpHost.assign(val);
+      } else if (key == "http.scheme") {
+        lastHttpScheme.assign(val);
       }
     }
 
@@ -997,6 +999,19 @@ TEST_F(HttpRequestViewTest, AbsoluteFormHostIsInTheTraceSpan) {
   ASSERT_EQ(reqSetWithSpan(BuildRaw("GET", "http://example.com:81/p"), std::make_unique<FakeSpan>()),
             http::StatusCodeOK);
   EXPECT_EQ(FakeSpan::lastHttpHost, "example.com:81");
+}
+
+// The scheme in the trace span is the one of the connection, whatever the form of the request-target.
+TEST_F(HttpRequestViewTest, TraceSpanSchemeIsTheOneOfTheConnection) {
+  ASSERT_EQ(reqSetWithSpan(BuildRaw("GET", "/p"), std::make_unique<FakeSpan>()), http::StatusCodeOK);
+  EXPECT_EQ(FakeSpan::lastHttpScheme, "http");
+#ifdef AERONET_ENABLE_OPENSSL
+  connectionInfo.tlsInfo.parts.set(2, "TLSv1.3");  // the negotiated version
+  ASSERT_EQ(reqSetWithSpan(BuildRaw("GET", "/p"), std::make_unique<FakeSpan>()), http::StatusCodeOK);
+  EXPECT_EQ(FakeSpan::lastHttpScheme, "https");
+  ASSERT_EQ(reqSetWithSpan(BuildRaw("GET", "http://example.com/p"), std::make_unique<FakeSpan>()), http::StatusCodeOK);
+  EXPECT_EQ(FakeSpan::lastHttpScheme, "https");
+#endif
 }
 
 // Control characters are never valid in a request-target, whatever its form.
@@ -2164,7 +2179,7 @@ TEST_F(HttpRequestViewTest, Http10KeepAliveRequiresKeepAliveOption) {
 TEST_F(HttpRequestViewTest, EndSetsSpanAttributesAndEnds) {
   // Reset fake span static state
   FakeSpan::lastStatusCode = -1;
-  FakeSpan::lastDurationUs = -1;
+  FakeSpan::nbIntAttributes = 0;
   FakeSpan::ended = false;
 
   auto spanPtr = std::make_unique<FakeSpan>();
@@ -2179,7 +2194,8 @@ TEST_F(HttpRequestViewTest, EndSetsSpanAttributesAndEnds) {
   callEnd(http::StatusCodeNotFound);
 
   EXPECT_EQ(FakeSpan::lastStatusCode, static_cast<int64_t>(http::StatusCodeNotFound));
-  EXPECT_GT(FakeSpan::lastDurationUs, -1);
+  // The duration is the one of the span: the status code is its only attribute set at the end.
+  EXPECT_EQ(FakeSpan::nbIntAttributes, 1);
   EXPECT_TRUE(FakeSpan::ended);
 }
 

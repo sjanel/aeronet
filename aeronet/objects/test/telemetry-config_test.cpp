@@ -55,6 +55,14 @@ TEST(TelemetryConfigTest, TelemetryConfigSampleRateValidation) {
   cfg.withSampleRate(1.5);
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 
+  cfg.withSampleRate(std::numeric_limits<double>::quiet_NaN());
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+
+  cfg.withSampleRate(0.0);
+  EXPECT_NO_THROW(cfg.validate());
+  cfg.withSampleRate(1.0);
+  EXPECT_NO_THROW(cfg.validate());
+
   cfg.otelEnabled = false;
   cfg.withSampleRate(-0.1);
   EXPECT_NO_THROW(cfg.validate());  // sample rate not validated when otel is disabled
