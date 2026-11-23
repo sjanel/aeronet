@@ -138,6 +138,16 @@ router.setPath(http::Method::GET, "/data", [&gzippedPayload](const HttpRequestVi
 
 `Content-Encoding: identity` sends a body uncompressed, even above the threshold. The value is not validated, and the server does not add `Vary`: add it if caches may store the response. Check that the client accepts the coding you send.
 
+### Encoder memory
+
+Each server thread, and each `HttpClient`, keeps one encoder per codec, reused by all its responses (requests for the client) so that they do not allocate it again. What an encoder keeps depends on its settings, not on the length of the bodies (measured for 2 KiB to 64 MiB, streamed or in one piece):
+
+| Codec | Kept between responses |
+| --- | --- |
+| gzip, deflate | 340 KiB with zlib-ng, 260 KiB with zlib. |
+| zstd | Its workspace, sized by `compressionLevel` and `windowLog`: 3.5 MiB at the default level 3 for a streamed body, 90 MiB at level 19. |
+| br | The tables and buffers of its last two responses: 1.4 MiB for small bodies at quality 5, 60 MiB for 1 MiB at the default quality 11 (75 MiB from 8 MiB). Those the last response did not use are freed when the next one starts. |
+
 ## Request body decompression
 
 When a codec is compiled in, request bodies with a `Content-Encoding` header are decoded before the handler runs: the handler sees the decoded body, and the `Content-Encoding` header is removed. Stacked codings (`Content-Encoding: gzip, zstd`) are decoded in reverse order, the last coding first, and `identity` is skipped, as are empty list elements (`gzip,,zstd`, RFC 9110 §5.6.1.2): an empty `Content-Encoding` leaves the body as received. `x-gzip` is decoded as `gzip` (RFC 9110 §8.4.1.3), also by `HttpClient`. Each coding is a decoding pass over the whole body: at most 5 codings are accepted, `identity` and empty elements included, as curl does for responses (CVE-2023-23916). A longer list is answered `415` without decoding anything.
@@ -193,3 +203,4 @@ The decoded body is limited by `maxDecompressedBytes`, not by `maxBodyBytes`, wh
 - Bodies of a few compression chunks, and a compressed body filling the `maxCompressRatio` budget exactly or exceeding it by one byte (`HttpCodecCompression.TryCompressBodyOfAFewChunksUsesTheWholeBudget`, `HttpCodecCompression.TryCompressBodyStreamingBudgetBoundary`): [http-codec_test.cpp](../../aeronet/http/test/http-codec_test.cpp); request bodies compressed by `HttpClient` (`HttpClientCompressionE2E.CompressesMidSizeModeratelyCompressibleRequestBody`): [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp).
 - Large incompressible bodies, whose brotli and zstd output comes in bursts larger than the room of one write, streamed, set with `bodyAppend()` and with `bodyInlineAppend()`, over HTTP/1.1 and HTTP/2 (`ProtocolParityFastBrotli.LargeIncompressibleBodiesAreCompressedWhole`): [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp); request bodies directly compressed by `HttpClient` (`HttpClientCompressionE2E.LargeIncompressibleDirectlyCompressedRequestBody`): [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp), and restored after a const finalization (`HttpRequestTest.LargeIncompressibleDirectlyCompressedBody`): [http-request_test.cpp](../../aeronet/client/test/http-request_test.cpp); encoders reading part of their input only (`BrotliEncoderDecoderTest.IncompressibleChunksWithMinEncodeChunkCapacity`, `ZstdEncoderDecoderTest.LargeIncompressibleChunkWithMinEncodeChunkCapacity`, `*.EncodeChunkWithoutEnoughOutputRoom`).
 - Codecs: [zlib-encoder-decoder_test.cpp](../../aeronet/objects/test/zlib-encoder-decoder_test.cpp), [zstd-encoder-decoder_test.cpp](../../aeronet/objects/test/zstd-encoder-decoder_test.cpp), [brotli-encoder-decoder_test.cpp](../../aeronet/objects/test/brotli-encoder-decoder_test.cpp).
+- brotli encoder memory: blocks reused up to twice the request, outgrown copies freed, blocks unused for a response freed (`BrotliScratchTest.*`), not growing with the length of a stream (`BrotliScratchTest.MemoryDoesNotGrowWithTheStreamLength`), the tables of a large response freed after small ones (`BrotliScratchTest.SmallSessionsReleaseTheTablesOfALargeOne`): [brotli-encoder-decoder_test.cpp](../../aeronet/objects/test/brotli-encoder-decoder_test.cpp).

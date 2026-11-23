@@ -35,7 +35,7 @@
 
 namespace aeronet {
 
-// All decoders / encoders use custom allocators (BufferCache or ObjectArrayPool) to reuse memory across sessions.
+// All decoders / encoders use custom allocators (BufferCache or BrotliScratch) to reuse memory across sessions.
 
 struct DecompressionState {
 #ifdef AERONET_ENABLE_BROTLI

@@ -6,20 +6,102 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <limits>
 #include <new>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/asan-poison.hpp"
 #include "aeronet/encoder-result.hpp"
 
 namespace aeronet {
 
-void* BrotliScratch::Alloc(void* opaque, size_t size) {
+BrotliScratch::BrotliScratch(BrotliScratch&& rhs) noexcept : _pFirstCached(std::exchange(rhs._pFirstCached, nullptr)) {}
+
+BrotliScratch& BrotliScratch::operator=(BrotliScratch&& rhs) noexcept {
+  if (this != &rhs) [[likely]] {
+    release();
+    _pFirstCached = std::exchange(rhs._pFirstCached, nullptr);
+  }
+  return *this;
+}
+
+void* BrotliScratch::Alloc(void* opaque, std::size_t size) noexcept {
+  assert(opaque != nullptr && size <= std::numeric_limits<std::size_t>::max() / 2U);
+  auto& self = *static_cast<BrotliScratch*>(opaque);
+  // Rounded up so that the lowest bit of the capacity is free for kAllocatedFlag.
+  const std::size_t roundedSize = (size + (alignof(Block) - 1U)) & ~(alignof(Block) - 1U);
+
+  // Best fit: the first cached block of at least roundedSize bytes, the list being sorted by capacity.
+  Block** ppLink = &self._pFirstCached;
+  Block** ppSmallerLink = nullptr;
+  while (*ppLink != nullptr && (*ppLink)->capacity() < roundedSize) {
+    ppSmallerLink = ppLink;
+    ppLink = &(*ppLink)->pNext;
+  }
+
+  Block* pBlock = *ppLink;
+  if (pBlock != nullptr && pBlock->capacity() / 2U <= roundedSize) {
+    *ppLink = pBlock->pNext;
+  } else {
+    if (ppSmallerLink != nullptr && (*ppSmallerLink)->capacity() >= roundedSize / 2U) {
+      // An outgrown copy of a buffer brotli grows (its commands in one-shot mode, by a fraction of the input each
+      // time): kept, the copies would add up to several times the memory brotli uses at once.
+      Block* pOutgrown = *ppSmallerLink;
+      *ppSmallerLink = pOutgrown->pNext;
+      std::free(pOutgrown);
+    }
+    pBlock = static_cast<Block*>(std::malloc(sizeof(Block) + roundedSize));
+    if (pBlock == nullptr) [[unlikely]] {
+      return nullptr;
+    }
+    pBlock->capacityAndAllocated = roundedSize;
+  }
+  pBlock->capacityAndAllocated |= Block::kAllocatedFlag;
+
+  // Only the requested size is addressable: the tail of a larger block stays poisoned.
+  AsanPoison(pBlock->data(), pBlock->capacity());
+  AsanUnpoison(pBlock->data(), size);
+  return pBlock->data();
+}
+
+void BrotliScratch::Free(void* opaque, void* address) noexcept {
   assert(opaque != nullptr);
-  try {
-    return static_cast<BrotliScratch*>(opaque)->alloc(size);
-  } catch (const std::bad_alloc&) {
-    return nullptr;
+  if (address == nullptr) {
+    // Brotli frees null pointers, for buffers it never allocated.
+    return;
+  }
+  auto& self = *static_cast<BrotliScratch*>(opaque);
+  Block* pBlock = Block::FromData(address);
+  const std::size_t capacity = pBlock->capacity();
+  AsanPoison(address, capacity);
+
+  Block** ppLink = &self._pFirstCached;
+  while (*ppLink != nullptr && (*ppLink)->capacity() < capacity) {
+    ppLink = &(*ppLink)->pNext;
+  }
+  pBlock->pNext = *ppLink;
+  *ppLink = pBlock;
+}
+
+void BrotliScratch::trim() noexcept {
+  Block** ppLink = &_pFirstCached;
+  while (*ppLink != nullptr) {
+    Block* pBlock = *ppLink;
+    if ((pBlock->capacityAndAllocated & Block::kAllocatedFlag) == 0) {
+      *ppLink = pBlock->pNext;
+      std::free(pBlock);
+    } else {
+      pBlock->capacityAndAllocated &= ~Block::kAllocatedFlag;
+      ppLink = &pBlock->pNext;
+    }
+  }
+}
+
+void BrotliScratch::release() noexcept {
+  while (_pFirstCached != nullptr) {
+    std::free(std::exchange(_pFirstCached, _pFirstCached->pNext));
   }
 }
 
@@ -37,8 +119,10 @@ BrotliEncoderContext& BrotliEncoderContext::operator=(BrotliEncoderContext&& rhs
 void BrotliEncoderContext::init(int quality, int window) {
   assert(_scratch != nullptr);
 
-  // Brotli has no public reset API, so we recreate the state each time while reusing our scratch allocator.
-  _scratch->clear();
+  // Brotli has no public reset API, so we recreate the state each time, from the blocks the previous one gave back to
+  // the scratch: destroyed first, so that the scratch can trim the blocks it no longer needs and reuse the others.
+  _state.reset();
+  _scratch->trim();
   _state.reset(BrotliEncoderCreateInstance(&BrotliScratch::Alloc, &BrotliScratch::Free, _scratch));
   if (!_state) [[unlikely]] {
     throw std::bad_alloc();

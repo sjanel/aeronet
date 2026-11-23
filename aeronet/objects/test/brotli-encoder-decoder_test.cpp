@@ -5,11 +5,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <numeric>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "aeronet/asan-poison.hpp"
 #include "aeronet/brotli-decoder.hpp"
 #include "aeronet/brotli-encoder.hpp"
 #include "aeronet/compression-config.hpp"
@@ -90,7 +92,187 @@ void ExpectStreamingDecoderRoundTrip(BrotliEncoder& encoder, std::string_view pa
 
 }  // namespace
 
+struct BrotliScratchTestAccess {
+  // Capacities of the cached blocks, in list order.
+  static vector<std::size_t> CachedCapacities(const BrotliScratch& scratch) {
+    vector<std::size_t> capacities;
+    for (const BrotliScratch::Block* pBlock = scratch._pFirstCached; pBlock != nullptr; pBlock = pBlock->pNext) {
+      capacities.push_back(pBlock->capacity());
+    }
+    return capacities;
+  }
+
+  static std::size_t CachedBytes(const BrotliScratch& scratch) {
+    const auto capacities = CachedCapacities(scratch);
+    return std::accumulate(capacities.begin(), capacities.end(), std::size_t{0});
+  }
+};
+
+namespace {
+
+using Capacities = vector<std::size_t>;
+
+// Sizes multiple of 16: the capacities are the requested sizes whatever the alignment of max_align_t.
+void* ScratchAlloc(BrotliScratch& scratch, std::size_t size) { return BrotliScratch::Alloc(&scratch, size); }
+
+void ScratchFree(BrotliScratch& scratch, void* address) { BrotliScratch::Free(&scratch, address); }
+
+Capacities Cached(const BrotliScratch& scratch) { return BrotliScratchTestAccess::CachedCapacities(scratch); }
+
+// Streams payload in chunks of split bytes through a new context of scratch, destroyed afterwards: all the blocks of
+// its brotli state are back in the scratch.
+void StreamThroughScratch(BrotliScratch& scratch, int quality, std::string_view payload, std::size_t split) {
+  BrotliEncoderContext ctx(scratch);
+  ctx.init(quality, CompressionConfig::Brotli::kDefaultWindow);
+  const auto compressed = test::BuildStreamingCompressed(ctx, payload, split);
+  BrotliDecoder decoder;
+  RawChars decompressed;
+  ASSERT_TRUE(decoder.decompressFull(std::string_view(compressed), payload.size(), kDecoderChunkSize, decompressed));
+  EXPECT_EQ(std::string_view(decompressed), payload);
+}
+
+}  // namespace
+
+TEST(BrotliScratchTest, FreedBlockIsReusedUpToTwiceTheRequest) {
+  BrotliScratch scratch;
+  void* pBlock = ScratchAlloc(scratch, 96);
+  ASSERT_NE(pBlock, nullptr);
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(pBlock) % alignof(std::max_align_t), 0U);
+  std::memset(pBlock, 0xAB, 96);
+  ScratchFree(scratch, pBlock);
+  EXPECT_EQ(Cached(scratch), (Capacities{96}));
+
+  EXPECT_EQ(ScratchAlloc(scratch, 96), pBlock);
+  EXPECT_TRUE(Cached(scratch).empty());
+  ScratchFree(scratch, pBlock);
+  EXPECT_EQ(ScratchAlloc(scratch, 48), pBlock);
+  ScratchFree(scratch, pBlock);
+
+  // A block more than twice as large as the request stays cached.
+  void* pSmall = ScratchAlloc(scratch, 32);
+  EXPECT_NE(pSmall, pBlock);
+  EXPECT_EQ(Cached(scratch), (Capacities{96}));
+  ScratchFree(scratch, pSmall);
+  EXPECT_EQ(Cached(scratch), (Capacities{32, 96}));
+
+  // Best fit: the smallest block large enough. A size which is not a multiple of the alignment is rounded up.
+  EXPECT_EQ(ScratchAlloc(scratch, 17), pSmall);
+  EXPECT_EQ(ScratchAlloc(scratch, 64), pBlock);
+  EXPECT_TRUE(Cached(scratch).empty());
+  ScratchFree(scratch, pBlock);
+  ScratchFree(scratch, pSmall);
+  EXPECT_EQ(Cached(scratch), (Capacities{32, 96}));
+}
+
+TEST(BrotliScratchTest, MissFreesTheOutgrownBlock) {
+  BrotliScratch scratch;
+  ScratchFree(scratch, ScratchAlloc(scratch, 64));
+
+  // The cached block is less than half of the request: kept.
+  void* pBuffer = ScratchAlloc(scratch, 1024);
+  EXPECT_EQ(Cached(scratch), (Capacities{64}));
+  ScratchFree(scratch, pBuffer);
+  EXPECT_EQ(Cached(scratch), (Capacities{64, 1024}));
+
+  // A buffer grown by less than twice its size: its previous copy is freed.
+  void* pGrown = ScratchAlloc(scratch, 1536);
+  EXPECT_EQ(Cached(scratch), (Capacities{64}));
+  ScratchFree(scratch, pGrown);
+
+  void* pLarge = ScratchAlloc(scratch, 4096);
+  EXPECT_EQ(Cached(scratch), (Capacities{64, 1536}));
+  ScratchFree(scratch, pLarge);
+  ScratchFree(scratch, nullptr);  // brotli frees null pointers
+  EXPECT_EQ(Cached(scratch), (Capacities{64, 1536, 4096}));
+}
+
+TEST(BrotliScratchTest, TrimFreesTheBlocksNotAllocatedSinceTheLastTrim) {
+  BrotliScratch scratch;
+  void* pSmall = ScratchAlloc(scratch, 64);
+  void* pLarge = ScratchAlloc(scratch, 256);
+  ScratchFree(scratch, pSmall);
+  ScratchFree(scratch, pLarge);
+
+  scratch.trim();
+  EXPECT_EQ(Cached(scratch), (Capacities{64, 256}));
+
+  EXPECT_EQ(ScratchAlloc(scratch, 256), pLarge);
+  ScratchFree(scratch, pLarge);
+  scratch.trim();
+  EXPECT_EQ(Cached(scratch), (Capacities{256}));
+
+  scratch.trim();
+  EXPECT_TRUE(Cached(scratch).empty());
+}
+
+TEST(BrotliScratchTest, MovesTransferTheCachedBlocks) {
+  BrotliScratch scratch;
+  ScratchFree(scratch, ScratchAlloc(scratch, 64));
+
+  BrotliScratch moved(std::move(scratch));
+  EXPECT_TRUE(Cached(scratch).empty());  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  EXPECT_EQ(Cached(moved), (Capacities{64}));
+
+  BrotliScratch other;
+  ScratchFree(other, ScratchAlloc(other, 128));
+  other = std::move(moved);
+  EXPECT_EQ(Cached(other), (Capacities{64}));
+
+  auto& self = other;
+  other = std::move(self);
+  EXPECT_EQ(Cached(other), (Capacities{64}));
+}
+
+#if AERONET_ASAN_ENABLED
+
+TEST(BrotliScratchTest, CachedBlocksArePoisoned) {
+  BrotliScratch scratch;
+  auto* pBlock = static_cast<std::byte*>(ScratchAlloc(scratch, 64));
+  EXPECT_FALSE(AsanIsPoisoned(pBlock + 63));
+  ScratchFree(scratch, pBlock);
+  EXPECT_TRUE(AsanIsPoisoned(pBlock));
+
+  // Only the requested bytes of a larger block are addressable.
+  EXPECT_EQ(ScratchAlloc(scratch, 40), pBlock);
+  EXPECT_FALSE(AsanIsPoisoned(pBlock + 39));
+  EXPECT_TRUE(AsanIsPoisoned(pBlock + 40));
+  ScratchFree(scratch, pBlock);
+}
+
+#endif
+
+// Streamed in 16 KiB chunks at quality 1, brotli allocates 2 buffers per chunk and frees them: 10 MiB in total for
+// 2 MiB of input, for 160 KiB at once. All of them are back in the scratch, which reused them.
+TEST(BrotliScratchTest, MemoryDoesNotGrowWithTheStreamLength) {
+  BrotliScratch scratch;
+  const std::string payload = test::MakePatternedPayload(2UL * 1024 * 1024);
+  StreamThroughScratch(scratch, 1, payload, 16UL * 1024);
+  EXPECT_GT(BrotliScratchTestAccess::CachedBytes(scratch), 64UL * 1024);
+  EXPECT_LT(BrotliScratchTestAccess::CachedBytes(scratch), 1024UL * 1024);
+}
+
+// At quality 5, brotli uses 10 MiB for 64 KiB of input, 1.4 MiB for 2 KiB: the tables of the large stream are kept
+// for the next session, and freed after a session not using them.
+TEST(BrotliScratchTest, SmallSessionsReleaseTheTablesOfALargeOne) {
+  BrotliScratch scratch;
+  StreamThroughScratch(scratch, 5, test::MakePatternedPayload(64UL * 1024), 64UL * 1024);
+  const std::size_t largeSessionBytes = BrotliScratchTestAccess::CachedBytes(scratch);
+
+  const std::string smallPayload = test::MakePatternedPayload(2UL * 1024);
+  StreamThroughScratch(scratch, 5, smallPayload, smallPayload.size());
+  EXPECT_GT(BrotliScratchTestAccess::CachedBytes(scratch), largeSessionBytes);
+  StreamThroughScratch(scratch, 5, smallPayload, smallPayload.size());
+  EXPECT_LT(4 * BrotliScratchTestAccess::CachedBytes(scratch), largeSessionBytes);
+}
+
 #if AERONET_WANT_MALLOC_OVERRIDES
+
+TEST(BrotliScratchTest, AllocationFailureReturnsNull) {
+  BrotliScratch scratch;
+  test::FailNextMalloc();
+  EXPECT_EQ(ScratchAlloc(scratch, 64), nullptr);
+  EXPECT_TRUE(Cached(scratch).empty());
+}
 
 TEST(BrotliDecoderTest, MallocConstructorFails) {
   // Simulate malloc failure during BrotliDecoderCreateInstance
@@ -200,7 +382,7 @@ TEST(BrotliEncoderDecoderTest, BrotliEndWithoutEnoughBufferShouldFail) {
 // Brotli buffers input up to its window, then stops reading it while the output it holds back does not fit: without
 // enough output room, encodeChunk() leaves the rest of its input, taken by the next calls with more room.
 TEST(BrotliEncoderDecoderTest, EncodeChunkWithoutEnoughOutputRoom) {
-  const RawChars payload = test::MakeRandomPayload(1UL << 20);
+  const RawChars payload = test::MakeRandomPayload(1UL << 20U);
   CompressionConfig cfg;
   cfg.brotli.quality = 5;
   cfg.brotli.window = 16;  // 64 KiB window: the default one (4 MiB) would take this whole payload in
@@ -225,7 +407,7 @@ TEST(BrotliEncoderDecoderTest, EncodeChunkWithoutEnoughOutputRoom) {
 // (minEncodeChunkCapacity()), a call to encodeChunk() stops reading its input after about 1.5 MiB of incompressible
 // 64 KiB chunks. The calls that follow, with room made, take the rest.
 TEST(BrotliEncoderDecoderTest, IncompressibleChunksWithMinEncodeChunkCapacity) {
-  static constexpr std::size_t kChunkSize = 64UL << 10;
+  static constexpr std::size_t kChunkSize = 64UL << 10U;
   static constexpr std::size_t kNbChunks = 40;
   const RawChars payload = test::MakeRandomPayload(kChunkSize * kNbChunks);
   CompressionConfig cfg;
