@@ -1610,6 +1610,33 @@ TEST(HttpEmptyLinesBeforeRequestLine, WaitingOnesAreLimitedByMaxHeaderBytes) {
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 431")) << resp;
 }
 
+// The empty lines received with a request, after it, are consumed with it: they do not wait in the input buffer of the
+// idle connection, nor count toward maxHeaderBytes with the empty lines received apart from it.
+TEST(HttpEmptyLinesBeforeRequestLine, EmptyLinesAfterARequestAreConsumedWithIt) {
+  static constexpr std::uint32_t kMaxHeaderBytes = 256;
+  test::TestServer localTs(HttpServerConfig{}.withMaxHeaderBytes(kMaxHeaderBytes));
+  DescribeServedRequests(localTs);
+
+  std::string emptyLines;
+  while (emptyLines.size() + http::CRLF.size() <= kMaxHeaderBytes) {
+    emptyLines.append(http::CRLF);
+  }
+  for (std::string_view after : {"\r\n", "\r\n\r\n\r\n", "\r\n\r"}) {
+    SCOPED_TRACE(after.size());
+    test::ClientConnection cnx(localTs.port());
+    test::sendAll(cnx.fd(), std::format("POST /first HTTP/1.1\r\nHost: h\r\nContent-Length: 3\r\n\r\nabc{}", after));
+    const std::string first = test::recvWithTimeout(cnx.fd(), std::chrono::seconds{2});
+    EXPECT_TRUE(first.ends_with("POST /first [abc]")) << first;
+    // A CR left, the start of an empty line, is completed by the next ones.
+    test::sendAll(cnx.fd(), after.ends_with('\r') ? "\n" + emptyLines.substr(2) : emptyLines);
+    ServeRequestOnAnotherConnection(localTs);
+    test::sendAll(cnx.fd(), "GET /after HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n");
+    const std::string resp = test::recvUntilClosed(cnx.fd());
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+    EXPECT_TRUE(resp.ends_with("GET /after []")) << resp;
+  }
+}
+
 #ifdef AERONET_POSIX
 TEST(HttpServerTelemetry, DogStatsDClientSendsMetricsWithServiceName) {
   test::UnixDogstatsdSink sink;

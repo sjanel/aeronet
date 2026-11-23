@@ -716,6 +716,36 @@ TEST(ResponseParserTest, InterimTransferEncodingDoesNotFrameFinalResponse) {
   EXPECT_TRUE(parser.keepAlive());
 }
 
+// The headers of discarded interim responses are not those of the final one, whose own headers are all kept, received
+// at once or line by line.
+TEST(ResponseParserTest, InterimHeadersAreNotKept) {
+  static constexpr std::string_view kRaw =
+      "HTTP/1.1 100 Continue\r\nx-interim: 1\r\n\r\n"
+      "HTTP/1.1 103 Early Hints\r\nlink: </a.css>; rel=preload\r\ncontent-encoding: gzip\r\nx-interim: 2\r\n\r\n"
+      "HTTP/1.1 200 OK\r\nx-final: yes\r\ncontent-length: 2\r\n\r\nok";
+  for (const bool lineByLine : {false, true}) {
+    HttpResponse resp;
+    RawChars bodyBuf;
+    Http1ResponseParser parser(bodyBuf);
+    parser.reset(false);
+    std::string received;
+    Http1ResponseParser::Status st = Http1ResponseParser::Status::NeedMore;
+    for (std::size_t pos = 0; pos < kRaw.size() && st == Http1ResponseParser::Status::NeedMore;) {
+      const std::size_t lineEnd = lineByLine ? kRaw.find('\n', pos) + 1U : kRaw.size();
+      received.append(kRaw.substr(pos, lineEnd - pos));
+      pos = lineEnd;
+      st = parser.parse(received, false, resp, kMax);
+    }
+    EXPECT_EQ(st, Http1ResponseParser::Status::Complete) << lineByLine;
+    EXPECT_EQ(resp.status(), http::StatusCodeOK);
+    EXPECT_EQ(resp.headerValueOrEmpty("x-final"), "yes");
+    EXPECT_FALSE(resp.headerValue("x-interim"));
+    EXPECT_FALSE(resp.headerValue("link"));
+    EXPECT_FALSE(resp.headerValue(http::ContentEncoding));
+    EXPECT_EQ(resp.bodyInMemory(), "ok");
+  }
+}
+
 // A chunk-size token with a valid hex prefix followed by trailing junk ("5x") is rejected (the parse
 // stops before consuming the whole token).
 TEST(ResponseParserTest, ChunkedSizeWithTrailingJunkIsError) {

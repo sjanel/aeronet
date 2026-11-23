@@ -776,9 +776,11 @@ class HttpRequestView {
   // Returns StatusCode OK if the request is good (it will be fully set) or an HTTP error status to forward.
   // If 0 is returned, the head is not complete yet: the next call, with more bytes appended to the same head (the
   // buffer may have moved meanwhile) and the headParseState left by this one, resumes the parsing where it stopped.
+  // The trace span of the request is created from pTelemetry (if not null) once its head is complete: one per request,
+  // none for a rejected head.
   http::StatusCode initTrySetHead(std::span<char> inBuffer, HeadParseState& headParseState, RawChars& tmpBuffer,
                                   uint32_t maxHeadersBytes, bool mergeAllowedForUnknownRequestHeaders,
-                                  tracing::SpanPtr traceSpan);
+                                  const tracing::TelemetryContext* pTelemetry);
 
   // Resumes the request whose head was parsed by initTrySetHead() while its body was not received yet
   // (HeadParseState::WaitingForBody), at the start of inBuffer (that may have moved meanwhile): same state as after

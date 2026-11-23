@@ -1153,6 +1153,43 @@ TEST_F(HttpRequestTest, ResolveRedirectAbsoluteUrlNonTls) {
   }
 }
 
+// The whole head after an absolute redirect is the one of a request built for the new URL, through a cleartext proxy
+// too (absolute-form target), whether the new URL is shorter or longer than the old one, with or without a body.
+TEST_F(HttpRequestTest, ResolveRedirectAbsoluteUrlRewritesTheWholeHead) {
+  struct Redirect {
+    std::string_view from;
+    std::string_view location;
+  };
+  static constexpr Redirect kRedirects[] = {
+      {"http://example.com/x", "http://other.com/y"},
+      {"http://example.com/x", "http://a-much-longer-host-name.example.org:8080/a/much/longer/path?with=query"},
+      {"http://a-much-longer-host-name.example.org:8080/a/much/longer/path?with=query", "http://b.io/z"},
+      {"http://example.com/x", "//other.com/y?q=1"},
+      {"http://example.com/x", "https://secure.example.com/y"},
+      {"https://example.com/x", "https://other.example.com:8443/longer/path"},
+  };
+  for (bool withProxy : {false, true}) {
+    if (withProxy) {
+      config.withProxy("http://proxy.example.com:8080");
+    }
+    for (bool withBody : {false, true}) {
+      for (const Redirect& redirect : kRedirects) {
+        auto req = withBody ? makeRequest(http::Method::POST, redirect.from, globalHeaders.fullStringWithLastSep(),
+                                          "payload", "text/plain")
+                            : makeRequest(http::Method::GET, redirect.from);
+        ASSERT_TRUE(HttpRequestTest::ResolveRedirect(req, redirect.location)) << redirect.location;
+        const std::string newUrl = redirect.location.starts_with("//") ? "http:" + std::string(redirect.location)
+                                                                       : std::string(redirect.location);
+        const auto expected = withBody ? makeRequest(http::Method::POST, newUrl, globalHeaders.fullStringWithLastSep(),
+                                                     "payload", "text/plain")
+                                       : makeRequest(http::Method::GET, newUrl);
+        ExpectSameRequest(req, expected);
+        EXPECT_EQ(req.headerValueOrEmpty("user-agent"), "aeronet");
+      }
+    }
+  }
+}
+
 TEST_F(HttpRequestTest, ResolveRedirectAbsoluteUrlTls) {
   for (bool withProxy : {false, true}) {
     if (withProxy) {

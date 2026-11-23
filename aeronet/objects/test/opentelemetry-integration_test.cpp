@@ -207,6 +207,32 @@ TEST(OpenTelemetryIntegration, SpanOperations) {
   EXPECT_EQ(span3, nullptr);
 }
 
+// The sample rate is applied before a span is started: an unsampled span is not created at all.
+TEST(OpenTelemetryIntegration, SpanSampling) {
+  TelemetryConfig cfg;
+  cfg.otelEnabled = kDefaultEnabled;
+  cfg.withEndpoint("http://localhost:4318/v1/traces");
+  cfg.withServiceName("aeronet-test");
+  for (const double rate : {0.0, 0.5, 1.0}) {
+    cfg.withSampleRate(rate);
+    const tracing::TelemetryContext telemetry(cfg);
+    int nbSpans = 0;
+    static constexpr int kNbSpans = 1000;
+    for (int spanPos = 0; spanPos < kNbSpans; ++spanPos) {
+      if (tracing::SpanPtr span = telemetry.createSpan("sampled")) {
+        ++nbSpans;
+        span->end();
+      }
+    }
+    if (cfg.otelEnabled) {
+      // All or none at the ends, about half in between.
+      EXPECT_NEAR(nbSpans, rate * kNbSpans, rate == 0.5 ? 0.1 * kNbSpans : 0.0) << rate;
+    } else {
+      EXPECT_EQ(nbSpans, 0);
+    }
+  }
+}
+
 TEST(OpenTelemetryIntegration, IndependentContexts) {
   // Test that multiple TelemetryContext instances are independent
   tracing::TelemetryContext telemetry1;

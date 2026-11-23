@@ -3557,6 +3557,37 @@ TEST(HttpClientRawServerTest, ExpectContinueWaitEndsWithTheRequestTimeout) {
   EXPECT_EQ(result.error(), HttpClientErrc::timeout);
 }
 
+// Duration::max() timeouts never expire: the client waits for the 100 (Continue) before sending the body, instead of
+// computing deadlines past the range of the clock.
+TEST(HttpClientRawServerTest, ExpectContinueWithMaxTimeoutsWaitsForTheAnswer) {
+  static constexpr std::string_view kBody = "expected body";
+  ReceivedLog received;
+  {
+    RawServer server([&received](NativeHandle fd, int) {
+      std::string request = test::RecvHead(fd);
+      const bool bodyBeforeContinue = request.ends_with(kBody) || WaitReadable(fd, 100);
+      SendAll(fd, "HTTP/1.1 100 Continue\r\n\r\n");
+      RecvBody(fd, request, kBody.size());
+      SendAll(fd, kOkResponse);
+      received.add(bodyBeforeContinue ? "body sent before 100 Continue" : std::move(request));
+      test::RecvUntilEnd(fd);  // until the client closes its pooled connection
+    });
+    HttpClientConfig cfg;
+    cfg.requestTimeout = HttpClientConfig::Duration::max();
+    cfg.inactivityTimeout = HttpClientConfig::Duration::max();
+    cfg.expectContinueTimeout = HttpClientConfig::Duration::max();
+    HttpClient client(cfg);
+    auto req = client.makeRequest(http::Method::POST, MakeUrl(server.port()));
+    req.headerAddLine(http::Expect, http::h100_continue).body(kBody);
+    const auto result = client.request(std::move(req));
+    ASSERT_TRUE(result) << ErrcToStr(result.error());
+    EXPECT_EQ(result->bodyInMemory(), "ok");
+  }
+  const auto entries = received.entries();
+  ASSERT_EQ(entries.size(), 1U);
+  EXPECT_TRUE(entries[0].ends_with(kBody)) << entries[0];
+}
+
 // RFC 9110 §10.1.1: a 417 (Expectation Failed) only tells that a server does not support expectations: the request is
 // repeated without its expectation, and the 417 is never given to a response body sink.
 TEST(HttpClientRawServerTest, ExpectationFailedRepeatsTheRequestWithoutExpectation) {

@@ -71,8 +71,8 @@ class ConnectionMaintenance {
   // another one once the latter is answered), and bytes of a body being received update its reception progress.
   void trackReceivedBytes(ConnectionState& state, std::chrono::steady_clock::time_point now) noexcept {
     // The head of a request whose body is awaited was received: its start is the reference of its relative timestamps
-    // (unless it was answered before its body, the connection then closing).
-    assert(!state.waitingForBody || state.headerStartTp.time_since_epoch().count() != 0 || state.isAnyCloseRequested());
+    // (a request answered before its body no longer awaits it, see endRequestTimers()).
+    assert(!state.waitingForBody || state.headerStartTp.time_since_epoch().count() != 0);
     if (state.headerStartTp.time_since_epoch().count() == 0) {
       startHeaderReadTimer(state);
     }
@@ -90,16 +90,9 @@ class ConnectionMaintenance {
     }
   }
 
-  // Arms the per-route deadline of the HTTP/1.1 request being served, 'requestTimeout' after its start (out of line:
-  // only for the routes with a timeout).
+  // Arms the per-route deadline of the HTTP/1.1 request being served, 'requestTimeout' after the reception of its head
+  // (out of line: only for the routes with a timeout).
   void trackRequestDeadline(ConnectionState& state, std::chrono::milliseconds requestTimeout) noexcept;
-
-  // The HTTP/1.1 request is answered (or turned into a tunnel): clears its per-route deadline and its start, so that
-  // the next request starts its own timers (see trackReceivedBytes() and Http1Pipeline::serveRequests()).
-  void endRequestTimers(ConnectionState& state) noexcept {
-    clearRequestDeadline(state);
-    state.headerStartTp = {};
-  }
 
   // Track the reception of the body of the current HTTP/1.1 request for the body read timeout. A received body (or a
   // closed connection: bodyReady true) is no longer awaited, even if the timeout was disabled since.
@@ -108,6 +101,15 @@ class ConnectionMaintenance {
     if (!bodyReady || state.waitingForBody) {
       updateBodyReception(state, bodyReady);
     }
+  }
+
+  // The HTTP/1.1 request is answered (or turned into a tunnel): clears its per-route deadline, the wait for its body
+  // (answered before it) and its start, so that the next request starts its own timers (see trackReceivedBytes() and
+  // Http1Pipeline::serveRequests()).
+  void endRequestTimers(ConnectionState& state) noexcept {
+    clearRequestDeadline(state);
+    trackBodyReception(state, true);
+    state.headerStartTp = {};
   }
 
 #ifdef AERONET_ENABLE_HTTP2

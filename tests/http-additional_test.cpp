@@ -944,6 +944,56 @@ TEST(HttpContentLength, PerRouteTimeoutClosesStaleRequest) {
   EXPECT_TRUE(resp.contains("408")) << resp;
 }
 
+// The per-route deadline counts from the reception of the head: the body bytes received meanwhile do not push it back.
+TEST(HttpContentLength, PerRouteTimeoutIsNotPushedBackByTheBody) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
+  static constexpr int kBodySize = 50;
+  ts.resetRouterAndGet()
+      .setPath(http::Method::POST, "/trickle", [](const HttpRequestView&) { return HttpResponse("OK"); })
+      .timeout(std::chrono::milliseconds{100});
+  test::ClientConnection cc(ts.port());
+  test::sendAll(cc.fd(), std::format("POST /trickle HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n", kBodySize));
+  // One body byte every 40 ms: the whole body would take 2 s.
+  std::string resp;
+  int nbSent = 0;
+  for (; nbSent < kBodySize && resp.empty(); ++nbSent) {
+    test::sendAll(cc.fd(), "a");
+    resp = test::recvWithTimeout(cc.fd(), std::chrono::milliseconds{40});
+  }
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 408")) << resp;
+  EXPECT_LT(nbSent, kBodySize);
+  ts.resetRouterAndGet();
+}
+
+// The per-route deadline of a request answered by a streaming handler ends with it: it does not close the connection
+// once idle, and the next request starts its own timers.
+TEST(HttpContentLength, PerRouteTimeoutEndsWithTheStreamedResponse) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg = TestServerConfig();
+    cfg.withHeaderReadTimeout(std::chrono::milliseconds{100});
+  });
+  ts.resetRouterAndGet()
+      .setPath(http::Method::GET, "/streamed",
+               [](const HttpRequestView&, HttpResponseWriter& writer) { writer.writeBody("streamed"); })
+      .timeout(std::chrono::milliseconds{30});
+  test::ClientConnection cc(ts.port());
+  test::sendAll(cc.fd(), "GET /streamed HTTP/1.1\r\nhost: x\r\n\r\n");
+  const std::string first = test::recvWithTimeout(cc.fd(), std::chrono::seconds{2});
+  EXPECT_TRUE(first.starts_with("HTTP/1.1 200")) << first;
+  EXPECT_TRUE(first.contains("streamed")) << first;
+  // Idle for longer than the route timeout: the sweeps run meanwhile.
+  std::this_thread::sleep_for(std::chrono::milliseconds{150});
+  test::sendAll(cc.fd(), "GET /streamed HTTP/1.1\r\nhost: x\r\n\r\n");
+  const std::string second = test::recvWithTimeout(cc.fd(), std::chrono::seconds{2});
+  EXPECT_TRUE(second.starts_with("HTTP/1.1 200")) << second;
+  // The head of the third request, received in part, is bounded by the header read timeout.
+  test::sendAll(cc.fd(), "GET /streamed HTTP/1.1\r\n");
+  const std::string third = test::recvUntilClosed(cc.fd(), std::chrono::seconds{2});
+  EXPECT_TRUE(third.starts_with("HTTP/1.1 408")) << third;
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
+  ts.resetRouterAndGet();
+}
+
 TEST(HttpContentLength, PerRouteTimeoutDoesNotAffectFastRequests) {
   // Short per-route timeout, but the request completes quickly
   ts.router()
@@ -1555,6 +1605,35 @@ TEST(HttpExpectContinue, RequestMiddlewareAnswerIsSentWithout100Continue) {
     EXPECT_TRUE(resp.ends_with("hello")) << resp;
   }
   EXPECT_EQ(handlerCalls.load(), 1);
+  ts.resetRouterAndGet();
+}
+
+// A request answered before its body no longer awaits it: its large response, waiting for a slow reader, is not cut by
+// a body read timeout (the connection closes once it is sent).
+TEST(HttpExpectContinue, AnswerBeforeBodyIsNotCutByTheBodyReadTimeout) {
+  static constexpr std::size_t kResponseBodySize = 16UL << 20U;
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg = TestServerConfig();
+    cfg.withBodyReadTimeout(std::chrono::milliseconds{20}).withMaxOutboundBufferBytes(32U << 20U);
+  });
+  ts.resetRouterAndGet().addRequestMiddleware([](HttpRequestView&) {
+    return MiddlewareResult::ShortCircuit(
+        HttpResponse(http::StatusCodeUnauthorized, std::string(kResponseBodySize, 'a')));
+  });
+  std::atomic<int> nbParserErrors{0};
+  ts.server.setParserErrorCallback([&nbParserErrors](http::StatusCode) { ++nbParserErrors; });
+  test::ClientConnection cnx(ts.port());
+  test::sendAll(cnx.fd(), ExpectContinueHead("POST", "/upload"));
+  // The response waits for the client, longer than the body read timeout: the sweeps run meanwhile.
+  std::this_thread::sleep_for(std::chrono::milliseconds{150});
+  const std::string resp = test::recvUntilClosed(cnx.fd());
+  ts.server.setParserErrorCallback({});
+  ExpectAnsweredWithout100Continue(resp.substr(0, 256), http::StatusCodeUnauthorized);
+  const std::size_t headEnd = resp.find(http::DoubleCRLF);
+  ASSERT_NE(headEnd, std::string::npos);
+  EXPECT_EQ(resp.size() - headEnd - http::DoubleCRLF.size(), kResponseBodySize);
+  EXPECT_EQ(nbParserErrors.load(), 0);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
   ts.resetRouterAndGet();
 }
 

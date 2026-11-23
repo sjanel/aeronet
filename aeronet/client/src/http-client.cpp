@@ -509,7 +509,7 @@ EventBmp HttpClient::waitEvents(NativeHandle fd, EventBmp interest, SteadyClock:
 }
 
 EventBmp HttpClient::waitExchangeEvents(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline) {
-  deadline = std::min(deadline, SteadyClock::now() + _config.inactivityTimeout);
+  deadline = std::min(deadline, DeadlineAfter(SteadyClock::now(), _config.inactivityTimeout));
   return waitEvents(fd, interest, deadline);
 }
 
@@ -947,7 +947,7 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFoll
     // I/O never blocks touches the loop not at all.
     const auto now = SteadyClock::now();
     const auto connectDeadline = now + _config.connectTimeout;
-    const auto ioDeadline = now + _config.requestTimeout;
+    const SteadyClock::time_point ioDeadline = DeadlineAfter(now, _config.requestTimeout);
     bool requestSent = false;
     if (_streamer.active()) {
       // A response this loop would retry for its status is never given to a sink.
@@ -1089,7 +1089,8 @@ HttpUpgradeResult HttpClient::upgrade(HttpRequest&& req) {
   bool requestSent = false;
   conn.proto = internal::ClientConnection(internal::ClientConnection::Type::Http11);
   HttpClientResult result = check(finishTlsHandshake(conn, now + _config.connectTimeout)).and_then([&] {
-    return conn.proto.upgradeExchange(*this, conn.transport, fd, req, now + _config.requestTimeout, requestSent);
+    return conn.proto.upgradeExchange(*this, conn.transport, fd, req, DeadlineAfter(now, _config.requestTimeout),
+                                      requestSent);
   });
   // The connection leaves the client in any case: closed below, or handed over.
   unregisterIfCurrent(fd);

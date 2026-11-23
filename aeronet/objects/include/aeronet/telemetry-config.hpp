@@ -96,6 +96,7 @@ class TelemetryConfig {
   bool dogStatsDEnabled{false};
 
   // Sampling ratio [0.0, 1.0]. 1.0 = sample all, 0.0 = sample none. Default: 1.0
+  // Decided at random for each span before it is created: an unsampled span costs nothing.
   float sampleRate{1.0F};
 
   // Interval between metric exports, and maximum delay before ended spans are exported (default: 10000ms).

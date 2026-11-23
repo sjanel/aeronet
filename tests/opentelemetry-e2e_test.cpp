@@ -16,6 +16,7 @@
 #include <exception>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #include "aeronet/errno-throw.hpp"
@@ -420,6 +421,85 @@ TEST(OpenTelemetryEndToEnd, EmitsMiddlewareSpanAttributes) {
     }
   }
   EXPECT_TRUE(sawMiddlewareSpan);
+}
+
+// A request whose head is received in several reads has one span, with its attributes. A rejected head has none.
+TEST(OpenTelemetryEndToEnd, OneSpanPerRequestWhateverTheReadsOfItsHead) {
+  test::OtlpTestCollector collector;
+
+  TelemetryConfig telemetryCfg;
+  telemetryCfg.otelEnabled = true;
+  telemetryCfg.withEndpoint(collector.endpointForTraces());
+  telemetryCfg.withServiceName("aeronet-split-head-e2e");
+  telemetryCfg.withSampleRate(1.0);
+  telemetryCfg.exportInterval = std::chrono::milliseconds{100};
+  telemetryCfg.exportTimeout = std::chrono::milliseconds{99};
+
+  HttpServerConfig serverCfg;
+  serverCfg.withTelemetryConfig(telemetryCfg);
+
+  test::TestServer server(serverCfg);
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("split-ok"); });
+
+  {
+    test::ClientConnection cnx(server.port());
+    for (std::string_view part : {"GET /split HTTP/1.1\r\n", "host: x\r\n", "connection: close\r\n\r\n"}) {
+      test::sendAll(cnx.fd(), part);
+      std::this_thread::sleep_for(30ms);  // each part is a read of its own
+    }
+    EXPECT_TRUE(test::recvUntilClosed(cnx.fd()).ends_with("split-ok"));
+  }
+  {
+    test::ClientConnection cnx(server.port());
+    test::sendAll(cnx.fd(), "GET /bad HTTP/1.1\r\nhost: x\r\nbad header\r\n\r\n");
+    EXPECT_TRUE(test::recvUntilClosed(cnx.fd()).starts_with("HTTP/1.1 400"));
+  }
+
+  // Several export intervals: the spans of both requests, if any, are exported meanwhile.
+  int nbRequestSpans = 0;
+  int nbSpansWithMethod = 0;
+  int nbSpansWithStatus = 0;
+  int nbSpansWithDuration = 0;
+  std::string scheme;
+  for (const auto deadline = std::chrono::steady_clock::now() + 600ms; std::chrono::steady_clock::now() < deadline;) {
+    try {
+      const auto req = collector.waitForRequest(100ms);
+      if (req.path != "/v1/traces") {
+        continue;
+      }
+      ::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest proto;
+      ASSERT_TRUE(proto.ParseFromString(req.body));
+      for (const auto& rs : proto.resource_spans()) {
+        for (const auto& ss : rs.scope_spans()) {
+          for (const auto& span : ss.spans()) {
+            if (span.name() != "http.request") {
+              continue;
+            }
+            ++nbRequestSpans;
+            for (const auto& attr : span.attributes()) {
+              if (attr.key() == "http.method" && attr.value().string_value() == "GET") {
+                ++nbSpansWithMethod;
+              } else if (attr.key() == "http.status_code" && attr.value().int_value() == 200) {
+                ++nbSpansWithStatus;
+              } else if (attr.key() == "http.duration_us") {
+                ++nbSpansWithDuration;
+              } else if (attr.key() == "http.scheme") {
+                scheme = attr.value().string_value();
+              }
+            }
+          }
+        }
+      }
+    } catch (const std::exception&) {
+      // Periodic exports are asynchronous: keep polling until the deadline.
+    }
+  }
+  EXPECT_EQ(nbRequestSpans, 1);
+  EXPECT_EQ(nbSpansWithMethod, 1);
+  EXPECT_EQ(nbSpansWithStatus, 1);
+  EXPECT_EQ(scheme, "http");
+  // The duration of a request is the one of its span.
+  EXPECT_EQ(nbSpansWithDuration, 0);
 }
 
 // Spans end on the event loop thread. Exporting them there would stall all the connections of the server until the

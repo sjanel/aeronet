@@ -10,6 +10,7 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/header-line-parse.hpp"
 #include "aeronet/header-merge.hpp"
+#include "aeronet/http-codec-result.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
@@ -239,7 +240,7 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::finishChunkedBody(ConnectionIt cn
     // In direct decompression mode, bodyAndTrailers only contains trailers (no body chunks were copied)
     _pCtx->sharedBuffers.trailersOrTraceEcho.assign(bodyAndTrailers);
 
-    const auto res =
+    const RequestDecompressionResult res =
         HttpCodec::DecompressChunkedBody(_pCtx->decompressionState, _pCtx->config.decompression, request,
                                          compressedChunks, compressedSize, bodyAndTrailers, _pCtx->sharedBuffers.buf);
     if (res.message != nullptr) {
@@ -316,8 +317,8 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt
       return BodyDecodeStatus::Error;
     }
 
-    const auto lineEndIt = SearchCRLF(pLineStart, pLast);
-    if (lineEndIt == pLast || lineEndIt[1] != '\n') {
+    char* const pLineLast = SearchCRLF(pLineStart, pLast);
+    if (pLineLast == pLast || pLineLast[1] != '\n') {
       // Not complete yet, or with a bare CR: waited for only if more input can still make it valid.
       if (!CanStillBeValidLines(pLineStart, pLast)) {
         emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed trailer line");
@@ -334,11 +335,9 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt
       return BodyDecodeStatus::NeedMore;
     }
 
-    char* pLineLast = lineEndIt;
-
     // Detect blank line (end of trailers)
     if (pLineStart == pLineLast) {
-      trailerEndPos = static_cast<std::size_t>(lineEndIt - pInputBeg) + http::CRLF.size();
+      trailerEndPos = static_cast<std::size_t>(pLineLast - pInputBeg) + http::CRLF.size();
       break;
     }
 
@@ -358,7 +357,7 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt
       return BodyDecodeStatus::Error;
     }
 
-    tempPos = static_cast<std::size_t>(lineEndIt - pInputBeg) + http::CRLF.size();
+    tempPos = static_cast<std::size_t>(pLineLast - pInputBeg) + http::CRLF.size();
   }
 
   // Copy all trailer data at once, behind the body (parsed by decodeChunkedBody, once the body is decoded)

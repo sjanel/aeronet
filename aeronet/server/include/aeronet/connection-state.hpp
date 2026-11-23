@@ -254,6 +254,28 @@ struct ConnectionState : public ConnectionInfo {
   // the socket. In the latter case, records whether it leaves input behind (see inputBlockedByOutput).
   [[nodiscard]] bool stopReadingIfOutputBlocked();
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  // The async handler state of the connection, nullptr until allocated (see ensureAsyncState()).
+  [[nodiscard]] AsyncHandlerState* pAsyncHandlerState() const noexcept { return asyncState.get(); }
+
+  // The async handler state of the connection, already allocated.
+  [[nodiscard]] AsyncHandlerState& asyncHandlerState() const noexcept {
+    AsyncHandlerState* pAsyncHandlerState = asyncState.get();
+    assert(pAsyncHandlerState != nullptr);
+    return *pAsyncHandlerState;
+  }
+
+  // Tells whether deferred work (deferWork()) is still running for a coroutine of this connection: its frame and its
+  // request must then be kept until the work completes, even if the connection is closed.
+  [[nodiscard]] bool hasAsyncWorkInFlight() const noexcept {
+    return (asyncState && asyncState->task.isAwaitingCallback()) ||
+           (protocolHandler != nullptr && protocolHandler->hasAsyncWorkInFlight());
+  }
+
+  /// Allocate async state on first use from the bound pool and return it.
+  AsyncHandlerState& ensureAsyncState(AsyncHandlerStatePool& asyncStatePool);
+#endif
+
   // Connection close lifecycle: a drain close may linger before the close (see isLingering()).
   enum class CloseMode : uint8_t { None, DrainThenClose, Linger };
 
@@ -404,24 +426,6 @@ struct ConnectionState : public ConnectionInfo {
   std::unique_ptr<IProtocolHandler> protocolHandler;
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  [[nodiscard]] AsyncHandlerState* pAsyncHandlerState() const noexcept { return asyncState.get(); }
-
-  [[nodiscard]] AsyncHandlerState& asyncHandlerState() const noexcept {
-    AsyncHandlerState* pAsyncHandlerState = asyncState.get();
-    assert(pAsyncHandlerState != nullptr);
-    return *pAsyncHandlerState;
-  }
-
-  // Tells whether deferred work (deferWork()) is still running for a coroutine of this connection: its frame and its
-  // request must then be kept until the work completes, even if the connection is closed.
-  [[nodiscard]] bool hasAsyncWorkInFlight() const noexcept {
-    return (asyncState && asyncState->task.isAwaitingCallback()) ||
-           (protocolHandler != nullptr && protocolHandler->hasAsyncWorkInFlight());
-  }
-
-  /// Allocate async state on first use from the bound pool and return it.
-  AsyncHandlerState& ensureAsyncState(AsyncHandlerStatePool& asyncStatePool);
-
   // Async handler state is pooled by ConnectionStorage to avoid per-connection inline bloat.
   PoolPtr<AsyncHandlerState> asyncState;
 #endif

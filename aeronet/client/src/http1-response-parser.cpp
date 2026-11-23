@@ -466,7 +466,7 @@ Http1ResponseParser::Status Http1ResponseParser::parseResponse(std::span<char> b
       // upgrade request is the final one.
       // status code should have been parsed already.
       assert(_statusCode >= 100 && _statusCode <= 599);
-      if (_statusCode < 200 && !isSwitchingProtocols()) {
+      if (isInterim()) {
         _headerFlags = {};
         _contentTypeLen = 0;
         _state = State::StatusLine;
@@ -530,7 +530,9 @@ Http1ResponseParser::Status Http1ResponseParser::parseResponse(std::span<char> b
         return Status::Error;
       }
 
-      internal::HttpResponseAccess::HeaderAddLineUnchecked(resp, name, value);
+      if (!isInterim()) {
+        internal::HttpResponseAccess::HeaderAddLineUnchecked(resp, name, value);
+      }
     }
   }
 

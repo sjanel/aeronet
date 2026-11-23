@@ -173,6 +173,9 @@ class Http1ResponseParser {
     return _upgradeRequest && _statusCode == http::StatusCodeSwitchingProtocols;
   }
 
+  // Whether the head being parsed is an interim (1xx) response, discarded: its headers are not the final response's.
+  [[nodiscard]] bool isInterim() const noexcept { return _statusCode < 200 && !isSwitchingProtocols(); }
+
   Status parseResponse(std::span<char> buffer, bool eof, HttpResponse& resp, std::size_t maxResponseBytes);
   Status decideFraming();
   Status parseBody(std::string_view buffer, bool eof, std::size_t maxResponseBytes);

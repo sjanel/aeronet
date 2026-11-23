@@ -72,6 +72,8 @@ config.withTelemetryConfig(std::move(telemetry));
 
 The OTLP exporter sends over HTTP. Each `SingleHttpServer` owns an independent telemetry context; aeronet does not install a process global provider. `TelemetryConfig::endpoint()` is used as the trace endpoint, and aeronet derives `/v1/metrics` for the metric exporter. Export intervals, timeouts, trace sampling, exporter HTTP headers, and histogram buckets are all instance-specific.
 
+`withSampleRate(rate)` records that proportion of the spans, decided at random for each span before it is created: an unsampled request costs no allocation nor call into the OpenTelemetry SDK, as with tracing disabled. aeronet does not read an incoming trace context (`traceparent`): each span starts a trace of its own, so that this draw samples like the trace id ratio sampler of the SDK. A sampled `http.request` span of an HTTP/1.1 request makes 35 allocations in the event loop, almost all in the OTLP exporter of the SDK (see the [ROADMAP](../ROADMAP.md#tracing-allocations)).
+
 Ended spans are only queued by the event loop: a background thread exports them in batches, at the latest `exportInterval` after they end, so a slow or unreachable collector never delays request processing. A span ending while the queue is full (2048 spans by default) is dropped.
 
 ### opentelemetry-cpp ABI
@@ -187,7 +189,7 @@ Without handler code, each server emits:
 
 | Signal | Name | Content |
 | --- | --- | --- |
-| Span | `http.request` | One per request, with `http.method`, `http.target`, `http.scheme`, `http.host`, `http.status_code`, and `http.duration_us`. |
+| Span | `http.request` | One per sampled request, created once its head is received (whatever the number of reads), none for a rejected head, with `http.method`, `http.target`, `http.scheme` (`https` over TLS), `http.host`, and `http.status_code`. Its duration is the one of the request, from its head to its response. |
 | Span | `aeronet.middleware` | One per middleware call, with its phase, scope, index, and whether it short-circuited, threw, or ran for a streaming route. |
 | Counters | `aeronet.connections.accepted`, `aeronet.events.processed`, `aeronet.events.errors`, `aeronet.bytes.read` | Connection and event loop activity. `aeronet.events.errors` counts the failed polls, each of which stops its server (see [Stopping](../guides/server-lifecycle.md#stopping)). |
 | Counters | `aeronet.connections.closed_for_*` | Connections closed by a timeout (`keep_alive`, `stalled_output` for a response that made no progress for `keepAliveTimeout`, `header_read_timeout`, `body_read_timeout`, `request_timeout`, `handshake_timeout`, `lingering_close_timeout`, `websocket_idle_timeout`, `websocket_close_timeout`, `http2_settings_timeout`, `http2_ping_timeout`), a drain (`drain`), or [`MSG_ZEROCOPY`](performance.md#msg_zerocopy) sends without progress (`zerocopy_stall`). |
@@ -238,7 +240,8 @@ Read [Health probes](health-probes.md), then use the [Kubernetes deployment guid
 
 ## Tests
 
-- OpenTelemetry export end to end: [tests/opentelemetry-e2e_test.cpp](../../tests/opentelemetry-e2e_test.cpp).
+- OpenTelemetry export end to end, with one `http.request` span for a head received in several reads and its attributes (`OneSpanPerRequestWhateverTheReadsOfItsHead`): [tests/opentelemetry-e2e_test.cpp](../../tests/opentelemetry-e2e_test.cpp). The scheme over TLS: `HttpRequestViewTest.TraceSpanSchemeIsTheOneOfTheConnection` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp).
+- Sampling before the span is created: [span-sampler_test.cpp](../../aeronet/objects/test/span-sampler_test.cpp) and `OpenTelemetryIntegration.SpanSampling` in [opentelemetry-integration_test.cpp](../../aeronet/objects/test/opentelemetry-integration_test.cpp).
 - DogStatsD: [dogstatsd_test.cpp](../../aeronet/objects/test/dogstatsd_test.cpp).
 - Counter batching: [counter-accumulator_test.cpp](../../aeronet/objects/test/counter-accumulator_test.cpp), the `DogStatsDCounters*` tests of [opentelemetry-integration_test.cpp](../../aeronet/objects/test/opentelemetry-integration_test.cpp), `HttpServerTelemetry.DogStatsDMetricsSentAtMaintenanceTick` in [tests/http-core_test.cpp](../../tests/http-core_test.cpp) and `HttpClientE2ETest.TelemetryCountersSentAfterEachRequest` in [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp).
 - Access log: [access-log-writer_test.cpp](../../aeronet/server/test/access-log-writer_test.cpp).

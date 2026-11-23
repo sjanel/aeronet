@@ -22,6 +22,7 @@
 - **Linux `io_uring` backend**: its [design study](#linux-io_uring-backend-design-study) measured a small ceiling on the development machine (+3.2% to +3.6% on HTTP/1.1 keep-alive, +7% on connection churn), so its first stage only measures it on GitHub-hosted runners, before any library code.
 - **Asynchronous reads of cold files**: a page-cache miss blocks the whole event loop for 80 µs to 0.8 ms. [Design study](#asynchronous-reads-of-cold-files), a thread pool first.
 - **Encoded slash handling option**: an encoded slash (`%2F`) in the request path is always answered `400`. Some APIs put one in an identifier (npm scoped packages `/@scope%2fname`, GitLab `/projects/group%2Fproject`), and Tomcat, Apache and Spring Security let it through on demand. A parsing setting in `HttpServerConfig` (not `RouterConfig`: the path is decoded before routing, and `req.path()` is also read by middleware and static files) could add a `Keep` mode leaving `%2F` encoded in `req.path()`, so that `/{id}` captures `group%2Fproject`. It must then also keep `%25` encoded, otherwise `/a%252Fb` and `/a%2Fb` give the same path. A `Decode` mode (the former behavior) would only help catch-all and static routes.
+- **Tracing allocations**: a sampled request makes 35 allocations in the event loop, 31 of them in the OTLP exporter of the OpenTelemetry SDK. [Measurements and plan](#tracing-allocations).
 - **macOS `EVFILT_TIMER` integration**: `TimerFd::armPeriodic()` on macOS is currently a no-op and relies on poll timeouts. Using kqueue's native `EVFILT_TIMER` would improve timer precision but requires event-loop refactoring to accommodate heterogeneous kqueue filter types.
 
 ### Performance optimization backlog
@@ -61,6 +62,60 @@ extend them instead of duplicating them.
 | Codec alternating-size sessions with allocation and peak-capacity counters | Scratch growth/shrink and context reuse |
 | Fragmented + compressed WebSocket message processing | End-to-end frame/reassembly path beyond mask-only throughput |
 | Hot-structure `sizeof` and 10 K-object random-access profile | Layout changes without speculative padding claims |
+
+### Tracing allocations
+
+Measured on 2026-11-23: allocations of the event-loop thread for one HTTP/1.1 keep-alive `GET` with tracing on (malloc
+interposed with a backtrace per allocation, Debug build, opentelemetry-cpp 1.30, protobuf 3.21, OTLP HTTP exporter and
+batch span processor). A request without span makes 2 (its `HttpResponse`, and the growth of its buffer when it is
+finalized). Since the same day, an unsampled request makes no more: `sampleRate` is applied before the span is created,
+and `http.duration_us` (5 allocations) is no longer set. A sampled request still makes 35 more:
+
+| Step | Allocations | What |
+| --- | --- | --- |
+| Span creation (`TelemetryContext::createSpan()`, from `HttpRequestView::initTrySetHead()`) | 11 | aeronet `OtelSpan` wrapper (40 B); SDK `Span` and its `shared_ptr` control block (168 B); `MultiRecordable` (56 B, the provider wraps its single processor in a `MultiSpanProcessor`) and its map node (48 B); `OtlpRecordable` holding the protobuf `Span` (232 B); the protobuf strings of `trace_id` (3: a temporary, the string, its buffer), `span_id`, `trace_state` and the name |
+| 4 string attributes with the head (`http.method`, `http.target`, `http.scheme`, `http.host`) | 19 | for each: a `KeyValue` message (40 B), its key string (32 B), an `AnyValue` message (32 B) and its value string (32 B); 3 growths of the repeated `attributes` field (16, 32, 64 B) |
+| `http.status_code` when the request ends | 5 | a `KeyValue` and an `AnyValue`; its key of 16 characters is one too long for the inline storage of `std::string`: a temporary, the string, its buffer |
+| `Span::End()` | 0 | the batch processor queues the span in a preallocated ring buffer |
+
+Each key or value of 16 characters or more costs 2 more allocations (the protobuf setter builds a temporary
+`std::string`, then copies it): 39 with a target of 26 characters and a host of 20. The exporter thread (serialization
+of the batch, HTTP request) was not measured.
+
+Plan, in order of leverage:
+
+1. **Build the OTLP message on the exporter thread.** 31 of the 35 allocations come from `OtlpRecordable`, which fills
+   its protobuf `Span` field by field, without protobuf arena, as the event loop sets them. A `SpanExporter` of aeronet
+   wrapping the OTLP one would return its own `Recordable` from `MakeRecordable()`: the identity, name, kind, times and
+   status in place, and the attributes in one buffer (key, type tag, value; inline storage of a few hundred bytes, so
+   that a typical request span allocates nothing more). Its `Export()`, called by the batch processor on its thread,
+   replays each of them into a recordable of the wrapped exporter (`SetIdentity()`, `SetName()`, `SetAttribute()`...),
+   then calls its `Export()`. The event loop would keep 5 allocations: the aeronet wrapper, the SDK `Span`, the
+   `MultiRecordable` and its map node, and this recordable. Constraints: compile with opentelemetry-cpp 1.24 (Conan)
+   and both ABIs, whose `Recordable` interfaces differ (`SetTraceFlags()` and `SetSpanLimits()` have default
+   implementations, the trace flags must still reach the exported span); the facade only sets string and integer
+   attributes, so events, links and array attributes can stay unsupported (asserted). Tests: replay into an
+   `sdk::trace::SpanData` and compare with the same calls made directly, and an end-to-end export through
+   `OtlpTestCollector` checking ids, flags, times, status, resource and scope. Measure the exporter thread before and
+   after: its allocations move there, they must not grow.
+2. **Measure what is not yet**: the HTTP/2 path (`Http2ProtocolHandler` creates its own `http.request` span), the
+   `aeronet.middleware` spans (one span creation and its attributes per middleware call), and the exporter thread per
+   span, against a collector that accepts the exports.
+3. **Middleware spans as children of the request span.** Each `aeronet.middleware` span is a root span of its own
+   trace today, sampled independently of its request. Starting it with the context of the `http.request` span as
+   parent (`StartSpanOptions::parent`) groups them in one trace, and creating it only when the request span exists
+   samples them with it (no draw of their own).
+4. **Incoming trace context.** Reading `traceparent` and `tracestate` (W3C Trace Context) would make the request span a
+   child of the caller's span. The sampling decision must then follow the sampled flag of the parent (parent-based
+   sampling) instead of `SpanSampler`, still before the span is created.
+5. **The aeronet wrapper** (1 allocation, 40 B): storing the SDK span handle (a `nostd::shared_ptr`, 32 bytes) inline
+   in a value type instead of a `std::unique_ptr<Span>` would remove it, but grow `HttpRequestView` (one per connection)
+   by 24 bytes. Only worth it once the other allocations are gone.
+
+To measure again: build a probe against `build/` that defines `malloc`, `realloc` and `calloc` forwarding to
+`__libc_malloc` and co, records `backtrace()` into a static array for the allocations of the thread running
+`SingleHttpServer::runUntil()` (warm `backtrace()` up first: it allocates once), then symbolizes the frames
+(`dladdr()` offsets, `llvm-symbolizer --no-inlines`) and groups them by call site.
 
 ### Linux `io_uring` backend - design study
 

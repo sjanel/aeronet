@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <bit>
 #include <cassert>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -435,7 +434,7 @@ AERONET_NOINLINE http::StatusCode UnknownMethodStatus(const char* pFirst, const 
 http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, HeadParseState& headParseState,
                                                  RawChars& tmpBuffer, uint32_t maxHeadersBytes,
                                                  bool mergeAllowedForUnknownRequestHeaders,
-                                                 tracing::SpanPtr traceSpan) {
+                                                 const tracing::TelemetryContext* pTelemetry) {
   char* pFirst = inBuffer.data();
   char* pLast = pFirst + inBuffer.size();
 
@@ -617,17 +616,23 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, HeadP
 
   // At this point, we have a complete request head, and we point to a CRLF.
 
-  if (traceSpan) {
-    traceSpan->setAttribute("http.method", http::MethodToStr(_method));
-    traceSpan->setAttribute("http.target", path());
-    traceSpan->setAttribute("http.scheme", "http");
+  // The span is created once the head is complete: not for each read of a head received in several parts (an
+  // OpenTelemetry span is exported when destroyed, even if never ended), nor for a rejected head.
+  if (pTelemetry != nullptr) {
+    _traceSpan = pTelemetry->createSpan("http.request");
+  }
+  if (_traceSpan) {
+    _traceSpan->setAttribute("http.method", http::MethodToStr(_method));
+    _traceSpan->setAttribute("http.target", path());
+    // The scheme of the connection: an HTTP/1 request has no scheme of its own (an absolute-form target is the one of
+    // a client talking to a proxy).
+    _traceSpan->setAttribute("http.scheme",
+                             tlsVersion().empty() ? std::string_view{"http"} : std::string_view{"https"});
 
     if (hostIt != _headers.end()) {
-      traceSpan->setAttribute("http.host", hostIt->second);
+      _traceSpan->setAttribute("http.host", hostIt->second);
     }
   }
-
-  _traceSpan = std::move(traceSpan);
   _headSpanSize = static_cast<std::size_t>(pFirst + http::CRLF.size() - inBuffer.data());
 
   resetBodyState();
@@ -836,14 +841,9 @@ void HttpRequestView::shrinkAndMaybeClear() {
 }
 
 void HttpRequestView::end(http::StatusCode respStatusCode) noexcept {
-  // End the span after response is finalized
+  // End the span after response is finalized. Its duration is the one of the span: no attribute repeats it.
   if (_traceSpan) {
-    const auto reqEnd = std::chrono::steady_clock::now();
-    const auto durationUs = std::chrono::duration_cast<std::chrono::microseconds>(reqEnd - reqStart());
-
     _traceSpan->setAttribute("http.status_code", respStatusCode);
-    _traceSpan->setAttribute("http.duration_us", durationUs.count());
-
     _traceSpan->end();
     _traceSpan.reset();
   }
