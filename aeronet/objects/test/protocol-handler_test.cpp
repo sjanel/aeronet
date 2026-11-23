@@ -72,6 +72,14 @@ TEST(ProtocolHandlerTest, DefaultDiscardWritesOffThePendingOutput) {
   EXPECT_EQ(handler.offset, handler.output.size());
 }
 
+// The state of a protocol whose input processing threw is unknown: by default, its pending output is not written.
+TEST(ProtocolHandlerTest, DefaultInputProcessingExceptionDiscardsThePendingOutput) {
+  StringOutputHandler handler;
+  handler.output = "half-built frames";
+  handler.onInputProcessingException();
+  EXPECT_FALSE(handler.hasPendingOutput());
+}
+
 TEST(ProtocolHandlerTest, DefaultDrainCopiesThePendingOutput) {
   StringOutputHandler handler;
   HttpMessageData dest;

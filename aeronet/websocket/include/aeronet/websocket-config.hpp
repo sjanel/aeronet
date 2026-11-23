@@ -13,8 +13,8 @@ namespace aeronet::websocket {
 
 /// Configuration options for WebSocket connections.
 struct WebSocketConfig {
-  /// Checks the configuration, throws std::invalid_argument if invalid (a null size limit, or an invalid
-  /// deflateConfig).
+  /// Checks the configuration, throws std::invalid_argument if invalid (a null size limit, a negative closeTimeout, a
+  /// non-positive idleTimeout, or an invalid deflateConfig).
   void validate() const;
 
   /// Maximum size of a single message (after reassembly from fragments, and decompression).
@@ -25,7 +25,8 @@ struct WebSocketConfig {
   /// Must be greater than 0. To approximate no limit, set std::numeric_limits<std::size_t>::max() (use with caution).
   std::size_t maxFrameSize{kDefaultMaxFrameSize};
 
-  /// Time to wait for the peer's Close frame after sending one. The connection is then closed.
+  /// Time to wait for the peer's Close frame after sending one. The connection is then closed. Must not be negative,
+  /// std::chrono::milliseconds::max() waits forever.
   std::chrono::milliseconds closeTimeout{std::chrono::milliseconds{5000}};
 
   /// A connection on which nothing was received for this long is closed. Must be positive,

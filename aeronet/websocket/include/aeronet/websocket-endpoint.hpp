@@ -42,12 +42,12 @@ struct WebSocketEndpoint {
     return ep;
   }
 
-  /// Create an endpoint with callbacks shared across all connections.
+  /// Create an endpoint with callbacks shared across all connections: each connection gets a copy of them.
   /// This is the simplest way to create a WebSocket endpoint.
   static WebSocketEndpoint WithCallbacks(websocket::WebSocketCallbacks callbacks) {
     WebSocketEndpoint ep;
-    ep.factory = [cb = std::move(callbacks)]([[maybe_unused]] const HttpRequestView& request) mutable {
-      return std::make_unique<websocket::WebSocketHandler>(websocket::WebSocketConfig(), std::move(cb));
+    ep.factory = [cb = std::move(callbacks)]([[maybe_unused]] const HttpRequestView& request) {
+      return std::make_unique<websocket::WebSocketHandler>(websocket::WebSocketConfig(), cb);
     };
     return ep;
   }
@@ -57,8 +57,8 @@ struct WebSocketEndpoint {
                                                   websocket::WebSocketCallbacks callbacks) {
     WebSocketEndpoint ep;
     ep.config = config;
-    ep.factory = [cfg = config, cb = std::move(callbacks)](const HttpRequestView& /*request*/) mutable {
-      return std::make_unique<websocket::WebSocketHandler>(std::move(cfg), std::move(cb));
+    ep.factory = [cfg = config, cb = std::move(callbacks)](const HttpRequestView& /*request*/) {
+      return std::make_unique<websocket::WebSocketHandler>(cfg, cb);
     };
     return ep;
   }
@@ -72,8 +72,8 @@ struct WebSocketEndpoint {
     for (const auto& proto : protocols) {
       ep.supportedProtocols.append(proto);
     }
-    ep.factory = [cb = std::move(callbacks)](const HttpRequestView& /*request*/) mutable {
-      return std::make_unique<websocket::WebSocketHandler>(websocket::WebSocketConfig(), std::move(cb));
+    ep.factory = [cb = std::move(callbacks)](const HttpRequestView& /*request*/) {
+      return std::make_unique<websocket::WebSocketHandler>(websocket::WebSocketConfig(), cb);
     };
     return ep;
   }
@@ -89,8 +89,8 @@ struct WebSocketEndpoint {
     for (const auto& proto : protocols) {
       ep.supportedProtocols.append(proto);
     }
-    ep.factory = [cfg = config, cb = std::move(callbacks)](const HttpRequestView& /*request*/) mutable {
-      return std::make_unique<websocket::WebSocketHandler>(std::move(cfg), std::move(cb));
+    ep.factory = [cfg = config, cb = std::move(callbacks)](const HttpRequestView& /*request*/) {
+      return std::make_unique<websocket::WebSocketHandler>(cfg, cb);
     };
     return ep;
   }

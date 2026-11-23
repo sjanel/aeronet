@@ -33,8 +33,9 @@ class WebSocketConnection;
 // Callbacks of a WebSocket connection of a WebSocketClient: function pointers, null when not needed (a lambda without
 // capture converts to one). Their state comes from the user data pointer given to WebSocketClient::connect(), returned
 // by WebSocketConnection::userData(). onOpen runs in WebSocketClient::connect(), the others in WebSocketClient::poll(),
-// on the thread calling them. They may send messages and close connections, on any connection of the client, but must
-// not call connect() or poll(). A callback that throws ends its connection at once, without closing handshake nor
+// on the thread calling them. They may send messages and close connections, on any connection of the client, but not
+// open one nor poll: connect() and poll() throw std::logic_error when called from a callback run by poll() (reconnect
+// from the loop calling poll()). A callback that throws ends its connection at once, without closing handshake nor
 // onClose: the exception propagates out of connect() or poll(), and the connection is destroyed.
 struct WebSocketClientCallbacks {
   // The opening handshake succeeded: called once, by connect(), before it returns. The messages sent here are the first
@@ -241,7 +242,7 @@ class WebSocketClient {
   // Open a WebSocket connection to 'url' (ws, wss, http or https scheme): the opening handshake runs synchronously,
   // bounded by the connect and request timeouts of the HTTP configuration, then onOpen is called. The other callbacks
   // run in poll(). 'pUserData' is the state of the callbacks (WebSocketConnection::userData()), not owned.
-  // Throws std::invalid_argument if the url is invalid.
+  // Throws std::invalid_argument if the url is invalid, std::logic_error if called from a callback run by poll().
   WebSocketConnectResult connect(std::string_view url, const WebSocketClientCallbacks& callbacks,
                                  void* pUserData = nullptr) {
     return connect(makeUpgradeRequest(url), callbacks, pUserData);
@@ -256,6 +257,7 @@ class WebSocketClient {
   // when received bytes are left to process), read what the servers sent and run the callbacks, write the queued
   // frames, check the idle and close timeouts (automatic pings), and remove the ended connections.
   // Returns the number of open connections (not ended): a loop serving the connections until they end checks it.
+  // Throws std::logic_error if called from a callback run by poll().
   std::size_t poll(std::chrono::milliseconds timeout);
 
   // Number of open connections (not ended).

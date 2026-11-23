@@ -8,10 +8,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <random>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -50,7 +53,14 @@ std::span<const std::byte> container_bytes(const Container& cont) noexcept {
 class WebSocketHandlerTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    // Create handler with callbacks that record what happened
+    // Default to server-side configuration (clients must mask)
+    WebSocketConfig config;
+    config.isServerSide = false;  // Accept unmasked frames for easier testing
+    handler = makeRecordingHandler(config);
+  }
+
+  // Callbacks recording what happened in this fixture.
+  WebSocketCallbacks recordingCallbacks() {
     WebSocketCallbacks callbacks;
     callbacks.onMessage = [this](std::span<const std::byte> payload, bool isBinary) {
       lastMessageBinary = isBinary;
@@ -75,12 +85,21 @@ class WebSocketHandlerTest : public ::testing::Test {
       lastErrorMessage = std::string(message);
       errorCount++;
     };
-
-    // Default to server-side configuration (clients must mask)
-    WebSocketConfig config;
-    config.isServerSide = false;  // Accept unmasked frames for easier testing
-    handler = std::make_unique<WebSocketHandler>(config, std::move(callbacks));
+    return callbacks;
   }
+
+  // A handler with 'config' whose events are recorded in this fixture.
+  std::unique_ptr<WebSocketHandler> makeRecordingHandler(WebSocketConfig config) {
+    return std::make_unique<WebSocketHandler>(std::move(config), recordingCallbacks());
+  }
+
+#ifdef AERONET_ENABLE_ZLIB
+  // A handler with 'config' and permessage-deflate negotiated with 'deflateParams', recorded in this fixture.
+  std::unique_ptr<WebSocketHandler> makeRecordingHandler(WebSocketConfig config,
+                                                         DeflateNegotiatedParams deflateParams) {
+    return std::make_unique<WebSocketHandler>(std::move(config), recordingCallbacks(), deflateParams);
+  }
+#endif
 
   // Helper to build a masked frame (simulating client->server)
   static RawBytes BuildMaskedFrame(Opcode opcode, std::string_view payload, bool fin = true) {
@@ -3333,6 +3352,401 @@ TEST(WebSocketInputPayloadTest, ClientSideLargeCompressedMessageIsMaskedInPlace)
   ASSERT_EQ(server.decompress(buf_bytes(payload), message), nullptr);
   EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(message.data()), message.size()), text);
 }
+
+#endif  // AERONET_ENABLE_ZLIB
+
+// ============================================================================
+// End of the connection: input ignored after it, reported once
+// ============================================================================
+
+struct WebSocketHandlerTestAccess {
+  static std::size_t MessageBufferCapacity(const WebSocketHandler& handler) {
+    return handler._message.buffer.capacity();
+  }
+#ifdef AERONET_ENABLE_ZLIB
+  static std::size_t CompressBufferCapacity(const WebSocketHandler& handler) {
+    return handler._compressBuffer.capacity();
+  }
+#endif
+};
+
+namespace {
+
+// The largest capacity a buffer of the received messages keeps between messages (see websocket-handler.cpp).
+constexpr std::size_t kMaxRetainedBufferCapacity = 64UL * 1024UL;
+
+RawBytes Concat(std::initializer_list<RawBytes> frames) {
+  RawBytes all;
+  for (const RawBytes& frame : frames) {
+    all.append(frame.data(), frame.size());
+  }
+  return all;
+}
+
+}  // namespace
+
+// After the Close frame of the server, a client handler answers it and processes nothing more: neither a message nor a
+// second Close frame following it in the same input, nor any later input.
+TEST_F(WebSocketHandlerTest, ClientSideIgnoresFramesAfterTheCloseFrame) {
+  RawBytes close1;
+  BuildCloseFrame(close1, CloseCode::Normal, "bye");
+  RawBytes close2;
+  BuildCloseFrame(close2, CloseCode::GoingAway, "again");
+  const RawBytes input = Concat({close1, BuildUnmaskedFrame(Opcode::Text, "after close"), close2});
+
+  const auto result = handler->processInput(buf_bytes(input));
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::ResponseReady);
+  EXPECT_EQ(result.bytesConsumed, input.size());
+  EXPECT_EQ(closeCount, 1);
+  EXPECT_EQ(lastCloseCode, CloseCode::Normal);
+  EXPECT_EQ(lastCloseReason, "bye");
+  EXPECT_EQ(messageCount, 0);
+  EXPECT_TRUE(handler->isCloseComplete());
+  // Only the answer to the first Close frame.
+  const std::string output = WriteAllOutput(*handler);
+  const auto frame = ParseFrame(sv_bytes(output), kNoLimit, /*isServerSide=*/true, false);
+  ASSERT_EQ(frame.status, FrameParseResult::Status::Complete);
+  EXPECT_EQ(frame.bytesConsumed, output.size());
+  EXPECT_EQ(frame.header.opcode, Opcode::Close);
+
+  const RawBytes ping = BuildUnmaskedFrame(Opcode::Ping, "ping");
+  const auto later = handler->processInput(buf_bytes(ping));
+  EXPECT_EQ(later.action, ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(later.bytesConsumed, ping.size());
+  EXPECT_EQ(pingCount, 0);
+  EXPECT_FALSE(handler->hasPendingOutput());
+}
+
+// A failed connection processes nothing more of the peer (RFC 6455 §7.1.7): onError is its only callback.
+TEST_F(WebSocketHandlerTest, FailedConnectionIgnoresTheRestOfTheInput) {
+  RawBytes invalid = BuildUnmaskedFrame(Opcode::Text, "rsv2");
+  invalid[0] |= kRsv2Bit;
+  RawBytes close;
+  BuildCloseFrame(close, CloseCode::Normal);
+  const RawBytes input = Concat({invalid, BuildUnmaskedFrame(Opcode::Text, "ignored"), close});
+
+  const auto result = handler->processInput(buf_bytes(input));
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(result.bytesConsumed, input.size());
+  EXPECT_EQ(errorCount, 1);
+  EXPECT_EQ(lastErrorCode, CloseCode::ProtocolError);
+  EXPECT_EQ(messageCount, 0);
+  EXPECT_EQ(closeCount, 0);
+
+  const RawBytes text = BuildUnmaskedFrame(Opcode::Text, "later");
+  EXPECT_EQ(handler->processInput(buf_bytes(text)).bytesConsumed, text.size());
+  EXPECT_EQ(messageCount, 0);
+  EXPECT_EQ(errorCount, 1);
+
+  // The transport closing does not report the end again.
+  handler->onTransportClosing();
+  EXPECT_EQ(closeCount, 0);
+}
+
+// A connection closing without closing handshake gets onClose with AbnormalClosure, once, and can send nothing more.
+TEST_F(WebSocketHandlerTest, TransportClosingReportsAbnormalClosure) {
+  int nbCalls = 0;
+  CloseCode code{CloseCode::Normal};
+  bool reasonEmpty = true;
+  bool sent = true;
+  WebSocketCallbacks callbacks;
+  callbacks.onClose = [&, pHandler = handler.get()](CloseCode closeCode, std::string_view reason) {
+    ++nbCalls;
+    code = closeCode;
+    reasonEmpty = reason.empty();
+    sent = pHandler->sendText("too late") || pHandler->sendClose();
+  };
+  handler->setCallbacks(std::move(callbacks));
+
+  handler->onTransportClosing();
+  EXPECT_EQ(nbCalls, 1);
+  EXPECT_EQ(code, CloseCode::AbnormalClosure);
+  EXPECT_FALSE(reasonEmpty);
+  EXPECT_FALSE(sent);
+  EXPECT_FALSE(handler->hasPendingOutput());
+
+  handler->onTransportClosing();
+  EXPECT_EQ(nbCalls, 1);
+}
+
+// Our Close frame left unanswered: the closing handshake did not complete.
+TEST_F(WebSocketHandlerTest, TransportClosingAfterUnansweredCloseReportsAbnormalClosure) {
+  ASSERT_TRUE(handler->sendClose(CloseCode::GoingAway));
+  handler->onTransportClosing();
+  EXPECT_EQ(closeCount, 1);
+  EXPECT_EQ(lastCloseCode, CloseCode::AbnormalClosure);
+}
+
+// After the closing handshake, onClose reported the Close frame of the peer: the transport closing adds nothing.
+TEST_F(WebSocketHandlerTest, TransportClosingAfterClosingHandshakeReportsNothing) {
+  RawBytes close;
+  BuildCloseFrame(close, CloseCode::Normal, "done");
+  (void)process(close);
+  ASSERT_EQ(closeCount, 1);
+  handler->onTransportClosing();
+  EXPECT_EQ(closeCount, 1);
+  EXPECT_EQ(lastCloseCode, CloseCode::Normal);
+}
+
+// ============================================================================
+// A callback throwing while the input is processed
+// ============================================================================
+
+// What the server does when processInput() throws (SingleHttpServer::closeAfterInputProcessingException()): the frames
+// already queued, a large echo sent from the input included, are followed by a Close frame with InternalError, the rest
+// of the input is ignored, and the end of the connection is reported once its transport closes.
+TEST(WebSocketInputProcessingExceptionTest, FailsTheConnectionWithInternalError) {
+  auto server = std::make_unique<WebSocketHandler>(WebSocketConfig());
+  int nbMessages = 0;
+  int nbClose = 0;
+  CloseCode closeCode{CloseCode::Normal};
+  WebSocketCallbacks callbacks;
+  callbacks.onMessage = [&nbMessages, pServer = server.get()](std::span<const std::byte> payload, bool isBinary) {
+    ++nbMessages;
+    if (!isBinary) {
+      throw std::runtime_error("callback failure");
+    }
+    pServer->sendBinary(payload);
+  };
+  callbacks.onClose = [&nbClose, &closeCode](CloseCode code, std::string_view /*reason*/) {
+    ++nbClose;
+    closeCode = code;
+  };
+  server->setCallbacks(std::move(callbacks));
+
+  const std::string payload = MakeEchoPayload(8192);
+  RawBytes input = ClientFrame(Opcode::Binary, payload);
+  const RawBytes throwing = ClientFrame(Opcode::Text, "throw");
+  input.append(throwing.data(), throwing.size());
+  EXPECT_THROW(static_cast<void>(server->processInput(buf_bytes(input))), std::runtime_error);
+
+  server->onInputProcessingException();
+  server->releaseInput();
+  std::ranges::fill(input, std::byte{0});  // the input buffer is cleared
+  RawBytes closeFrame;
+  BuildCloseFrame(closeFrame, CloseCode::InternalError);
+  EXPECT_EQ(WriteAllOutput(*server),
+            ServerFrameBytes(Opcode::Binary, payload) +
+                std::string(reinterpret_cast<const char*>(closeFrame.data()), closeFrame.size()));
+
+  const RawBytes later = ClientFrame(Opcode::Binary, "later");
+  EXPECT_EQ(server->processInput(buf_bytes(later)).bytesConsumed, later.size());
+  EXPECT_EQ(nbMessages, 2);
+  EXPECT_FALSE(server->hasPendingOutput());
+
+  EXPECT_EQ(nbClose, 0);
+  server->onTransportClosing();
+  EXPECT_EQ(nbClose, 1);
+  EXPECT_EQ(closeCode, CloseCode::AbnormalClosure);
+  server->onTransportClosing();
+  EXPECT_EQ(nbClose, 1);
+}
+
+// onClose throwing after the Close frame of the peer: the closing handshake is complete, its end already reported.
+TEST(WebSocketInputProcessingExceptionTest, AfterTheClosingHandshakeNothingMoreIsSentNorReported) {
+  int nbClose = 0;
+  WebSocketCallbacks callbacks;
+  callbacks.onClose = [&nbClose](CloseCode /*code*/, std::string_view /*reason*/) {
+    ++nbClose;
+    throw std::runtime_error("onClose failure");
+  };
+  WebSocketHandler server(WebSocketConfig(), std::move(callbacks));
+  RawBytes close;
+  BuildCloseFrame(close, CloseCode::Normal, "bye", true, kClientMask);
+  EXPECT_THROW(static_cast<void>(server.processInput(buf_bytes(close))), std::runtime_error);
+
+  server.onInputProcessingException();
+  RawBytes answer;
+  BuildCloseFrame(answer, CloseCode::Normal, "bye");
+  EXPECT_EQ(WriteAllOutput(server), std::string(reinterpret_cast<const char*>(answer.data()), answer.size()));
+  server.onTransportClosing();
+  EXPECT_EQ(nbClose, 1);
+}
+
+// ============================================================================
+// Memory of the received messages
+// ============================================================================
+
+// A large fragmented message does not leave its reassembly buffer allocated, a small one keeps it for the next one.
+TEST_F(WebSocketHandlerTest, LargeFragmentedMessageBufferIsReleased) {
+  const std::string fragment = MakeEchoPayload(256UL * 1024UL);
+  (void)process(BuildUnmaskedFrame(Opcode::Binary, fragment, false));
+  (void)process(BuildUnmaskedFrame(Opcode::Continuation, fragment, false));
+  EXPECT_GT(WebSocketHandlerTestAccess::MessageBufferCapacity(*handler), kMaxRetainedBufferCapacity);
+  (void)process(BuildUnmaskedFrame(Opcode::Continuation, fragment, true));
+  ASSERT_EQ(messageCount, 1);
+  EXPECT_EQ(lastMessage, fragment + fragment + fragment);
+  EXPECT_EQ(WebSocketHandlerTestAccess::MessageBufferCapacity(*handler), 0U);
+
+  (void)process(BuildUnmaskedFrame(Opcode::Text, "small ", false));
+  (void)process(BuildUnmaskedFrame(Opcode::Continuation, "message", true));
+  EXPECT_EQ(lastMessage, "small message");
+  EXPECT_GT(WebSocketHandlerTestAccess::MessageBufferCapacity(*handler), 0U);
+  EXPECT_LE(WebSocketHandlerTestAccess::MessageBufferCapacity(*handler), kMaxRetainedBufferCapacity);
+}
+
+TEST_F(WebSocketHandlerTest, OversizedMessageBufferIsReleasedWhenTheConnectionFails) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  config.maxMessageSize = 300UL * 1024UL;
+  handler = makeRecordingHandler(config);
+  const std::string fragment = MakeEchoPayload(200UL * 1024UL);
+  (void)process(BuildUnmaskedFrame(Opcode::Binary, fragment, false));
+  EXPECT_GT(WebSocketHandlerTestAccess::MessageBufferCapacity(*handler), kMaxRetainedBufferCapacity);
+  EXPECT_EQ(process(BuildUnmaskedFrame(Opcode::Continuation, fragment, true)).action,
+            ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(lastErrorCode, CloseCode::MessageTooBig);
+  EXPECT_EQ(WebSocketHandlerTestAccess::MessageBufferCapacity(*handler), 0U);
+}
+
+#ifdef AERONET_ENABLE_ZLIB
+
+namespace {
+
+// A compressed frame of a server (unmasked) holding 'message', compressed by 'server'.
+RawBytes CompressedServerFrame(DeflateContext& server, Opcode opcode, std::string_view message) {
+  RawBytes compressed;
+  EXPECT_EQ(server.compress(sv_bytes(message), compressed), nullptr);
+  RawBytes frame;
+  BuildFrame(frame, opcode, buf_bytes(compressed), true, false, MaskingKey{}, true);
+  return frame;
+}
+
+constexpr DeflateNegotiatedParams kContextTakeoverParams{
+    .serverMaxWindowBits = 15,
+    .clientMaxWindowBits = 15,
+    .serverNoContextTakeover = false,
+    .clientNoContextTakeover = false,
+};
+
+}  // namespace
+
+// A compression bomb (a few kilobytes inflating to megabytes) leaves neither its decompressed message nor its
+// compressed data allocated.
+TEST_F(WebSocketHandlerTest, DecompressedMessageBuffersAreReleased) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  handler = makeRecordingHandler(config, kContextTakeoverParams);
+  DeflateContext server(kContextTakeoverParams, DeflateConfig(), /*isServerSide=*/true);
+  const std::string bomb(8UL << 20U, 'a');
+  const RawBytes frame = CompressedServerFrame(server, Opcode::Binary, bomb);
+  EXPECT_LT(frame.size(), 16UL * 1024UL);
+
+  EXPECT_EQ(process(frame).action, ProtocolProcessResult::Action::Continue);
+  ASSERT_EQ(messageCount, 1);
+  EXPECT_EQ(lastMessage.size(), bomb.size());
+  EXPECT_LE(WebSocketHandlerTestAccess::MessageBufferCapacity(*handler), kMaxRetainedBufferCapacity);
+  EXPECT_LE(WebSocketHandlerTestAccess::CompressBufferCapacity(*handler), kMaxRetainedBufferCapacity);
+
+  // The stream of the connection goes on (context takeover).
+  (void)process(CompressedServerFrame(server, Opcode::Text, "next message"));
+  EXPECT_EQ(messageCount, 2);
+  EXPECT_EQ(lastMessage, "next message");
+}
+
+TEST_F(WebSocketHandlerTest, DecompressedMessageBufferIsReleasedWhenTooLarge) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  config.maxMessageSize = 1UL << 20U;
+  handler = makeRecordingHandler(config, kContextTakeoverParams);
+  DeflateContext server(kContextTakeoverParams, DeflateConfig(), /*isServerSide=*/true);
+
+  EXPECT_EQ(process(CompressedServerFrame(server, Opcode::Binary, std::string(4UL << 20U, 'a'))).action,
+            ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(lastErrorCode, CloseCode::MessageTooBig);
+  EXPECT_LE(WebSocketHandlerTestAccess::MessageBufferCapacity(*handler), kMaxRetainedBufferCapacity);
+  EXPECT_LE(WebSocketHandlerTestAccess::CompressBufferCapacity(*handler), kMaxRetainedBufferCapacity);
+}
+
+// ============================================================================
+// A message that does not shrink, with and without context takeover
+// ============================================================================
+
+namespace {
+
+struct DirectionAndTakeover {
+  bool serverSends;
+  bool contextTakeover;
+};
+
+class WebSocketIncompressibleMessageTest : public ::testing::TestWithParam<DirectionAndTakeover> {};
+
+std::string AsString(std::span<const std::byte> payload) {
+  return {reinterpret_cast<const char*>(payload.data()), payload.size()};
+}
+
+std::string RandomBytes(std::size_t size) {
+  std::mt19937 rng(7);
+  std::string bytes(size, '\0');
+  for (char& byte : bytes) {
+    byte = static_cast<char>(rng());
+  }
+  return bytes;
+}
+
+}  // namespace
+
+// With context takeover, a message that compression does not shrink is still sent compressed: it went through the
+// compression stream, and the next messages may refer to it, so the stream of the peer must hold it too. Sent
+// uncompressed, the next message referring to it fails to decompress (1007), or decompresses to wrong bytes. Without
+// context takeover, nothing refers to it: it is sent uncompressed.
+TEST_P(WebSocketIncompressibleMessageTest, PeerDecompressesTheNextMessages) {
+  const auto [serverSends, contextTakeover] = GetParam();
+  const DeflateNegotiatedParams params{
+      .serverMaxWindowBits = 15,
+      .clientMaxWindowBits = 15,
+      .serverNoContextTakeover = !contextTakeover,
+      .clientNoContextTakeover = !contextTakeover,
+  };
+  WebSocketConfig senderConfig;
+  senderConfig.isServerSide = serverSends;
+  WebSocketConfig receiverConfig;
+  receiverConfig.isServerSide = !serverSends;
+  WebSocketHandler sender(senderConfig, WebSocketCallbacks(), params);
+  vector<std::string> received;
+  WebSocketCallbacks callbacks;
+  callbacks.onMessage = [&received](std::span<const std::byte> payload, bool /*isBinary*/) {
+    received.emplace_back(AsString(payload));
+  };
+  callbacks.onError = [](CloseCode code, std::string_view message) {
+    ADD_FAILURE() << "connection failed with " << static_cast<int>(code) << ": " << message;
+  };
+  WebSocketHandler receiver(receiverConfig, std::move(callbacks), params);
+
+  // JSON updates above minCompressSize, referring to each other, and a binary blob that does not compress between them.
+  const auto update = [](int price) {
+    return R"({"channel":"ticker","type":"update","data":[{"symbol":"BTC/USD","bid":)" + std::to_string(price) +
+           R"(,"bid_qty":0.5,"ask":97001.2,"ask_qty":1.25,"last":97000.5,"volume":1234.5,"vwap":96999.9,"low":95000.0,)"
+           R"("high":98000.0,"change":12.5,"change_pct":0.01,"timestamp":"2026-11-23T10:00:00.000000Z"}]})";
+  };
+  const vector<std::string> messages{update(97000), update(97001), RandomBytes(600), update(97002), update(97003)};
+  std::string wire;
+  for (const std::string& message : messages) {
+    ASSERT_TRUE(sender.sendBinary(sv_bytes(message)));
+    const std::string frameBytes = WriteAllOutput(sender);
+    const auto frame = ParseFrame(sv_bytes(frameBytes), kNoLimit, !serverSends, /*allowRsv1=*/true);
+    ASSERT_EQ(frame.status, FrameParseResult::Status::Complete);
+    if (message.size() == 600) {
+      EXPECT_EQ(frame.header.rsv1, contextTakeover);
+    } else {
+      EXPECT_TRUE(frame.header.rsv1);
+    }
+    wire += frameBytes;
+  }
+
+  const auto result = receiver.processInput(sv_bytes(wire));
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(result.bytesConsumed, wire.size());
+  EXPECT_EQ(received, messages);
+}
+
+INSTANTIATE_TEST_SUITE_P(DirectionsAndTakeover, WebSocketIncompressibleMessageTest,
+                         ::testing::Values(DirectionAndTakeover{true, true}, DirectionAndTakeover{false, true},
+                                           DirectionAndTakeover{true, false}, DirectionAndTakeover{false, false}),
+                         [](const ::testing::TestParamInfo<DirectionAndTakeover>& info) {
+                           return std::string(info.param.serverSends ? "ServerSends" : "ClientSends") +
+                                  (info.param.contextTakeover ? "ContextTakeover" : "NoContextTakeover");
+                         });
 
 #endif  // AERONET_ENABLE_ZLIB
 

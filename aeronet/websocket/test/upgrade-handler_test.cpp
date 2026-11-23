@@ -16,13 +16,18 @@
 
 #ifdef AERONET_ENABLE_WEBSOCKET
 #include <algorithm>
+#include <cstddef>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 
 #include "aeronet/concatenated-strings.hpp"
+#include "aeronet/raw-bytes.hpp"
+#include "aeronet/websocket-config.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-endpoint.hpp"
+#include "aeronet/websocket-frame.hpp"
 #include "aeronet/websocket-handler.hpp"
 #include "aeronet/websocket-upgrade.hpp"
 #endif
@@ -939,6 +944,35 @@ TEST_F(UpgradeHandlerHarness, AcceptWebSocketUpgrade_DefaultHandlerWithoutFactor
   // Without zlib, the offer is ignored: the handshake succeeds without the extension.
   EXPECT_FALSE(response.contains(websocket::SecWebSocketExtensions));
 #endif
+}
+
+// The callbacks of an endpoint made with callbacks are given to the handler of each connection: all of them deliver
+// their messages, not only the first one.
+TEST_F(UpgradeHandlerHarness, AcceptWebSocketUpgrade_EveryConnectionGetsTheCallbacksOfTheEndpoint) {
+  ASSERT_EQ(parse(BuildRawHttp11("GET", "/ws", kUpgradeHeaders)), http::StatusCodeOK);
+  std::string received;
+  websocket::WebSocketCallbacks callbacks;
+  callbacks.onMessage = [&received](std::span<const std::byte> payload, bool) {
+    received.assign(reinterpret_cast<const char*>(payload.data()), payload.size());
+  };
+  websocket::WebSocketConfig config;
+  config.maxMessageSize = 1000;
+  const auto endpoint = WebSocketEndpoint::WithConfigAndCallbacks(config, std::move(callbacks));
+
+  for (int connection = 0; connection < 3; ++connection) {
+    const auto result = acceptWebSocketUpgrade(endpoint);
+    ASSERT_EQ(result.status, upgrade::WebSocketAcceptResult::Status::Accepted);
+    ASSERT_NE(result.handler, nullptr);
+    EXPECT_TRUE(result.handler->config().isServerSide);
+    EXPECT_EQ(result.handler->config().maxMessageSize, 1000U);
+    const std::string text = "message " + std::to_string(connection);
+    RawBytes frame;
+    websocket::BuildFrame(frame, websocket::Opcode::Text, std::as_bytes(std::span(text)), true, true,
+                          websocket::MaskingKey{0x01020304U});
+    EXPECT_EQ(result.handler->processInput(std::span<const std::byte>(frame.data(), frame.size())).bytesConsumed,
+              frame.size());
+    EXPECT_EQ(received, text) << "connection " << connection;
+  }
 }
 
 TEST_F(UpgradeHandlerHarness, AcceptWebSocketUpgrade_FactoryGetsRequestAndNegotiatedCompression) {

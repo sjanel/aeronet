@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <mutex>
 #include <span>
 #include <string_view>
@@ -865,8 +866,18 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
     std::span<const std::byte> inputData(reinterpret_cast<const std::byte*>(pState->inBuffer.data()),
                                          pState->inBuffer.size());
 
-    // Process input through the protocol handler.
-    const ProtocolProcessResult result = handler.processInput(inputData);
+    // Process input through the protocol handler. An exception (of a WebSocket callback, say) fails the connection
+    // instead of stopping the event loop.
+    ProtocolProcessResult result;
+    try {
+      result = handler.processInput(inputData);
+    } catch (const std::exception& ex) {
+      log::error("Exception while processing the input of fd # {}: {}", clientFd, ex.what());
+      return closeAfterInputProcessingException(clientFd);
+    } catch (...) {
+      log::error("Unknown exception while processing the input of fd # {}", clientFd);
+      return closeAfterInputProcessingException(clientFd);
+    }
 
     // processInput may insert new elements in connections.
     cnxIt = connections.iterator(clientFd);
@@ -931,6 +942,20 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
   }
 
   return pState->stopReadingIfOutputBlocked();
+}
+
+bool SingleHttpServer::closeAfterInputProcessingException(NativeHandle fd) {
+  // processInput() may have inserted connections (HTTP/2 CONNECT).
+  const ConnectionIt cnxIt = _ctx.connections.iterator(fd);
+  ConnectionState& state = _ctx.connections.connectionState(cnxIt);
+  state.protocolHandler->onInputProcessingException();
+  // What was processed of the input is unknown: none of it is processed again. The output may refer to it (a WebSocket
+  // echo): the handler copies that part first.
+  state.protocolHandler->releaseInput();
+  state.inBuffer.clear();
+  _ctx.io.flushOutbound(cnxIt);
+  state.requestDrainAndClose();
+  return true;
 }
 
 }  // namespace aeronet

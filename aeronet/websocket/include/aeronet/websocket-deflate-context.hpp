@@ -51,6 +51,10 @@ class DeflateContext {
     return payloadSize < _minCompressSize;
   }
 
+  /// Whether the compression continues its DEFLATE stream from message to message (context takeover): a message it
+  /// compressed is in its window, which the next messages may refer to, so it must reach the peer compressed.
+  [[nodiscard]] bool keepsCompressionContext() const noexcept { return !_deflateNoContextTakeover; }
+
  private:
   // Window bits and context takeover: own parameters when compressing, the peer's when decompressing.
   WebSocketCompressor _ownCompressor;

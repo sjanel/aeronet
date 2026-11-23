@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -71,6 +72,11 @@ websocket::WebSocketConfig ClientSideConfig(websocket::WebSocketConfig config) {
   return config;
 }
 
+// Thrown by connect() and poll() called from a callback run by poll().
+[[noreturn]] void ThrowCalledFromCallback() {
+  throw std::logic_error("WebSocketClient::connect() and poll() cannot be called from a callback run by poll()");
+}
+
 // The poll timeout to wait from 'now' until 'deadline', rounded up so that the deadline has passed when it ends.
 int PollTimeoutMs(SteadyClock::time_point now, SteadyClock::time_point deadline) {
   if (deadline <= now) {
@@ -126,8 +132,9 @@ WebSocketConnection::WebSocketConnection(PrivateTag /*tag*/, WebSocketClient& cl
       _interest(kReadEvents),
       _pendingInput(!_in.empty() || _transport.hasPendingReadData()),
       _unprocessedInput(!_in.empty()) {
-  // The handler only knows its own callbacks: they forward to the ones of the connection, given with it. A message or
-  // a Pong following the Close frame of the server in the same read is not delivered.
+  // The handler only knows its own callbacks: they forward to the ones of the connection, given with it. It processes
+  // nothing after the Close frame of the server, nor after a failure: a message or a Pong following them in the same
+  // read is not delivered.
   websocket::WebSocketCallbacks handlerCallbacks{
       .onMessage = {},  // set below if the connection has one, like onPong
       .onPing = {},
@@ -140,17 +147,11 @@ WebSocketConnection::WebSocketConnection(PrivateTag /*tag*/, WebSocketClient& cl
   };
   if (callbacks.onMessage != nullptr) {
     handlerCallbacks.onMessage = [this](std::span<const std::byte> payload, bool isBinary) {
-      if (_state == State::Open) {
-        _callbacks.onMessage(*this, payload, isBinary);
-      }
+      _callbacks.onMessage(*this, payload, isBinary);
     };
   }
   if (callbacks.onPong != nullptr) {
-    handlerCallbacks.onPong = [this](std::span<const std::byte> payload) {
-      if (_state == State::Open) {
-        _callbacks.onPong(*this, payload);
-      }
-    };
+    handlerCallbacks.onPong = [this](std::span<const std::byte> payload) { _callbacks.onPong(*this, payload); };
   }
   _handler.setCallbacks(std::move(handlerCallbacks));
 }
@@ -292,7 +293,7 @@ void WebSocketConnection::notifyClose(websocket::CloseCode code, std::string_vie
   if (nextState == State::Draining) {
     // The server closes the TCP connection right after the closing handshake (RFC 6455 §7.1.1): it is closed after
     // closeTimeout otherwise.
-    _drainDeadline = SteadyClock::now() + _handler.config().closeTimeout;
+    _drainDeadline = DeadlineAfter(SteadyClock::now(), _handler.config().closeTimeout);
   }
   if (_callbacks.onClose != nullptr) {
     _callbacks.onClose(*this, code, reason);
@@ -375,7 +376,10 @@ WebSocketClient::~WebSocketClient() = default;
 
 WebSocketConnectResult WebSocketClient::connect(HttpRequest&& upgradeRequest, const WebSocketClientCallbacks& callbacks,
                                                 void* pUserData) {
-  assert(!_inPoll);  // the events being processed by poll() would refer to a moved buffer
+  if (_inPoll) [[unlikely]] {
+    // The events being processed by poll() could refer to a moved buffer.
+    ThrowCalledFromCallback();
+  }
   WebSocketConnectResult result;
   const websocket::WebSocketKey key = websocket::GenerateWebSocketKey();
   const std::string_view keyView(key.data(), key.size());
@@ -463,7 +467,9 @@ WebSocketConnectResult WebSocketClient::connect(HttpRequest&& upgradeRequest, co
 }
 
 std::size_t WebSocketClient::poll(std::chrono::milliseconds timeout) {
-  assert(!_inPoll);
+  if (_inPoll) [[unlikely]] {
+    ThrowCalledFromCallback();
+  }
   // The callbacks see it set (their sends are written below, together), also when one throws.
   struct InPollScope {
     explicit InPollScope(bool& inPoll) noexcept : _inPoll(inPoll) { _inPoll = true; }

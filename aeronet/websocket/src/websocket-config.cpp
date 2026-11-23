@@ -11,6 +11,10 @@ void WebSocketConfig::validate() const {
   if (maxFrameSize == 0) {
     throw std::invalid_argument("WebSocketConfig: maxFrameSize must be greater than 0");
   }
+  // 0 closes the connection as soon as its Close frame is sent, max() waits for the answer of the peer forever.
+  if (closeTimeout.count() < 0) {
+    throw std::invalid_argument("WebSocketConfig: closeTimeout must not be negative");
+  }
   // max() disables it.
   if (idleTimeout.count() <= 0) {
     throw std::invalid_argument("WebSocketConfig: idleTimeout must be greater than 0");

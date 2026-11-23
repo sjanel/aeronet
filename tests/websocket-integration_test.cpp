@@ -220,6 +220,7 @@ class WebSocketTest : public ::testing::Test {
  protected:
   struct CloseInfo {
     bool received{false};
+    int nbCalls{0};
     CloseCode code{CloseCode::Normal};
     std::string reason;
   };
@@ -238,7 +239,7 @@ class WebSocketTest : public ::testing::Test {
 
   void recordClose(CloseCode code, std::string_view reason) {
     std::scoped_lock lock(_mutex);
-    _close = CloseInfo{.received = true, .code = code, .reason = std::string(reason)};
+    _close = CloseInfo{.received = true, .nbCalls = _close.nbCalls + 1, .code = code, .reason = std::string(reason)};
   }
 
   // Snapshots for the test thread.
@@ -250,6 +251,35 @@ class WebSocketTest : public ::testing::Test {
   CloseInfo closeInfo() const {
     std::scoped_lock lock(_mutex);
     return _close;
+  }
+
+  // Waits until onClose was recorded 'nbCalls' times.
+  bool waitForCloseCalls(int nbCalls, std::chrono::milliseconds timeout) const {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (closeInfo().nbCalls < nbCalls) {
+      if (std::chrono::steady_clock::now() >= deadline) {
+        return false;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    return true;
+  }
+
+  // Callbacks recording the messages in this fixture.
+  WebSocketCallbacks messageRecordingCallbacks() {
+    WebSocketCallbacks callbacks;
+    callbacks.onMessage = [this](std::span<const std::byte> payload, bool isBinary) {
+      recordMessage(payload, isBinary);
+    };
+    return callbacks;
+  }
+
+  // Also recording the end of the connections, which the test must wait for: the connections that its client closes
+  // without Close frame are reported by the server after the test otherwise, once this fixture is destroyed.
+  WebSocketCallbacks closeRecordingCallbacks() {
+    WebSocketCallbacks callbacks = messageRecordingCallbacks();
+    callbacks.onClose = [this](CloseCode code, std::string_view reason) { recordClose(code, reason); };
+    return callbacks;
   }
 
  private:
@@ -646,6 +676,8 @@ TEST_F(WebSocketTest, CloseHandshake) {
 
   // The server closes the TCP connection first (RFC 6455 section 7.1.1): the client sees EOF without closing.
   EXPECT_TRUE(test::WaitForPeerClose(conn.fd(), 500ms));
+  // The end of the connection was reported by the Close frame: its transport closing reports nothing more.
+  EXPECT_EQ(closeInfo().nbCalls, 1);
 }
 
 TEST_F(WebSocketTest, WithConfigAndCallbacksCustomMaxMessageSize) {
@@ -850,6 +882,156 @@ TEST(WebSocketDrain, PeerNotAnsweringIsClosedAfterCloseTimeout) {
 // ============================================================================
 // Upgrade: middleware, origin checks, CORS, factory
 // ============================================================================
+
+// ============================================================================
+// Callbacks shared by the connections of an endpoint, end of the connections
+// ============================================================================
+
+// The callbacks of an endpoint serve all its connections, open at the same time.
+TEST_F(WebSocketTest, EveryConnectionOfACallbacksEndpointGetsTheCallbacks) {
+  ts.postRouterUpdate([this](Router& router) {
+    router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(messageRecordingCallbacks()));
+  });
+
+  test::ClientConnection first(ts.port());
+  test::ClientConnection second(ts.port());
+  test::ClientConnection third(ts.port());
+  const NativeHandle fds[]{first.fd(), second.fd(), third.fd()};
+  for (const NativeHandle fd : fds) {
+    Upgrade(fd, "/ws");
+  }
+  for (std::size_t idx = 0; idx < std::size(fds); ++idx) {
+    SendFrame(fds[idx], BuildClientTextFrame("connection " + std::to_string(idx)));
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (receivedMessages().size() < std::size(fds) && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(1ms);
+  }
+  auto messages = receivedMessages();
+  ASSERT_EQ(messages.size(), std::size(fds));
+  std::ranges::sort(messages);
+  for (uint32_t idx = 0; idx < messages.size(); ++idx) {
+    EXPECT_EQ(messages[idx].first, "connection " + std::to_string(idx));
+  }
+}
+
+// A connection closed by the client without Close frame is reported to onClose with AbnormalClosure, once.
+TEST_F(WebSocketTest, ConnectionLostWithoutCloseFrameReportsAbnormalClosure) {
+  ts.postRouterUpdate([this](Router& router) {
+    router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(closeRecordingCallbacks()));
+  });
+
+  {
+    test::ClientConnection conn(ts.port());
+    Upgrade(conn.fd(), "/ws");
+  }  // closed without Close frame
+
+  ASSERT_TRUE(waitForCloseCalls(1, 2000ms));
+  const auto close = closeInfo();
+  EXPECT_EQ(close.code, CloseCode::AbnormalClosure);
+  EXPECT_FALSE(close.reason.empty());
+}
+
+// An exception of onClose, run while the server closes the connection, is logged: the server goes on.
+TEST_F(WebSocketTest, ThrowingOnCloseOfALostConnectionIsLogged) {
+  ts.postRouterUpdate([this](Router& router) {
+    WebSocketCallbacks stdException;
+    stdException.onClose = [this](CloseCode code, std::string_view reason) {
+      recordClose(code, reason);
+      throw std::runtime_error("onClose failure");
+    };
+    router.setWebSocket("/std-exception", WebSocketEndpoint::WithCallbacks(std::move(stdException)));
+    WebSocketCallbacks otherException;
+    otherException.onClose = [this](CloseCode code, std::string_view reason) {
+      recordClose(code, reason);
+      throw 42;  // NOLINT(bugprone-std-exception-baseclass,hicpp-exception-baseclass)
+    };
+    router.setWebSocket("/other-exception", WebSocketEndpoint::WithCallbacks(std::move(otherException)));
+    router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(messageRecordingCallbacks()));
+  });
+
+  for (const std::string_view path : {std::string_view("/std-exception"), std::string_view("/other-exception")}) {
+    test::ClientConnection conn(ts.port());
+    Upgrade(conn.fd(), path);
+  }
+  ASSERT_TRUE(waitForCloseCalls(2, 2000ms));
+
+  test::ClientConnection conn(ts.port());
+  Upgrade(conn.fd(), "/ws");
+  SendFrame(conn.fd(), BuildClientTextFrame("still serving"));
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (receivedMessages().empty() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(1ms);
+  }
+  const auto messages = receivedMessages();
+  ASSERT_EQ(messages.size(), 1U);
+  EXPECT_EQ(messages[0].first, "still serving");
+}
+
+// An exception of a callback processing the input is logged: the connection fails with InternalError (1011), its end
+// is reported to onClose once it is closed, and the server goes on.
+TEST_F(WebSocketTest, ThrowingCallbackFailsItsConnectionWithInternalError) {
+  ts.postRouterUpdate([this](Router& router) {
+    WebSocketCallbacks callbacks = closeRecordingCallbacks();
+    callbacks.onMessage = [this](std::span<const std::byte> payload, bool isBinary) {
+      recordMessage(payload, isBinary);
+      const std::string text = PayloadToString(payload);
+      if (text == "throw std") {
+        throw std::runtime_error("onMessage failure");
+      }
+      if (text == "throw other") {
+        throw 42;  // NOLINT(bugprone-std-exception-baseclass,hicpp-exception-baseclass)
+      }
+    };
+    router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(std::move(callbacks)));
+  });
+
+  int nbClosed = 0;
+  for (const std::string_view message : {std::string_view("throw std"), std::string_view("throw other")}) {
+    test::ClientConnection conn(ts.port());
+    Upgrade(conn.fd(), "/ws");
+    SendFrame(conn.fd(), BuildClientTextFrame(message));
+    const auto close = ReceiveServerFrame(conn.fd(), 2000ms);
+    ASSERT_TRUE(close.has_value()) << message;
+    const auto val = close.value_or(ServerFrame{});
+    EXPECT_EQ(val.opcode, Opcode::Close) << message;
+    EXPECT_EQ(ParseClosePayload(val.payload).code, CloseCode::InternalError) << message;
+    EXPECT_TRUE(test::WaitForPeerClose(conn.fd(), 2000ms)) << message;
+    ASSERT_TRUE(waitForCloseCalls(++nbClosed, 2000ms)) << message;
+    EXPECT_EQ(closeInfo().code, CloseCode::AbnormalClosure) << message;
+  }
+
+  {
+    test::ClientConnection conn(ts.port());
+    Upgrade(conn.fd(), "/ws");
+    SendFrame(conn.fd(), BuildClientTextFrame("still serving"));
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (receivedMessages().size() < 3 && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(1ms);
+    }
+    const auto messages = receivedMessages();
+    ASSERT_EQ(messages.size(), 3U);
+    EXPECT_EQ(messages[2].first, "still serving");
+  }
+  // The callbacks refer to this fixture: wait for the end of the last connection.
+  EXPECT_TRUE(waitForCloseCalls(nbClosed + 1, 2000ms));
+}
+
+// The connections still open when the server stops get onClose with AbnormalClosure.
+TEST_F(WebSocketTest, ServerStopReportsAbnormalClosure) {
+  test::TestServer server(TimeoutServerConfig(10s));
+  server.postRouterUpdate([this](Router& router) {
+    router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(closeRecordingCallbacks()));
+  });
+
+  test::ClientConnection conn(server.port());
+  Upgrade(conn.fd(), "/ws");
+  server.stop();
+
+  ASSERT_TRUE(waitForCloseCalls(1, 2000ms));
+  EXPECT_EQ(closeInfo().code, CloseCode::AbnormalClosure);
+}
 
 WebSocketEndpoint SilentEndpoint() {
   return WebSocketEndpoint::WithCallbacks(WebSocketCallbacks{
