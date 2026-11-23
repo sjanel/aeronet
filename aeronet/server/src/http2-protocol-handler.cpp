@@ -410,9 +410,8 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
   // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
   // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
   if (reject) {
-    sendInMemoryResponse(req,
-                         req.makeResponse(http::StatusCodeNotAcceptable, "No acceptable content-coding available"));
-    req.end(http::StatusCodeNotAcceptable);
+    req.end(sendInMemoryResponse(
+        req, req.makeResponse(http::StatusCodeNotAcceptable, "No acceptable content-coding available")));
     releaseStreamAfterResponse(it);
     return;
   }
@@ -512,8 +511,7 @@ bool Http2ProtocolHandler::exceedsBodyLimits(const HttpRequestView& request, std
 
 void Http2ProtocolHandler::rejectTooLargeBody(StreamsMap::iterator it) {
   HttpRequestView& req = it->second.request->request;
-  sendInMemoryResponse(req, req.makeResponse(http::StatusCodePayloadTooLarge));
-  onRequestCompleted(req, http::StatusCodePayloadTooLarge);
+  onRequestCompleted(req, sendInMemoryResponse(req, req.makeResponse(http::StatusCodePayloadTooLarge)));
   // A response without body is never deferred: the stream entry is released.
   assert(!it->second.pending);
   releaseStreamAfterResponse(it);
@@ -1034,24 +1032,21 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
 
   // Check path-specific HTTP/2 config
   if (routingResult.pathConfig().http2Enable == PathEntryConfig::Http2Enable::Disable) {
-    sendInMemoryResponse(req, req.makeResponse(http::StatusCodeNotFound));
-    onRequestCompleted(req, http::StatusCodeNotFound);
+    onRequestCompleted(req, sendInMemoryResponse(req, req.makeResponse(http::StatusCodeNotFound)));
     releaseStreamAfterResponse(it);
     return;
   }
 
   // Per-route request head size limit (already clamped against the global one, see Router::clampConfigs())
   if (req.headSpanSize() > routingResult.pathConfig().maxHeaderBytes) {
-    sendInMemoryResponse(req, req.makeResponse(http::StatusCodeRequestHeaderFieldsTooLarge));
-    onRequestCompleted(req, http::StatusCodeRequestHeaderFieldsTooLarge);
+    onRequestCompleted(req, sendInMemoryResponse(req, req.makeResponse(http::StatusCodeRequestHeaderFieldsTooLarge)));
     releaseStreamAfterResponse(it);
     return;
   }
 
   // Per-route body size limit (already clamped against the global one, see Router::clampConfigs())
   if (req._body.size() > routingResult.pathConfig().maxBodyBytes) {
-    sendInMemoryResponse(req, req.makeResponse(http::StatusCodePayloadTooLarge));
-    onRequestCompleted(req, http::StatusCodePayloadTooLarge);
+    onRequestCompleted(req, sendInMemoryResponse(req, req.makeResponse(http::StatusCodePayloadTooLarge)));
     releaseStreamAfterResponse(it);
     return;
   }
@@ -1114,8 +1109,7 @@ void Http2ProtocolHandler::finalizeAndSendResponse(StreamsMap::iterator it, Http
   req.prefinalizeHttpResponse(response, _pCtx->telemetry);
   response.finalizeHeadersAndBody();
 
-  const http::StatusCode status = response.status();
-  const ErrorCode err = sendResponse(req, std::move(response));
+  const auto [err, status] = sendResponse(req, std::move(response), pCorsPolicy);
   onRequestCompleted(req, err == ErrorCode::NoError ? status : http::StatusCodeInternalServerError);
   if (err == ErrorCode::NoError) [[likely]] {
     releaseStreamAfterResponse(it);
@@ -1140,9 +1134,7 @@ void Http2ProtocolHandler::answerHttpsRedirect(StreamsMap::iterator it) {
     // No (or empty) :authority and Host header: an absolute https URL cannot be constructed.
     response = request.makeResponse(http::StatusCodeBadRequest, "Missing Host header for HTTPS redirect");
   }
-  const http::StatusCode status = response.status();
-  sendInMemoryResponse(request, std::move(response));
-  onRequestCompleted(request, status);
+  onRequestCompleted(request, sendInMemoryResponse(request, std::move(response)));
   releaseStreamAfterResponse(it);
 }
 
@@ -1356,7 +1348,8 @@ bool Http2ProtocolHandler::responseExceedsPendingLimits(uint32_t streamId, const
   return !trailers.empty() && (!consumeBudget(trailers.size()) || !consumeBudget(FrameHeader::kSize));
 }
 
-ErrorCode Http2ProtocolHandler::sendResponse(HttpRequestView& request, HttpResponse&& response) {
+Http2ProtocolHandler::SendResult Http2ProtocolHandler::sendResponse(HttpRequestView& request, HttpResponse&& response,
+                                                                    const CorsPolicy* pCorsPolicy) {
   const bool isHeadMethod = request.method() == http::Method::HEAD;
   const uint32_t streamId = request.streamId();
   if (responseExceedsPendingLimits(streamId, response, isHeadMethod)) {
@@ -1368,8 +1361,14 @@ ErrorCode Http2ProtocolHandler::sendResponse(HttpRequestView& request, HttpRespo
     _pCtx->telemetry.counterAdd("aeronet.http2.responses.rejected_outbound_limit");
 
     response = request.makeResponse(http::StatusCodeServiceUnavailable);
+    // The page that sent a CORS request reads the 503 only with the CORS headers of the response it replaces. Without
+    // body, it needs no other finalization.
+    if (pCorsPolicy != nullptr) {
+      (void)pCorsPolicy->applyToResponse(request, response);
+    }
   }
 
+  const http::StatusCode status = response.status();
   FilePayload* pFilePayload = response.filePayloadPtr();
 
   // Finalize Date header
@@ -1409,7 +1408,7 @@ ErrorCode Http2ProtocolHandler::sendResponse(HttpRequestView& request, HttpRespo
       // Pass 1 - try to send as much as possible now
       err = sendPendingFileBody(streamId, pending.filePayload, endStreamOnData, fileReadBudget(1));
       if (err != ErrorCode::NoError) {
-        return err;
+        return {err, status};
       }
 
       if (pending.filePayload.length != 0) {
@@ -1439,7 +1438,7 @@ ErrorCode Http2ProtocolHandler::sendResponse(HttpRequestView& request, HttpRespo
           // hands it over to the output: either way, the trailers stay alive while encoded.
           err = _connection.sendHeaders(streamId, http::StatusCode{}, trailersView, true);
         }
-        return err;
+        return {err, status};
       }
       // A body exceeding the flow-control windows (e.g. any response larger than the peer's
       // SETTINGS_INITIAL_WINDOW_SIZE, 65535 by default) cannot be sent in one go: send what they allow now and keep the
@@ -1452,7 +1451,7 @@ ErrorCode Http2ProtocolHandler::sendResponse(HttpRequestView& request, HttpRespo
       [[maybe_unused]] const bool sent = sendPendingStreamingBody(streamId, pendingSend);
       assert(!sent && "a body exceeding the flow-control windows cannot be sent at once");
       deferSend(_streams[streamId], std::move(pendingSend));
-      return ErrorCode::NoError;  // trailers (if any) ride with the pending send
+      return {ErrorCode::NoError, status};  // trailers (if any) ride with the pending send
     }
   }
 
@@ -1462,12 +1461,13 @@ ErrorCode Http2ProtocolHandler::sendResponse(HttpRequestView& request, HttpRespo
     err = _connection.sendHeaders(streamId, http::StatusCode{}, trailersView, true);
   }
 
-  return err;
+  return {err, status};
 }
 
-void Http2ProtocolHandler::sendInMemoryResponse(HttpRequestView& request, HttpResponse&& response) {
-  [[maybe_unused]] const ErrorCode err = sendResponse(request, std::move(response));
-  assert(err == ErrorCode::NoError && "only reading a file payload can fail");
+http::StatusCode Http2ProtocolHandler::sendInMemoryResponse(HttpRequestView& request, HttpResponse&& response) {
+  const SendResult sent = sendResponse(request, std::move(response), nullptr);
+  assert(sent.err == ErrorCode::NoError && "only reading a file payload can fail");
+  return sent.status;
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
@@ -1690,11 +1690,11 @@ bool Http2ProtocolHandler::onSweep(std::chrono::steady_clock::time_point now, bo
     // the stream before answering, so that nothing the response stores in the stream can destroy them.
     orphanAsyncTask(streamState);
 #endif
-    sendInMemoryResponse(request, std::move(response));
+    const http::StatusCode status = sendInMemoryResponse(request, std::move(response));
     // The 408 has no body: it does not wait for flow-control credit, and it ends the stream (a request body still
     // received is then stopped with a NO_ERROR reset, see closeAnsweredStream()).
     assert(!streamState.hasPendingSend());
-    onRequestCompleted(request, http::StatusCodeRequestTimeout);
+    onRequestCompleted(request, status);
 
     it = closeAnsweredStream(it);
   }

@@ -43,6 +43,7 @@ TEST(Http2Config, DefaultValues) {
   EXPECT_TRUE(config.enablePriority);
   EXPECT_EQ(config.maxPriorityTreeDepth, 256U);
   EXPECT_EQ(config.maxRecycledRequests, 8U);
+  EXPECT_FALSE(config.indexRequestPath);
 }
 
 // ============================
@@ -97,13 +98,15 @@ TEST(Http2Config, BuilderPatternFeatures) {
                            .withEnableH2cUpgrade(false)
                            .withEnablePriority(false)
                            .withMaxPriorityTreeDepth(128)
-                           .withMaxRecycledRequests(32);
+                           .withMaxRecycledRequests(32)
+                           .withIndexRequestPath(true);
 
   EXPECT_FALSE(config.enableH2c);
   EXPECT_FALSE(config.enableH2cUpgrade);
   EXPECT_FALSE(config.enablePriority);
   EXPECT_EQ(config.maxPriorityTreeDepth, 128U);
   EXPECT_EQ(config.maxRecycledRequests, 32U);
+  EXPECT_TRUE(config.indexRequestPath);
 }
 
 TEST(Http2Config, BuilderChaining) {
@@ -205,6 +208,12 @@ TEST(Http2Config, ValidateZeroMaxPriorityTreeDepth) {
 TEST(Http2Config, ValidateZeroMaxStreamPendingBytes) {
   Http2Config config = Http2Config{}.withMaxStreamPendingBytes(0);
   EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+// A connection always serves its first stream: 0 would behave like 1.
+TEST(Http2Config, ValidateZeroMaxStreamsPerConnection) {
+  EXPECT_THROW(Http2Config{}.withMaxStreamsPerConnection(0).validate(), std::invalid_argument);
+  EXPECT_NO_THROW(Http2Config{}.withMaxStreamsPerConnection(1).validate());
 }
 
 // No timer is disabled with 0, which would make it expire at once: they must be positive, and

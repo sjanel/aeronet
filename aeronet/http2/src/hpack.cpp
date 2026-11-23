@@ -1637,9 +1637,9 @@ HpackEncoder::IndexingMode HpackEncoder::IndexingModeOf(std::string_view name, s
   // Credentials are never indexed: a field in the dynamic table is encoded in one byte, so an attacker making a client
   // send guesses of a credential along with it (CRIME) would recognize the right guess by its compressed size. Like
   // nghttp2 and Firefox, long cookie values, hard to guess and sent with each request, are indexed.
-  // The other fields are those nghttp2 does not index (but :path, which the client encodes itself), plus
-  // last-modified: one value per served file, like etag. All these names are in the static table, so they are encoded
-  // as literals with an indexed name. Most names do not have the length of any of them.
+  // The other fields are those nghttp2 does not index (but :path, which the client encodes without indexing itself),
+  // plus last-modified: one value per served file, like etag. All these names are in the static table, so they are
+  // encoded as literals with an indexed name. Most names do not have the length of any of them.
   static constexpr std::size_t kMinIndexedCookieSize = 20;
   switch (name.size()) {
     case http::Age.size():

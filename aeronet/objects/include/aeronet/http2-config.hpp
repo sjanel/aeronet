@@ -133,6 +133,12 @@ struct Http2Config {
     return *this;
   }
 
+  /// See indexRequestPath.
+  Http2Config& withIndexRequestPath(bool on) {
+    indexRequestPath = on;
+    return *this;
+  }
+
   // ============================
   // RFC 9113 SETTINGS parameters
   // ============================
@@ -274,6 +280,7 @@ struct Http2Config {
 
   /// Maximum number of streams that can be created over the lifetime of a connection.
   /// After this limit, the connection will be gracefully closed with GOAWAY.
+  /// Must be at least 1.
   /// Default: 1,000,000 streams.
   uint32_t maxStreamsPerConnection{1000000};
 
@@ -298,6 +305,18 @@ struct Http2Config {
   /// Limits resource usage for malicious deep dependency chains.
   /// Default: 256.
   uint16_t maxPriorityTreeDepth{256U};
+
+  // ============================
+  // HPACK
+  // ============================
+
+  /// Client only: whether the :path of the requests is added to the HPACK dynamic table. A path sent again is then
+  /// encoded in about one byte instead of its literal, but each new path is inserted in the dynamic tables of both
+  /// endpoints, evicting the fields that repeat in each request, and makes the next lookups of the encoder slower.
+  /// Enable it for a client repeating a few paths (polling); leave it off, like nghttp2 and Chromium, for one whose
+  /// paths differ (resource identifiers, queries).
+  /// Default: false.
+  bool indexRequestPath{false};
 };
 
 }  // namespace aeronet

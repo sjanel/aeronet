@@ -516,6 +516,34 @@ TEST(Http2ProtocolHandler, HeaderOnlyResponseOverConnectionLimitReturnsServiceUn
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "503");
 }
 
+// The 503 replacing a response over the pending-output limits is the status that the metrics record, and it keeps the
+// CORS headers of its route, without which the page that sent the request could not read it.
+TEST(Http2ProtocolHandler, ServiceUnavailableAtPendingLimitIsRecordedWithItsCorsHeaders) {
+  Router router;
+  CorsPolicy cors(CorsPolicy::Active::On);
+  cors.allowOrigin("https://allowed.example.com");
+  router
+      .setPath(http::Method::GET, "/large",
+               [](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, std::string(4096, 'x')); })
+      .cors(std::move(cors));
+
+  Http2ProtocolLoopback loop(router, 64UL * 1024UL, 1024U, 512U);
+  http::StatusCode recordedStatus{};
+  loop.ctx.callbacks.metrics = [&recordedStatus](const RequestMetrics& metrics) { recordedStatus = metrics.status; };
+  loop.connect();
+
+  RawChars headers = MakeGetHeaders("/large");
+  headers.append(MakeHttp1HeaderLine("origin", "https://allowed.example.com"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "503");
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), "access-control-allow-origin"), "https://allowed.example.com");
+  EXPECT_EQ(recordedStatus, http::StatusCodeServiceUnavailable);
+}
+
 TEST(Http2ProtocolHandler, StreamingHeadersOverConnectionLimitResetStream) {
   Router router;
   router.setPath(http::Method::GET, "/stream-header-limit",

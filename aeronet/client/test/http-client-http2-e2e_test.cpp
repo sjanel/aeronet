@@ -255,9 +255,11 @@ class ScriptedHttp2Transport final : public TransportBackend<ScriptedHttp2Transp
     addRead(fault);
   }
 
-  // A response holding a hand-encoded field in its head, or else in its trailers, as Http2Connection drops the
-  // connection-specific ones. Literals without indexing leave the HPACK dynamic table of the client untouched.
-  ScriptedHttp2Transport(std::string_view fieldName, std::string_view fieldValue, bool inTrailers)
+  // A response holding a hand-encoded field in its head, or else in its trailers (ending the stream or not), as
+  // Http2Connection drops the connection-specific ones and never sends invalid pseudo-header fields. Literals without
+  // indexing leave the HPACK dynamic table of the client untouched.
+  ScriptedHttp2Transport(std::string_view fieldName, std::string_view fieldValue, bool inTrailers,
+                         bool trailersEndStream = true)
       : _action(Action::RespondWithField) {
     addSettings();
 
@@ -269,7 +271,7 @@ class ScriptedHttp2Transport final : public TransportBackend<ScriptedHttp2Transp
     encoder.encode(inTrailers ? trailers : head, fieldName, fieldValue, kLiteral);
     addHeadersFrame(head, !inTrailers);
     if (inTrailers) {
-      addHeadersFrame(trailers, true);
+      addHeadersFrame(trailers, trailersEndStream);
     }
   }
 
@@ -345,6 +347,7 @@ class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transp
     InvalidStatus2,
     InvalidStatus3,
     InvalidStatus4,
+    InterimEndingTheStream,
     InterimThenOk,
     EmptyData,
     NoContentType,
@@ -444,6 +447,11 @@ class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transp
                   http2::ErrorCode::NoError);
         break;
       }
+      case ResponseMode::InterimEndingTheStream:
+        // No final response can follow (RFC 9113 §8.1).
+        EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCodeEarlyHints, HeadersView{}, true),
+                  http2::ErrorCode::NoError);
+        break;
       case ResponseMode::InterimThenOk:
         EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCodeContinue, HeadersView{}, false),
                   http2::ErrorCode::NoError);
@@ -643,6 +651,7 @@ TEST(HttpClientHttp2TransportTest, MissingAndInvalidStatusAreMalformedResponses)
            LoopbackHttp2Transport::ResponseMode::InvalidStatus2,
            LoopbackHttp2Transport::ResponseMode::InvalidStatus3,
            LoopbackHttp2Transport::ResponseMode::InvalidStatus4,
+           LoopbackHttp2Transport::ResponseMode::InterimEndingTheStream,
        }) {
     LoopbackHttp2Transport transport(config.http2, mode);
     internal::ClientConnection connection(config);
@@ -691,6 +700,46 @@ TEST(HttpClientHttp2TransportTest, ConnectionSpecificFieldsAreMalformedResponses
 
     ASSERT_TRUE(result);
     EXPECT_EQ(result->status(), http::StatusCodeOK);
+  }
+}
+
+// RFC 9113 §8.3.2 and §8.1: the head of a response has no request pseudo-header field, and its trailers have none at
+// all and end the stream. A malformed response still open is reset with PROTOCOL_ERROR.
+TEST(HttpClientHttp2TransportTest, PseudoHeaderFieldsAndOpenTrailersAreMalformedResponses) {
+  HttpClientConfig config;
+  config.withHttpVersion(HttpVersionMode::Http2);
+  HttpClient client(config);
+  HttpRequest req = MakeFinalizedHttp2Request(client);
+
+  RawBytes protocolErrorReset;
+  http2::WriteRstStreamFrame(protocolErrorReset, 1, http2::ErrorCode::ProtocolError);
+  const std::string_view protocolErrorResetView(reinterpret_cast<const char*>(protocolErrorReset.data()),
+                                                protocolErrorReset.size());
+
+  struct Case {
+    http::HeaderView field;
+    bool inTrailers;
+    bool trailersEndStream;
+  };
+  for (const Case& testCase : {
+           Case{{http::PseudoHeaderPath, "/"}, false, true},
+           Case{{http::PseudoHeaderMethod, "GET"}, false, true},
+           Case{{http::PseudoHeaderStatus, "200"}, true, true},
+           Case{{http::PseudoHeaderPath, "/"}, true, true},
+           Case{{"x-checksum", "abc"}, true, false},
+       }) {
+    ScriptedHttp2Transport transport(testCase.field.name, testCase.field.value, testCase.inTrailers,
+                                     testCase.trailersEndStream);
+    internal::ClientConnection connection(config);
+    bool requestSent = false;
+
+    auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+    ASSERT_FALSE(result) << testCase.field.name;
+    EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse) << testCase.field.name;
+    EXPECT_TRUE(connection.keepAlive()) << testCase.field.name;  // the malformed response only concerns its stream
+    EXPECT_EQ(transport.written().ends_with(protocolErrorResetView), !testCase.trailersEndStream)
+        << testCase.field.name;
   }
 }
 
