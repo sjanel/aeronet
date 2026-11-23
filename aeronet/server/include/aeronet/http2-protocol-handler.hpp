@@ -419,11 +419,21 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Emit metrics, account the request in the server statistics and end its trace span.
   void onRequestCompleted(HttpRequestView& request, http::StatusCode status);
 
-  /// Send an HTTP response on a stream.
-  ErrorCode sendResponse(HttpRequestView& request, HttpResponse&& response);
+  /// What sendResponse() sent.
+  struct SendResult {
+    ErrorCode err;
+    http::StatusCode status;
+  };
+
+  /// Send an HTTP response on a stream, or a 503 instead when it exceeds the pending-output limits (see
+  /// responseExceedsPendingLimits()), to which the CORS policy of its route applies if not null.
+  /// @return The status sent, and the error of a file payload whose first read failed.
+  [[nodiscard]] SendResult sendResponse(HttpRequestView& request, HttpResponse&& response,
+                                        const CorsPolicy* pCorsPolicy);
 
   /// Send a response built in memory by the server, which cannot fail (only reading a file payload can).
-  void sendInMemoryResponse(HttpRequestView& request, HttpResponse&& response);
+  /// @return The status sent: the one of the response, or 503 (see sendResponse()).
+  http::StatusCode sendInMemoryResponse(HttpRequestView& request, HttpResponse&& response);
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   /// Start an async handler for a stream. Its response is already sent if it completed synchronously, otherwise it will

@@ -79,7 +79,8 @@ class Http2ClientEngine : private EventSink {
   enum class Failure : uint8_t {
     None,
     TooBig,         // response exceeded HttpClientConfig::maxResponseBytes
-    Malformed,      // invalid :status or content-length, body not matching it, connection-specific field
+    Malformed,      // invalid :status, pseudo-header or content-length, body not matching it, connection-specific
+                    // field, trailers not ending the stream
     StreamReset,    // peer sent RST_STREAM for our stream
     StreamRefused,  // peer sent GOAWAY with lastStreamId below our stream (request not processed)
     Sink,           // delivery to the ResponseBodySink failed (see ResponseStreamer::error())
@@ -318,8 +319,11 @@ class Http2ClientEngine : private EventSink {
     }
     bool finalHead = false;  // this block is the head of the final response (not an interim one, nor trailers)
     if (!_finalHeadersSeen) {
-      if (!decodedHeaders.hasPseudoHeader(PseudoHeader::Status)) {
-        log::error("HTTP/2 client: response HEADERS on stream {} without a :status", streamId);
+      // The head of a response (interim or final) has a :status, its only pseudo-header field (RFC 9113 §8.3.2).
+      if (decodedHeaders.pseudoHeadersMask != DecodedHeaders::PseudoHeaderBit(PseudoHeader::Status)) {
+        log::error("HTTP/2 client: response HEADERS on stream {} {}", streamId,
+                   decodedHeaders.hasPseudoHeader(PseudoHeader::Status) ? "with a request pseudo-header field"
+                                                                        : "without a :status");
         setFailure(Failure::Malformed);
         return;
       }
@@ -341,9 +345,12 @@ class Http2ClientEngine : private EventSink {
         return;
       }
 
-      // 1xx interim block: skip it and await the final response headers
+      // 1xx interim block: skip it and await the final response headers, which cannot follow an interim block ending
+      // the stream (RFC 9113 §8.1)
       if (statusCode < 200) {
-        if (statusCode < 100) {
+        if (statusCode < 100 || endStream) {
+          log::error("HTTP/2 client: invalid interim response {} on stream {}{}", statusValue, streamId,
+                     endStream ? " (it ends the stream)" : "");
           setFailure(Failure::Malformed);
         }
         return;
@@ -354,6 +361,13 @@ class Http2ClientEngine : private EventSink {
       // The content-length of a response that has no content (RFC 9110 §6.4.1) describes another one: it is not
       // checked against the received DATA (RFC 9113 §8.1.1).
       _bodyless = _headRequest || statusCode == http::StatusCodeNoContent || statusCode == http::StatusCodeNotModified;
+    } else if (!endStream || decodedHeaders.hasPseudoHeaders()) {
+      // A HEADERS block after the final head holds the trailers: it ends the stream, without pseudo-header fields
+      // (RFC 9113 §8.1).
+      log::error("HTTP/2 client: response trailers on stream {} {}", streamId,
+                 endStream ? "with a pseudo-header field" : "not ending the stream");
+      setFailure(Failure::Malformed);
+      return;
     }
 
     // Count the received bytes of this header block (pseudo-header fields included)

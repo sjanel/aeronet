@@ -646,12 +646,6 @@ void HttpRequestView::resumeHeadWaitingForBody(std::span<char> inBuffer) noexcep
   resetBodyState();
 }
 
-std::size_t HttpRequestView::pathOffsetInHead() const noexcept {
-  // The request-target starts after the method and a space. The path is decoded in place there, or after the authority
-  // of an absolute-form request-target.
-  return http::MethodToStr(_method).size() + 1U + _authorityLength;
-}
-
 void HttpRequestView::rebaseHeadViews(const char* newBase) noexcept {
   // The previous storage may be freed already: only addresses are computed.
   const std::uintptr_t oldBase = reinterpret_cast<std::uintptr_t>(_pPath) - pathOffsetInHead();

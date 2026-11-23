@@ -1,6 +1,5 @@
 #pragma once
 
-#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -11,7 +10,7 @@ namespace aeronet::tracing::detail {
 // allocation nor OpenTelemetry SDK call. aeronet starts its spans without parent context, each in a new trace with a
 // random id: a random draw per span samples like the trace id ratio sampler of the SDK, which compares the random part
 // of the trace id with the same threshold.
-// Thread-safe: the draws come from an atomic splitmix64 sequence.
+// Not thread-safe: each TelemetryContext, owned by a single server or client, has its own.
 class SpanSampler {
  public:
   SpanSampler(float rate, uint64_t seed) noexcept : _threshold(Threshold(rate)), _state(seed) {}
@@ -21,7 +20,8 @@ class SpanSampler {
     if (_threshold == kSampleAll) {
       return true;
     }
-    return Mix(_state.fetch_add(kGamma, std::memory_order_relaxed) + kGamma) < _threshold;
+    _state += kGamma;
+    return Mix(_state) < _threshold;
   }
 
  private:
@@ -48,7 +48,7 @@ class SpanSampler {
   }
 
   uint64_t _threshold;
-  std::atomic<uint64_t> _state;
+  uint64_t _state;
 };
 
 }  // namespace aeronet::tracing::detail

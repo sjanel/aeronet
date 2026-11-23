@@ -850,7 +850,12 @@ class HttpRequestView {
 
   // Offset in the head of the path, decoded in place at the start of the request-target (after the authority of an
   // absolute-form one): locates the head from the path.
-  [[nodiscard]] std::size_t pathOffsetInHead() const noexcept;
+  [[nodiscard]] std::size_t pathOffsetInHead() const noexcept {
+    // The request-target starts after the method and a space. The path is decoded in place there, or after the
+    // authority
+    // of an absolute-form request-target.
+    return http::MethodToStr(_method).size() + 1U + _authorityLength;
+  }
 
   // Makes the views set by the parsing of the head point into the head at newBase, from where it was parsed.
   void rebaseHeadViews(const char* newBase) noexcept;

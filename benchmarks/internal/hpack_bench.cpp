@@ -18,6 +18,7 @@
 #include "aeronet/hpack.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet::http2 {
 namespace {
@@ -668,6 +669,59 @@ BENCHMARK(BM_HpackEncodeResponsesOverflowingDynamicTable)
     ->Args({1, 36})
     ->ArgsProduct({{10, 50}, {16, 128}})
     ->ArgNames({"fields", "value_size"});
+
+// Successive requests of an API client, each encoded by the client and decoded by the server: the fields that repeat,
+// and a path among the given number of distinct ones (cycled; 0: a new path in each request).
+// Arg path_mode: 0 to index :path (Http2Config::indexRequestPath), 1 to send it without indexing, as
+// Http2Connection::sendRequestHeaders() does by default (like nghttp2 and Chromium). Indexed, a repeated path is sent
+// as one byte, but each new path is inserted in both dynamic tables, evicting the fields that repeat, and a larger
+// table makes all lookups of the encoder slower.
+void BM_HpackRequestsWithVaryingPaths(benchmark::State& state) {
+  static constexpr std::size_t kNbPaths = 1UL << 16;
+  static constexpr std::array<http::HeaderView, 5> kRegularFields{{
+      {"accept", "application/json"},
+      {"accept-encoding", "zstd, br, gzip, deflate"},
+      {"user-agent", "aeronet-client/1.8.0"},
+      {"authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJiZW5jaCJ9.c2lnbmF0dXJl"},
+      {"x-api-version", "2024-10-01"},
+  }};
+  const auto nbDistinctPaths = static_cast<std::size_t>(state.range(0));
+  const auto pathMode =
+      state.range(1) == 0 ? HpackEncoder::IndexingMode::Indexed : HpackEncoder::IndexingMode::WithoutIndexing;
+
+  // Resource identifiers in a random-looking order, as a client would request them.
+  vector<std::string> paths;
+  paths.reserve(kNbPaths);
+  for (std::size_t pathIdx = 0; pathIdx < kNbPaths; ++pathIdx) {
+    const std::size_t id = nbDistinctPaths == 0 ? pathIdx : pathIdx % nbDistinctPaths;
+    paths.emplace_back("/api/v1/orders/" + std::to_string(100000U + ((id * 2654435761ULL) % 900000U)) + "/status");
+  }
+
+  HpackEncoder encoder;
+  auto decoder = CreateHpackDecoder();
+  RawBytes block;
+  std::size_t pathIdx = 0;
+  std::size_t totalBytes = 0;
+  for ([[maybe_unused]] auto iter : state) {
+    block.clear();
+    encoder.encode(block, ":method", "GET");
+    encoder.encode(block, ":scheme", "https");
+    encoder.encode(block, ":authority", "api.example.com");
+    encoder.encode(block, ":path", paths[pathIdx++ % kNbPaths], pathMode);
+    for (const auto& [name, value] : kRegularFields) {
+      encoder.encode(block, name, value, HpackEncoder::IndexingModeOf(name, value));
+    }
+    totalBytes += block.size();
+    auto result = decoder.decode(AsBytes(block));
+    benchmark::DoNotOptimize(result);
+  }
+  state.counters["bytes_per_request"] =
+      benchmark::Counter(static_cast<double>(totalBytes), benchmark::Counter::kAvgIterations);
+  state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_HpackRequestsWithVaryingPaths)
+    ->ArgsProduct({{1, 8, 128, 0}, {0, 1}})
+    ->ArgNames({"distinct_paths", "path_mode"});
 
 // ---------------------------------------------------------------------------
 // String literals: Huffman coding throughput, against raw strings

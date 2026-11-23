@@ -690,7 +690,12 @@ ErrorCode Http2Connection::sendRequestHeaders(uint32_t streamId, http::Method me
     headerListSize += _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderMethod, methodStr);
     headerListSize += _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderScheme, scheme);
     headerListSize += _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderAuthority, authority);
-    headerListSize += _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderPath, target);
+    // Without indexing by default, like nghttp2 and Chromium: an API client sends many distinct paths (resource ids,
+    // queries), each of which would be a dynamic table insertion on both ends, evicting the fields that do repeat.
+    const HpackEncoder::IndexingMode pathMode = _localSettings.indexRequestPath
+                                                    ? HpackEncoder::IndexingMode::Indexed
+                                                    : HpackEncoder::IndexingMode::WithoutIndexing;
+    headerListSize += _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderPath, target, pathMode);
   }
 
   // One field per cookie-pair: each is indexed (or, when short enough to be guessed, never indexed) on its own, so that

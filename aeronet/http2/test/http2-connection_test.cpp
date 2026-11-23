@@ -525,6 +525,43 @@ TEST(Http2Connection, SendRequestHeadersDropsConnectionSpecificFields) {
   EXPECT_EQ(fieldBlocks, 2);
 }
 
+// The client sends :path without indexing by default, like nghttp2: the distinct paths of an API client would otherwise
+// each be a dynamic table insertion, evicting the fields that repeat. Http2Config::indexRequestPath indexes it: a path
+// sent again is then an index. Besides it, only :authority is indexed here (GET and https are in the static table).
+TEST(Http2Connection, SendRequestHeadersIndexesPathOnlyWhenConfigured) {
+  static constexpr std::string_view kPath = "/api/v1/orders/123456";
+  for (const bool indexRequestPath : {false, true}) {
+    Http2Config config;
+    config.withIndexRequestPath(indexRequestPath);
+    Http2Connection server(config, true);
+    Http2Connection client(config, false);
+    RecordingEventSink serverSink(server);
+
+    vector<std::string> paths;
+    serverSink.onHeadersDecodedFn = [&paths](uint32_t, const SvToSvMap& headers, bool) {
+      const auto it = headers.find(http::PseudoHeaderPath);
+      ASSERT_NE(it, headers.end());
+      paths.emplace_back(it->second);
+    };
+
+    client.sendClientPreface();
+    PumpOutput(client, server);
+    PumpOutput(server, client);
+    PumpOutput(client, server);
+
+    for (const uint32_t streamId : {1U, 3U}) {
+      ASSERT_EQ(client.sendRequestHeaders(streamId, http::Method::GET, true, kPath, "example.com", HeadersView{}, true),
+                ErrorCode::NoError);
+      PumpOutput(client, server);
+    }
+
+    EXPECT_EQ(paths, (vector<std::string>{std::string(kPath), std::string(kPath)}));
+    const std::size_t expectedEntries = indexRequestPath ? 2U : 1U;
+    EXPECT_EQ(Http2ConnectionTest::EncoderDynamicTable(client).entryCount(), expectedEntries);
+    EXPECT_EQ(Http2ConnectionTest::DecoderDynamicTable(server).entryCount(), expectedEntries);
+  }
+}
+
 // Not reserved or forbidden in the trailers, these fields may be set for HTTP/1.1. Sent over HTTP/2, they would make
 // the response malformed (RFC 9113 §8.2.2).
 TEST(Http2Connection, SendHeadersDropsConnectionSpecificFields) {

@@ -56,6 +56,11 @@ void Http2Config::validate() const {
     throw std::invalid_argument("Http2Config: maxStreamPendingBytes must be greater than 0");
   }
 
+  // A connection always serves its first stream: 0 would behave like 1.
+  if (maxStreamsPerConnection == 0) {
+    throw std::invalid_argument("Http2Config: maxStreamsPerConnection must be greater than 0");
+  }
+
   CheckPositive(settingsTimeout, "Http2Config: settingsTimeout must be positive");
   CheckPositive(pingInterval, "Http2Config: pingInterval must be positive");
   CheckPositive(pingTimeout, "Http2Config: pingTimeout must be positive");

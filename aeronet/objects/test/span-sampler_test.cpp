@@ -4,7 +4,6 @@
 
 #include <cstdint>
 #include <limits>
-#include <thread>
 
 namespace aeronet::tracing::detail {
 
@@ -39,15 +38,6 @@ TEST(SpanSampler, RateIsTheProportionOfSampledSpans) {
       EXPECT_NEAR(proportion, static_cast<double>(rate), 0.01) << rate << ' ' << seed;
     }
   }
-}
-
-TEST(SpanSampler, ThreadsShareTheSequence) {
-  SpanSampler sampler(0.5F, 1);
-  int nbSampled[2]{};
-  std::thread other([&sampler, &nbSampled] { nbSampled[0] = CountSampled(sampler, 50000); });
-  nbSampled[1] = CountSampled(sampler, 50000);
-  other.join();
-  EXPECT_NEAR(static_cast<double>(nbSampled[0] + nbSampled[1]) / 100000.0, 0.5, 0.01);
 }
 
 }  // namespace aeronet::tracing::detail
