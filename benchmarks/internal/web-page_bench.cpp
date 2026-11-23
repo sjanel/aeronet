@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/address-space.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/web-client-config.hpp"
@@ -48,7 +49,8 @@ BENCHMARK(BM_JsEngine);
 void BM_FirstPageOfASession(benchmark::State& state) {
   for (auto _ : state) {
     internal::WebSession session{WebClientConfig{}};
-    internal::Page page(session, "https://example.com/", http::StatusCodeOK, kSmallPage, "text/html");
+    internal::Page page(session, "https://example.com/", http::StatusCodeOK, kSmallPage, "text/html",
+                        AddressSpace::Public);
     benchmark::DoNotOptimize(page.context());
   }
 }
@@ -57,7 +59,8 @@ BENCHMARK(BM_FirstPageOfASession);
 void BM_PageSetup(benchmark::State& state) {
   internal::WebSession session{WebClientConfig{}};
   for (auto _ : state) {
-    internal::Page page(session, "https://example.com/", http::StatusCodeOK, kSmallPage, "text/html");
+    internal::Page page(session, "https://example.com/", http::StatusCodeOK, kSmallPage, "text/html",
+                        AddressSpace::Public);
     benchmark::DoNotOptimize(page.context());
   }
 }
@@ -68,7 +71,8 @@ BENCHMARK(BM_PageSetup);
 void BM_PageSetupWithNetworkApi(benchmark::State& state) {
   internal::WebSession session{WebClientConfig{}};
   for (auto _ : state) {
-    internal::Page page(session, "https://example.com/", http::StatusCodeOK, kSmallPage, "text/html");
+    internal::Page page(session, "https://example.com/", http::StatusCodeOK, kSmallPage, "text/html",
+                        AddressSpace::Public);
     auto result = page.evaluate("typeof fetch", std::chrono::seconds{10});
     benchmark::DoNotOptimize(result);
   }
@@ -79,7 +83,8 @@ BENCHMARK(BM_PageSetupWithNetworkApi);
 void RunPageSetupWith(benchmark::State& state, std::string_view script) {
   internal::WebSession session{WebClientConfig{}};
   for (auto _ : state) {
-    internal::Page page(session, "https://example.com/", http::StatusCodeOK, kSmallPage, "text/html");
+    internal::Page page(session, "https://example.com/", http::StatusCodeOK, kSmallPage, "text/html",
+                        AddressSpace::Public);
     auto result = page.evaluate(script, std::chrono::seconds{10});
     benchmark::DoNotOptimize(result);
   }
@@ -106,7 +111,8 @@ constexpr int kLoopIterations = 100000;
 // a detached link with a relative href, 'text' the text node of the price), after 'setup' (run once by each script).
 void RunLoop(benchmark::State& state, std::string_view statement, std::string_view setup = {}) {
   internal::WebSession session{WebClientConfig{}};
-  internal::Page page(session, "https://example.com/", http::StatusCodeOK, kSmallPage, "text/html");
+  internal::Page page(session, "https://example.com/", http::StatusCodeOK, kSmallPage, "text/html",
+                      AddressSpace::Public);
   const std::string script =
       "{ let n = 0; const body = document.body; const a = document.createElement('a'); a.href = '/path/to?q=1'; "
       "const text = document.querySelector('.price').firstChild; " +
@@ -183,7 +189,8 @@ BENCHMARK(BM_MissingHtmlInterfaceName);
 // The cost of WebPage::evaluate() around a script that does nothing.
 void BM_EvaluateOverhead(benchmark::State& state) {
   internal::WebSession session{WebClientConfig{}};
-  internal::Page page(session, "https://example.com/", http::StatusCodeOK, kSmallPage, "text/html");
+  internal::Page page(session, "https://example.com/", http::StatusCodeOK, kSmallPage, "text/html",
+                      AddressSpace::Public);
   for (auto _ : state) {
     auto result = page.evaluate("0", std::chrono::seconds{10});
     benchmark::DoNotOptimize(result);
@@ -200,7 +207,7 @@ void RunPage(benchmark::State& state, std::string_view statement) {
   const std::string html = std::string(kSmallPage) + "<script>for (let i = 0; i < " + std::to_string(kPageLoopItems) +
                            "; ++i) { " + std::string(statement) + "; }</script>";
   for (auto _ : state) {
-    internal::Page page(session, "https://example.com/", http::StatusCodeOK, html, "text/html");
+    internal::Page page(session, "https://example.com/", http::StatusCodeOK, html, "text/html", AddressSpace::Public);
     internal::Page::Outcome outcome = page.run(nullptr, LoadState::NetworkIdle, SteadyClock::time_point::max());
     benchmark::DoNotOptimize(outcome);
   }
@@ -240,7 +247,7 @@ void RunLargeScript(benchmark::State& state, std::size_t maxScriptCacheBytes) {
   }
   html.append("window.done = typeof f1999;</script>");
   for (auto _ : state) {
-    internal::Page page(session, "https://example.com/", http::StatusCodeOK, html, "text/html");
+    internal::Page page(session, "https://example.com/", http::StatusCodeOK, html, "text/html", AddressSpace::Public);
     internal::Page::Outcome outcome = page.run(nullptr, LoadState::Load, SteadyClock::time_point::max());
     benchmark::DoNotOptimize(outcome);
   }

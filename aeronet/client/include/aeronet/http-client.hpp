@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/address-space.hpp"
 #include "aeronet/amc-type-traits.hpp"
 #include "aeronet/city-hash.hpp"
 #include "aeronet/client-connection.hpp"
@@ -64,8 +65,8 @@ enum class RequestCredentials : uint8_t {
 };
 
 // The context of a request that HttpClient::requestUpdating() makes for a web page (aeronet/web): the cookie rules of a
-// browser (RFC 6265bis §5.2 and §5.7, credentials of the Fetch Standard), the fragment of its final URL, and the rules
-// of its redirects.
+// browser (RFC 6265bis §5.2 and §5.7, credentials of the Fetch Standard), the address spaces it may reach (Local
+// Network Access), the fragment of its final URL, and the rules of its redirects.
 struct PageRequestContext {
   // Called before a redirect is followed, with 'pData' (pRedirectData), 'req' already pointing to the URL of its
   // Location with the method and body that the redirect gives it (the headers can be changed), the redirect response
@@ -87,12 +88,30 @@ struct PageRequestContext {
   // the fragment of the final URL (RFC 9110 §10.2.2), and is left unchanged when none had one.
   RawChars32* pFragment{};
 
+  // When not null, receives the address space of the server of the final response (see addressSpace).
+  AddressSpace* pAddressSpace{};
+
   // When not null, decides whether each redirect is followed (see RedirectHook), within HttpClientConfig::maxRedirects
   // for each call. Null follows them all.
   RedirectHook onRedirect{};
   void* pRedirectData{};
 
   RequestCredentials credentials{RequestCredentials::Include};
+
+  // The address space of what makes the request: the document of a subresource or of a navigation started by a page,
+  // Loopback, the most private one, for a navigation of the application. The request only connects to the addresses of
+  // this address space or of a more public one, and each redirect only to those of the address space of the server
+  // that sent it or of a more public one: neither a page nor a server can make the client reach a server less public
+  // than itself (as the Local Network Access of browsers prevents for the pages). A server none of whose addresses is
+  // public enough is not connected to: the request fails with HttpClientErrc::addressBlocked. Through a forward proxy,
+  // which resolves the names itself, only an IP address or localhost in the URL tells the address space of a server:
+  // the other names are taken as public.
+  AddressSpace addressSpace{AddressSpace::Loopback};
+
+  // Whether a redirect may lead to a server less public than the one that sent it, as browsers allow: the redirects are
+  // then only checked against addressSpace, so that a chain through a public server back to the local network (a single
+  // sign-on of an intranet) is followed, but also a public server redirecting a navigation of the application there.
+  bool allowLessPublicRedirects{};
 
   // For a chain of redirects continued after onRedirect stopped it: whether the redirects followed before went through
   // another site (for the SameSite cookies) or another origin (for RequestCredentials::SameOrigin).
@@ -418,6 +437,9 @@ class HttpClient {
     Connection cnx;
     ClientProtocol protocol{ClientProtocol::Http1_1};  // negotiated via ALPN (https) or assumed (http)
     bool reused{false};                                // taken from the idle pool
+    // Of the server (see PageRequestContext::addressSpace): of its address, or of the host of the first request
+    // through a forward proxy.
+    AddressSpace addressSpace{AddressSpace::Loopback};
   };
 
   // Run a request, with its final response delivered to `sink` when not null (the cache is then bypassed). `pPage` is
@@ -434,8 +456,11 @@ class HttpClient {
   // Perform a single (non-redirect) exchange against an absolute URL, returning the HttpResponse or an
   // HttpClientErrc on transport failure. Redirect rewrites are already applied to `req` by requestUncached.
   // `redirectFollowed` tells whether a redirect response would be followed (so is never given to a sink).
-  // `siteContext` tells which cookies of the jar the exchange sends and stores.
-  HttpClientResult performExchange(HttpRequest& req, bool redirectFollowed, internal::CookieSiteContext siteContext);
+  // `siteContext` tells which cookies of the jar the exchange sends and stores. The exchange only connects to servers
+  // of `minAddressSpace` or of a more public one (see PageRequestContext::addressSpace), and sets `serverAddressSpace`
+  // to that of the server of its connection.
+  HttpClientResult performExchange(HttpRequest& req, bool redirectFollowed, internal::CookieSiteContext siteContext,
+                                   AddressSpace minAddressSpace, AddressSpace& serverAddressSpace);
 
   // --- Built-in response cache (see HttpClientConfig::cache) ---
   // Whether `req` is eligible for caching (cache enabled and its method is in cache.methods).
@@ -460,12 +485,16 @@ class HttpClient {
   // Erase every cache entry at least refreshPeriod old.
   void pruneExpiredCache(SteadyClock::time_point now, EjectType ejectType);
 
-  // Acquire a connection for the origin: reuse an idle pooled one or establish a fresh one.
-  std::expected<ActiveConnection, HttpClientErrc> acquireConnection(const HttpRequest& req);
+  // Acquire a connection for the origin to a server of `minAddressSpace` or of a more public one: reuse an idle pooled
+  // one or establish a fresh one.
+  std::expected<ActiveConnection, HttpClientErrc> acquireConnection(const HttpRequest& req,
+                                                                    AddressSpace minAddressSpace);
 
-  // Establish a fresh connection for `req`. An `upgrade` connection offers only HTTP/1.1 over TLS, and reaches a
-  // cleartext origin through a forward proxy with a CONNECT tunnel too.
-  std::expected<ActiveConnection, HttpClientErrc> connectNew(const HttpRequest& req, bool upgrade = false);
+  // Establish a fresh connection for `req` to an address of `minAddressSpace` or of a more public one (see
+  // PageRequestContext::addressSpace). An `upgrade` connection offers only HTTP/1.1 over TLS, and reaches a cleartext
+  // origin through a forward proxy with a CONNECT tunnel too.
+  std::expected<ActiveConnection, HttpClientErrc> connectNew(const HttpRequest& req, AddressSpace minAddressSpace,
+                                                             bool upgrade = false);
 
   // Whether a forward proxy is configured (see HttpClientConfig::withProxy). When true, connectNew connects
   // to the proxy and, for an https origin, opens a CONNECT tunnel before the TLS handshake.

@@ -629,7 +629,8 @@ reference):
 
 Security: `navigate()` runs remote code in the host process, and QuickJS-ng had memory-safety CVEs in 2025-2026
 (typed arrays, `Atomics`, iterator helpers). Never link `quickjs-libc` (no file or OS access); set memory and stack
-limits and a CPU budget; add a network policy (allowed origins, request and byte caps); leave out
+limits and a CPU budget; add a network policy (request and byte caps; the address spaces of Local Network Access are
+[delivered](modules/web.md#local-network-access), a list of allowed origins is not); leave out
 `SharedArrayBuffer` and `Atomics`; pin the engine version, fuzz the bindings and run the JS tests in the ASAN CI
 legs. Document that untrusted sites belong in an unprivileged process; an out-of-process sandbox (seccomp,
 landlock) can come later.

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "aeronet/address-space.hpp"
 #include "aeronet/http-client-config.hpp"
 
 namespace aeronet {
@@ -53,6 +54,21 @@ struct WebClientConfig {
   // WebClient::navigate() call, beyond which it fails with WebErrc::tooManyNavigations. HTTP redirects are not
   // counted: HttpClientConfig::maxRedirects limits them.
   uint32_t maxNavigations{20};
+
+  // The address space of the application (see AddressSpace): the URL given to navigate() is requested only from the
+  // addresses of this address space or of a more public one, or navigate() fails with WebErrc::addressBlocked.
+  // Loopback, the default, reaches every server; Public keeps navigate() on the Internet, for URLs given by untrusted
+  // users. Whatever its value, neither a page nor a server can make the client reach a server less public than itself:
+  // the requests of the scripts, the external scripts and the navigations of a page reach only the servers of its
+  // address space or of a more public one, and each redirect only those of the address space of the server that sent
+  // it or of a more public one (see PageRequestContext::addressSpace).
+  AddressSpace addressSpace{AddressSpace::Loopback};
+
+  // Whether a redirect may lead to a server less public than the one that sent it, as browsers allow (see
+  // PageRequestContext::allowLessPublicRedirects): for a single sign-on of an intranet through a public identity
+  // provider. The redirects are still checked against the page, and against addressSpace for the URL given to
+  // navigate(), whose redirects can then reach every server by default.
+  bool allowLessPublicRedirects{false};
 };
 
 }  // namespace aeronet

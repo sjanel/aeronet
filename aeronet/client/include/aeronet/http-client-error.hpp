@@ -28,6 +28,8 @@ enum class HttpClientErrc : uint8_t {
   ioError,              // event-loop registration or other internal I/O failure
   responseTooLarge,     // response exceeded maxResponseBytes, or its decoding exceeded the decompression limits
   aborted,              // the ResponseBodySink of the request stopped the transfer
+  addressBlocked,       // every address of the server is less public than the request may reach (see
+                        // PageRequestContext::addressSpace): none was connected to
 };
 
 // Stable, human-readable description of an error code (static storage, no allocation). Intended for logs
@@ -58,6 +60,8 @@ enum class HttpClientErrc : uint8_t {
       return "response too large";
     case HttpClientErrc::aborted:
       return "transfer aborted by the response body sink";
+    case HttpClientErrc::addressBlocked:
+      return "server address less public than the request may reach";
     default:
       return "unknown error";
   }

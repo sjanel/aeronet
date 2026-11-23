@@ -23,6 +23,7 @@
 #include <unordered_set>
 #include <utility>
 
+#include "aeronet/address-space.hpp"
 #include "aeronet/base-fd.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -77,6 +78,16 @@ struct TestAddrEntry {
   entry.protocol = IPPROTO_TCP;
   return entry;
 }
+
+// A candidate of the IPv4 address 'addr' (host order), such as 203.0.113.7 (0xCB007107), a public address.
+[[nodiscard]] TestAddrEntry MakeIpv4Entry(uint32_t addr, uint16_t port) {
+  TestAddrEntry entry = MakeLoopbackEntry(port);
+  reinterpret_cast<sockaddr_in*>(&entry.storage)->sin_addr.s_addr = htonl(addr);
+  return entry;
+}
+
+constexpr uint32_t kPublicAddress = 0xCB007107U;  // 203.0.113.7
+constexpr uint32_t kLocalAddress = 0x0A000007U;   // 10.0.0.7
 
 // IPv6 loopback (::1) candidate, mirroring how getaddrinfo("localhost") often yields ::1 before 127.0.0.1.
 [[nodiscard]] TestAddrEntry MakeLoopback6Entry(uint16_t port) {
@@ -549,6 +560,72 @@ TEST(TcpConnectorTest, ConnectSucceedsImmediately) {
   EXPECT_FALSE(result.connectPending);
   ASSERT_TRUE(result.cnx);
   result.cnx.close();
+}
+
+TEST(TcpConnectorTest, ConnectReportsTheAddressSpaceOfTheAddress) {
+  HookGuard guard;
+  AddrinfoOverrideGuard override({MakeLoopbackEntry(15002)});
+  SetConnectActionSequence({ConnectSuccess()});
+  auto buffer = MakeHostPortBuffer("127.0.0.1", 15002);
+  ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC);
+  EXPECT_FALSE(result.failure);
+  EXPECT_FALSE(result.blocked);
+  EXPECT_EQ(result.addressSpace, AddressSpace::Loopback);
+  ASSERT_TRUE(result.cnx);
+  result.cnx.close();
+}
+
+// The addresses less public than the minimum address space are skipped: the next one is connected to.
+TEST(TcpConnectorTest, AddressesLessPublicThanTheMinimumAreSkipped) {
+  HookGuard guard;
+  AddrinfoOverrideGuard override(
+      {MakeLoopbackEntry(15003), MakeIpv4Entry(kLocalAddress, 15003), MakeIpv4Entry(kPublicAddress, 15003)});
+  SetConnectActionSequence({ConnectSuccess()});  // only one connect() expected
+  auto buffer = MakeHostPortBuffer("example.com", 15003);
+  ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC, 0, AddressSpace::Public);
+  EXPECT_FALSE(result.failure);
+  EXPECT_FALSE(result.blocked);
+  EXPECT_EQ(result.addressSpace, AddressSpace::Public);
+  ASSERT_TRUE(result.cnx);
+  result.cnx.close();
+}
+
+TEST(TcpConnectorTest, AddressesOfTheMinimumAddressSpaceAreConnectedTo) {
+  HookGuard guard;
+  AddrinfoOverrideGuard override({MakeLoopbackEntry(15004), MakeIpv4Entry(kLocalAddress, 15004)});
+  SetConnectActionSequence({ConnectSuccess()});
+  auto buffer = MakeHostPortBuffer("intranet", 15004);
+  ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC, 0, AddressSpace::Local);
+  EXPECT_FALSE(result.failure);
+  EXPECT_EQ(result.addressSpace, AddressSpace::Local);
+  ASSERT_TRUE(result.cnx);
+  result.cnx.close();
+}
+
+// No address public enough: none is connected to, no socket is even created.
+TEST(TcpConnectorTest, NoAddressPublicEnoughIsBlocked) {
+  HookGuard guard;
+  AddrinfoOverrideGuard override(
+      {MakeLoopback6Entry(15005), MakeLoopbackEntry(15005), MakeIpv4Entry(kLocalAddress, 15005)});
+  auto buffer = MakeHostPortBuffer("rebound.example.com", 15005);
+  ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC, 1000, AddressSpace::Public);
+  EXPECT_TRUE(result.failure);
+  EXPECT_TRUE(result.blocked);
+  EXPECT_FALSE(result.connectPending);
+  EXPECT_FALSE(result.cnx);
+  EXPECT_EQ(gHookState.lastOwnedFd, -1);
+}
+
+// A refused connection to an address public enough is a failure, not a blocked request.
+TEST(TcpConnectorTest, FailureAfterSkippedAddressesIsNotBlocked) {
+  HookGuard guard;
+  AddrinfoOverrideGuard override({MakeLoopbackEntry(15006), MakeIpv4Entry(kPublicAddress, 15006)});
+  SetConnectActionSequence({ConnectErr(ECONNREFUSED)});
+  auto buffer = MakeHostPortBuffer("example.com", 15006);
+  ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC, 0, AddressSpace::Public);
+  EXPECT_TRUE(result.failure);
+  EXPECT_FALSE(result.blocked);
+  EXPECT_FALSE(result.cnx);
 }
 
 TEST(TcpConnectorTest, ConnectReportsPendingWhenInProgress) {

@@ -139,15 +139,15 @@ Http1ResponseParser::Status Http1ResponseParser::installBody(HttpResponse& resp,
   // and client pin that high-water allocation. The common stable-size path keeps the same allocation count and retained
   // capacity as before, but removes the large final memcpy.
   RawChars* pOwner = nullptr;
-  if (decoded.data() != body.data()) {  // decoded into a scratch buffer (an identity coding returns the body itself)
-    pOwner = WholeBufferOwner(decoded, *_decode.pOut);
-    if (pOwner == nullptr) {
-      pOwner = WholeBufferOwner(decoded, _bodyBuf);
-    }
+  if (decoded.data() != body.data()) {
+    // Decoded (an identity coding returns the body itself): DecompressFullBody leaves the whole result in pOut.
+    pOwner = _decode.pOut;
+    assert(WholeBufferOwner(decoded, *pOwner) == pOwner);
   } else if (_framing == Framing::Chunked) {
     pOwner = &_bodyBuf;
-  } else if (_receiveBuf != nullptr && buffer.data() == _receiveBuf->data() && buffer.size() == _receiveBuf->size() &&
-             _pos == buffer.size()) {
+  } else if (_receiveBuf != nullptr && _pos == buffer.size()) {
+    // parse(RawChars&) parses its whole receive buffer: the body is a suffix of it when no bytes follow the response.
+    assert(buffer.data() == _receiveBuf->data() && buffer.size() == _receiveBuf->size());
     pOwner = _receiveBuf;
   }
   const std::string_view contentType =

@@ -50,7 +50,7 @@ AeronetAddUnitTest(
 
 # Their targets are configured below: only with the tests.
 if(AERONET_ENABLE_HTTP_SERVER AND AERONET_BUILD_TESTS)
-    foreach(_web_test IN ITEMS web-app_test web-client_test web-dom_test web-network_test web-runtime_test)
+    foreach(_web_test IN ITEMS web-address-space_test web-app_test web-client_test web-dom_test web-network_test web-runtime_test)
         AeronetAddUnitTest(
             ${_web_test}
             test/${_web_test}.cpp

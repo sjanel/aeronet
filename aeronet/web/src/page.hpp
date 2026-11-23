@@ -12,6 +12,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/address-space.hpp"
 #include "aeronet/css-selector.hpp"
 #include "aeronet/html-document.hpp"
 #include "aeronet/html-element.hpp"
@@ -95,11 +96,11 @@ class Page {
     bool navigate;
   };
 
-  // The document of 'url' (http or https, serialized by the URL parser) served with 'status' and the body 'html',
-  // parsed with scripting enabled, and the runtime of its scripts, with the Web APIs installed. Throws std::bad_alloc
-  // on memory exhaustion.
+  // The document of 'url' (http or https, serialized by the URL parser) served with 'status' and the body 'html' by a
+  // server of 'addressSpace', parsed with scripting enabled, and the runtime of its scripts, with the Web APIs
+  // installed. Throws std::bad_alloc on memory exhaustion.
   Page(WebSession& session, std::string_view url, http::StatusCode status, std::string_view html,
-       std::string_view contentType);
+       std::string_view contentType, AddressSpace addressSpace);
 
   Page(const Page&) = delete;
   Page& operator=(const Page&) = delete;
@@ -138,6 +139,10 @@ class Page {
 
   // The origin of the URL of the page ("https://example.com:8443"), the key of its storage.
   [[nodiscard]] std::string_view origin() const noexcept { return _url.origin(); }
+
+  // The address space of the server of the document: its requests and navigations reach only the servers of this
+  // address space or of a more public one (see PageRequestContext::addressSpace).
+  [[nodiscard]] AddressSpace addressSpace() const noexcept { return _addressSpace; }
 
   [[nodiscard]] std::string_view baseUrl() const noexcept {
     return _baseUrl.empty() ? url() : std::string_view(_baseUrl);
@@ -382,6 +387,7 @@ class Page {
   http::StatusCode _status;
   StopReason _stopReason{StopReason::StateReached};
   ReadyState _readyState{ReadyState::Loading};
+  AddressSpace _addressSpace;
 
   // Last: destroyed first, with every JavaScript value, before the document whose nodes the wrappers point to.
   JsEngine _engine;

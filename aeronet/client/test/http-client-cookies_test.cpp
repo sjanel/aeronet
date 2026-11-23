@@ -13,6 +13,8 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/client-connection.hpp"
+#include "aeronet/client-protocol.hpp"
 #include "aeronet/cookie-jar.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
@@ -434,7 +436,9 @@ TEST_P(HttpClientCookiesTest, StreamedResponsesSetCookies) {
   const HttpClientResult result = client.get(StoreUrl("/login"), sink);
   ASSERT_TRUE(result) << ErrcToStr(result.error());
   EXPECT_EQ(sink.body, "logged in");
-  EXPECT_EQ(client.cookieJar().size(), 2U);
+
+  const HttpClient& constClient = client;
+  EXPECT_EQ(constClient.cookieJar().size(), 2U);
 }
 
 TEST_P(HttpClientCookiesTest, CookiesOfTheJarApi) {

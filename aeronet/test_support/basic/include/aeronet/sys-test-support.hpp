@@ -1,8 +1,10 @@
 #pragma once
 
 #ifdef AERONET_POSIX
+#include <arpa/inet.h>
 #include <dlfcn.h>
 #include <netdb.h>  // IWYU pragma: keep (struct addrinfo)
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/uio.h>  // IWYU pragma: keep (struct iovec)
@@ -1016,6 +1018,63 @@ inline ConnectFn ResolveRealConnect() {
   static const ConnectFn fn = ResolveNext<ConnectFn>("connect");
   return fn;
 }
+
+// The redirections of the connect() override: to an IPv4 address 'from', to 'to' instead, with the same port (both in
+// network order). Guarded by g_connect_redirections_mutex.
+struct ConnectRedirection {
+  in_addr_t from;
+  in_addr_t to;
+};
+
+inline std::mutex g_connect_redirections_mutex;
+inline vector<ConnectRedirection> g_connect_redirections;
+
+// Whether 'addr' is redirected (see ConnectRedirectionGuard): then 'redirected' is its new address.
+inline bool RedirectedConnectAddress(const sockaddr_in& addr, sockaddr_in& redirected) {
+  const std::scoped_lock lock(g_connect_redirections_mutex);
+  for (const ConnectRedirection& redirection : g_connect_redirections) {
+    if (redirection.from == addr.sin_addr.s_addr) {
+      redirected = addr;
+      redirected.sin_addr.s_addr = redirection.to;
+      return true;
+    }
+  }
+  return false;
+}
+
+// While it lives, the connect() override (AERONET_WANT_SOCKET_OVERRIDES) connects to the IPv4 address 'to' instead of
+// 'from', with the same port: the tests reach their loopback servers through addresses of other address spaces (see
+// AddressSpace), such as 203.0.113.7 (public, never routed: documentation).
+class ConnectRedirectionGuard {
+ public:
+  explicit ConnectRedirectionGuard(std::string_view from, std::string_view to = "127.0.0.1") {
+    ConnectRedirection redirection{};
+    if (::inet_pton(AF_INET, std::string(from).c_str(), &redirection.from) != 1 ||
+        ::inet_pton(AF_INET, std::string(to).c_str(), &redirection.to) != 1) {
+      throw std::invalid_argument("ConnectRedirectionGuard: invalid IPv4 address");
+    }
+    _from = redirection.from;
+    const std::scoped_lock lock(g_connect_redirections_mutex);
+    g_connect_redirections.push_back(redirection);
+  }
+
+  ConnectRedirectionGuard(const ConnectRedirectionGuard&) = delete;
+  ConnectRedirectionGuard(ConnectRedirectionGuard&&) = delete;
+  ConnectRedirectionGuard& operator=(const ConnectRedirectionGuard&) = delete;
+  ConnectRedirectionGuard& operator=(ConnectRedirectionGuard&&) = delete;
+
+  ~ConnectRedirectionGuard() {
+    const std::scoped_lock lock(g_connect_redirections_mutex);
+    const auto it = std::ranges::find_if(g_connect_redirections,
+                                         [this](const ConnectRedirection& entry) { return entry.from == _from; });
+    if (it != g_connect_redirections.end()) {
+      g_connect_redirections.erase(it);
+    }
+  }
+
+ private:
+  in_addr_t _from{};
+};
 #endif  // AERONET_POSIX
 
 inline void ResetIoActions() {
@@ -1503,6 +1562,12 @@ extern "C" __attribute__((no_sanitize("address"))) int connect(int sockfd, const
     return -1;
   }
   auto real = aeronet::test::ResolveRealConnect();
+  if (addr != nullptr && addr->sa_family == AF_INET) {
+    sockaddr_in redirected{};
+    if (aeronet::test::RedirectedConnectAddress(*reinterpret_cast<const sockaddr_in*>(addr), redirected)) {
+      return real(sockfd, reinterpret_cast<const sockaddr*>(&redirected), sizeof(redirected));
+    }
+  }
   return real(sockfd, addr, addrlen);
 }
 

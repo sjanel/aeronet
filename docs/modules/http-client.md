@@ -42,6 +42,7 @@ Every request returns an `HttpClientResult`, a `std::expected<HttpResponse, Http
 | `aborted` | Transfer stopped by the [`ResponseBodySink`](#streaming-response-bodies) of the request. |
 | `protocolUnsupported` | The server selected a protocol this build cannot speak, such as `h2` without HTTP/2 support. |
 | `proxyError` | The forward proxy refused or failed to open the tunnel. |
+| `addressBlocked` | Request made for a web page (`PageRequestContext::addressSpace`) to a server less public than it may reach: no address of the server was connected to (see [Local network access](web.md#local-network-access)). |
 
 `ErrcToStr()` returns a description for logs. Exceptions are reserved for setup errors: an invalid configuration, or a TLS setup failure (an unreadable CA file or client certificate) throws `HttpClientException` when the client is built or at its first HTTPS request, and `makeRequest()` throws `std::invalid_argument` for a malformed URL. An `https` URL in a build without OpenSSL throws `std::logic_error`.
 

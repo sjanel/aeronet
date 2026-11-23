@@ -11,6 +11,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/address-space.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/css-selector.hpp"
 #include "aeronet/html-document.hpp"
@@ -38,9 +39,10 @@ namespace {
 // The Accept header of the navigation requests of browsers.
 constexpr std::string_view kDocumentAccept = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
 
+// Loads the document of 'url', requested by something of 'addressSpace' (see PageRequestContext::addressSpace).
 std::expected<std::unique_ptr<internal::Page>, WebErrc> LoadPage(internal::WebSession& session,
-                                                                 internal::UrlResolver& resolver,
-                                                                 std::string_view url) {
+                                                                 internal::UrlResolver& resolver, std::string_view url,
+                                                                 AddressSpace addressSpace) {
   // A valid http URL that the HTTP client cannot request: with user info, port 0, a too long target...
   if (!HttpRequest::IsValidUrl(url)) {
     log::warn("Document {} not requested: the HTTP client does not support its URL", url);
@@ -53,13 +55,22 @@ std::expected<std::unique_ptr<internal::Page>, WebErrc> LoadPage(internal::WebSe
   // it.
   const std::size_t hash = url.find('#');
   RawChars32 fragment(hash == std::string_view::npos ? std::string_view{} : url.substr(hash));
-  const HttpClientResult result = session.http.requestUpdating(request, {.pFragment = &fragment});
+  AddressSpace serverAddressSpace = addressSpace;
+  const PageRequestContext context{
+      .pFragment = &fragment,
+      .pAddressSpace = &serverAddressSpace,
+      .addressSpace = addressSpace,
+      .allowLessPublicRedirects = session.config.allowLessPublicRedirects,
+  };
+  const HttpClientResult result = session.http.requestUpdating(request, context);
   if (!result) {
     log::warn("Request of the document {} failed: {}", url, ErrcToStr(result.error()));
-    return std::unexpected(WebErrc::requestFailed);
+    return std::unexpected(result.error() == HttpClientErrc::addressBlocked ? WebErrc::addressBlocked
+                                                                            : WebErrc::requestFailed);
   }
   return std::make_unique<internal::Page>(session, internal::RequestUrl(resolver, request, fragment), result->status(),
-                                          result->bodyInMemory(), result->headerValueOrEmpty(http::ContentType));
+                                          result->bodyInMemory(), result->headerValueOrEmpty(http::ContentType),
+                                          serverAddressSpace);
 }
 
 WebClientConfig Validated(WebClientConfig config) {
@@ -122,8 +133,10 @@ std::expected<WebPage, WebErrc> WebClient::navigate(std::string_view url, const 
   if (!internal::IsHttpUrl(target)) {
     return std::unexpected(WebErrc::invalidUrl);
   }
+  // The application requests the first document, the page of each document its navigation.
+  AddressSpace requester = _session.config.addressSpace;
   for (uint32_t navigations = 0;; ++navigations) {
-    std::expected<std::unique_ptr<internal::Page>, WebErrc> pPage = LoadPage(_session, resolver, target);
+    std::expected<std::unique_ptr<internal::Page>, WebErrc> pPage = LoadPage(_session, resolver, target, requester);
     if (!pPage) {
       return std::unexpected(pPage.error());
     }
@@ -137,6 +150,7 @@ std::expected<WebPage, WebErrc> WebClient::navigate(std::string_view url, const 
       return std::unexpected(WebErrc::tooManyNavigations);
     }
     target = page.takeNavigation();
+    requester = page.addressSpace();
     log::debug("Navigation from {} to {}", page.url(), std::string_view(target));
   }
 }

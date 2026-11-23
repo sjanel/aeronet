@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string_view>
 
 #ifdef AERONET_WINDOWS
 #include <io.h>
@@ -26,6 +27,7 @@
 
 #endif
 
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/native-handle.hpp"
 #ifdef AERONET_WINDOWS
 #include "aeronet/safe-cast.hpp"
@@ -285,6 +287,31 @@ uint8_t FormatAddress(const sockaddr_storage& addr, char* buf, uint8_t bufLen) n
   const char* pEnd = static_cast<const char*>(std::memchr(buf, '\0', bufLen));
   assert(pEnd != nullptr);  // Should never happen since we passed bufLen to inet_ntop
   return static_cast<uint8_t>(pEnd - buf);
+}
+
+bool ParseAddress(std::string_view text, sockaddr_storage& addr) noexcept {
+#ifdef AERONET_WINDOWS
+  EnsureWinsockInitialized();
+#endif
+  // Large enough for any textual IPv4 or IPv6 address, null terminator included. An embedded null would make
+  // inet_pton() read only the part before it.
+  char buf[kFormattedAddressCapacity];
+  if (text.size() >= sizeof(buf) || text.contains('\0')) {
+    return false;
+  }
+  Copy(text, buf);
+  buf[text.size()] = '\0';
+  // NOLINTNEXTLINE(misc-include-cleaner)
+  if (::inet_pton(AF_INET, buf, &reinterpret_cast<sockaddr_in&>(addr).sin_addr) == 1) {
+    addr.ss_family = AF_INET;
+    return true;
+  }
+  // NOLINTNEXTLINE(misc-include-cleaner)
+  if (::inet_pton(AF_INET6, buf, &reinterpret_cast<sockaddr_in6&>(addr).sin6_addr) == 1) {
+    addr.ss_family = AF_INET6;
+    return true;
+  }
+  return false;
 }
 
 int64_t SafeSend(NativeHandle fd, const void* data, std::size_t len) noexcept {

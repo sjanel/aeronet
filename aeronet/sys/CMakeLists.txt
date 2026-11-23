@@ -24,6 +24,14 @@ target_include_directories(aeronet_sys
         $<INSTALL_INTERFACE:include>
 )
 
+# The address spaces of Local Network Access, on every platform
+AeronetAddUnitTest(
+    address-space_test
+    test/address-space_test.cpp
+    LIBRARIES
+    aeronet_sys
+)
+
 # errno-throw is portable (pure C++ exception test)
 AeronetAddUnitTest(
     errno-throw_test

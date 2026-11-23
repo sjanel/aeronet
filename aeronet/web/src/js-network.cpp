@@ -13,6 +13,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/address-space.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-client.hpp"
@@ -335,6 +336,10 @@ struct RedirectChain {
   RequestQueue::Request* pRequest;
   const char* error{};  // the reason of the network error that stopped the chain, null if none
   uint32_t redirects{};
+  // The address space of the server of the last response (PageRequestContext::pAddressSpace), that of the document
+  // before the first one: the requests that continue the chain reach only this address space and the more public ones,
+  // as the redirects that the HTTP client follows (unless WebClientConfig::allowLessPublicRedirects).
+  AddressSpace serverAddressSpace;
   bool crossOriginUrl;   // the current URL is of another origin than the document
   bool crossSite{};      // a redirect changed the site
   bool taintedOrigin{};  // redirected from another origin to a third one: its Origin is "null"
@@ -389,9 +394,9 @@ bool StopAtRedirect(void* /*pData*/, HttpRequest& /*req*/, const HttpResponse& /
   return false;
 }
 
-// Sends the CORS preflight of 'request' of 'page' to its current URL, with the Origin 'origin'. Returns whether its
-// response allows the request.
-bool Preflight(Page& page, const RequestQueue::Request& request, std::string_view origin) {
+// Sends the CORS preflight of 'request' of 'page' to its current URL, with the Origin 'origin', to a server of
+// 'addressSpace' or of a more public one. Returns whether its response allows the request.
+bool Preflight(Page& page, const RequestQueue::Request& request, std::string_view origin, AddressSpace addressSpace) {
   WebSession& session = page.session();
   const http::Method method = request.http.method();
   const std::string_view methodName = http::MethodToStr(method);
@@ -408,8 +413,13 @@ bool Preflight(Page& page, const RequestQueue::Request& request, std::string_vie
     preflight.headerAddLine("access-control-request-headers", request.corsHeaders);
   }
 
-  const HttpClientResult allowed = session.http.requestUpdating(
-      preflight, {.documentUrl = page.url(), .onRedirect = &StopAtRedirect, .credentials = RequestCredentials::Omit});
+  const PageRequestContext context{
+      .documentUrl = page.url(),
+      .onRedirect = &StopAtRedirect,
+      .credentials = RequestCredentials::Omit,
+      .addressSpace = addressSpace,
+  };
+  const HttpClientResult allowed = session.http.requestUpdating(preflight, context);
   return allowed && PreflightAllows(*allowed, origin, request.credentials == RequestCredentials::Include, method,
                                     request.corsHeaders);
 }
@@ -474,10 +484,20 @@ JSValue ResponseRecord(Page& page, const RequestQueue::Request& request, const R
 // Returns its response record (see ResponseRecord()), JS_NULL for a network error with its reason in 'error'.
 JSValue Send(Page& page, RequestQueue::Request& request, const char*& error) {
   WebSession& session = page.session();
-  RedirectChain chain{.pPage = &page, .pRequest = &request, .crossOriginUrl = request.crossOrigin};
+  RedirectChain chain{
+      .pPage = &page,
+      .pRequest = &request,
+      .serverAddressSpace = page.addressSpace(),
+      .crossOriginUrl = request.crossOrigin,
+  };
   for (;;) {
+    // A chain continued after a preflight keeps the rule of the redirects, for that preflight too (see
+    // RedirectChain::serverAddressSpace). The HTTP client only reached servers at least as public as the document.
+    assert(chain.serverAddressSpace >= page.addressSpace());
+    const AddressSpace addressSpace =
+        session.config.allowLessPublicRedirects ? page.addressSpace() : chain.serverAddressSpace;
     if (request.preflight) {
-      if (!Preflight(page, request, chain.requestOrigin())) {
+      if (!Preflight(page, request, chain.requestOrigin(), addressSpace)) {
         error = "the CORS preflight of the request to another origin failed";
         return JS_NULL;
       }
@@ -485,9 +505,12 @@ JSValue Send(Page& page, RequestQueue::Request& request, const char*& error) {
     }
     const PageRequestContext context{
         .documentUrl = page.url(),
+        .pAddressSpace = &chain.serverAddressSpace,
         .onRedirect = &OnRedirect,
         .pRedirectData = &chain,
         .credentials = request.credentials,
+        .addressSpace = addressSpace,
+        .allowLessPublicRedirects = session.config.allowLessPublicRedirects,
         .crossSiteChain = chain.crossSite,
         .crossOriginChain = request.crossOrigin,
     };

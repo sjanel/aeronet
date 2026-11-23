@@ -7,6 +7,8 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
+#include <string>
 #include <string_view>
 #include <thread>
 
@@ -23,6 +25,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 #endif
 
@@ -375,6 +378,51 @@ TEST_F(SocketOpsTest, FormatAddressReturnsDashWhenBufferTooSmall) {
 
   EXPECT_EQ(1U, len);
   EXPECT_EQ(std::string_view{"-"}, addrStr);
+}
+
+TEST_F(SocketOpsTest, ParseAddressRoundTripsWithFormatAddress) {
+  for (const std::string_view text :
+       {"127.0.0.1", "0.0.0.0", "255.255.255.255", "::1", "::", "2001:db8::7", "::ffff:192.0.2.1"}) {
+    sockaddr_storage addr{};
+    ASSERT_TRUE(ParseAddress(text, addr)) << text;
+    std::array<char, kFormattedAddressCapacity> buffer{};
+    const auto len = FormatAddress(addr, buffer.data(), buffer.size());
+    EXPECT_EQ(std::string_view(buffer.data(), len), text);
+  }
+  sockaddr_storage addr{};
+  ASSERT_TRUE(ParseAddress("10.1.2.3", addr));
+  EXPECT_EQ(addr.ss_family, AF_INET);
+  EXPECT_EQ(ntohl(reinterpret_cast<const sockaddr_in&>(addr).sin_addr.s_addr), 0x0A010203U);
+  ASSERT_TRUE(ParseAddress("fe80::1", addr));
+  EXPECT_EQ(addr.ss_family, AF_INET6);
+  EXPECT_EQ(reinterpret_cast<const sockaddr_in6&>(addr).sin6_addr.s6_addr[0], 0xFEU);
+  // The longest text of an address.
+  constexpr std::string_view kLongest = "ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.254";
+  static_assert(kLongest.size() + 1U == kFormattedAddressCapacity);
+  ASSERT_TRUE(ParseAddress(kLongest, addr));
+  EXPECT_EQ(reinterpret_cast<const sockaddr_in6&>(addr).sin6_addr.s6_addr[15], 0xFEU);
+}
+
+// Only the forms of inet_pton(): the dotted-decimal IPv4 addresses and the IPv6 ones, without brackets.
+TEST_F(SocketOpsTest, ParseAddressRejectsOtherTexts) {
+  for (const std::string_view text : std::initializer_list<std::string_view>{
+           "",
+           "localhost",
+           "127.1",
+           "0x7f.0.0.1",
+           "2130706433",
+           "127.0.0.1.",
+           "256.0.0.1",
+           "[::1]",
+           "fe80::1%eth0",
+           "1:2",
+           std::string_view("127.0.0.1\0x", 11),
+       }) {
+    sockaddr_storage addr{};
+    EXPECT_FALSE(ParseAddress(text, addr)) << text;
+  }
+  sockaddr_storage addr{};
+  EXPECT_FALSE(ParseAddress(std::string(kFormattedAddressCapacity, '1'), addr));
 }
 
 TEST_F(SocketOpsTest, SafeSendSucceeds) {
