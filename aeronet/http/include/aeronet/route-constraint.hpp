@@ -54,6 +54,9 @@ class RouteConstraint {
     char hi;
   };
 
+  static constexpr CharRange kWChars[]{{'a', 'z'}, {'A', 'Z'}, {'0', '9'}, {'_', '_'}};
+  static constexpr CharRange kSpaces[]{{' ', ' '}, {'\t', '\t'}, {'\n', '\n'}, {'\r', '\r'}};
+
   struct CharClass {
     [[nodiscard]] bool contains(char ch) const noexcept;
 

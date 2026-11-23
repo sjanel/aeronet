@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "aeronet/asan-poison.hpp"
+#include "aeronet/compiler-config.hpp"
 
 namespace aeronet {
 
@@ -24,7 +25,8 @@ struct Slot {
 
   template <class... Args>
   explicit Slot(Args&&... args) {
-    std::construct_at(ptr(), std::forward<Args>(args)...);
+    // Not ptr(): std::launder requires an object within its lifetime, and there is none yet.
+    std::construct_at(reinterpret_cast<T*>(storage), std::forward<Args>(args)...);
     isConstructed = true;
   }
 
@@ -67,7 +69,8 @@ struct Slot<T, true> {
 
   template <class... Args>
   explicit Slot(Args&&... args) {
-    std::construct_at(ptr(), std::forward<Args>(args)...);
+    // Not ptr(): std::launder requires an object within its lifetime, and there is none yet.
+    std::construct_at(reinterpret_cast<T*>(storage), std::forward<Args>(args)...);
   }
 
   void setFree(Slot* pNext) noexcept { std::memcpy(&storage, &pNext, sizeof(Slot*)); }
@@ -95,15 +98,20 @@ class PoolPtr;
 // (including double releases) are reported as 'use-after-poison'.
 template <class T, class SizeType = uint32_t>
 class ObjectPool {
+  static_assert(alignof(T) <= alignof(std::max_align_t), "blocks come from malloc: over-aligned types not supported");
+
  public:
   using size_type = SizeType;
 
   static constexpr size_type kDefaultInitialCapacity = 16U;
   static constexpr size_type kGrowthFactor = 2U;
 
-  // Creates an empty ObjectPool with no preallocated capacity.
-  // The growth factor is 2, so the next block capacity will be the double of last block capacity.
-  explicit ObjectPool(size_type initialCapacity = kDefaultInitialCapacity) noexcept : _totalCapacity(initialCapacity) {}
+  // Creates an empty ObjectPool with no preallocated capacity. initialCapacity (not 0) is the capacity of its first
+  // block. The growth factor is 2, so the next block capacity will be the double of last block capacity.
+  explicit ObjectPool(size_type initialCapacity = kDefaultInitialCapacity) noexcept : _totalCapacity(initialCapacity) {
+    // A first block without slot would be written past its end.
+    assert(initialCapacity != 0U);
+  }
 
   // Disable copy operations.
   ObjectPool(const ObjectPool&) = delete;
@@ -184,7 +192,8 @@ class ObjectPool {
   }
   static Slot* slotEnd(Block* pBlock) noexcept { return slotBegin(pBlock) + pBlock->_blockSize; }
 
-  void addBlock() {
+  // Slow path of allocateAndConstruct, kept out of line so that its inlined fast path stays small.
+  AERONET_NOINLINE void addBlock() {
     const size_type newBlockSize = _pLastBlock == nullptr ? _totalCapacity : _pLastBlock->_blockSize * kGrowthFactor;
 
     // We need to add padding to make sure that the Slot array that follows the Block header is properly aligned.
@@ -286,7 +295,13 @@ T* ObjectPool<T, SizeType>::allocateAndConstruct(Args&&... args) {
 
 template <class T, class SizeType>
 void ObjectPool<T, SizeType>::destroyAndRelease(T* pObj) noexcept {
-  pushFree(slotFromObject(pObj));
+  assert(pObj != nullptr);
+  Slot* pSlot = slotFromObject(pObj);
+  if constexpr (!std::is_trivially_destructible_v<T>) {
+    // A double release would otherwise link the slot twice in the free list (AddressSanitizer reports it before).
+    assert(pSlot->isConstructed);
+  }
+  pushFree(pSlot);
   --_liveCount;
 }
 
@@ -295,8 +310,7 @@ T ObjectPool<T, SizeType>::release(T* pObj) noexcept(std::is_nothrow_move_constr
   requires std::is_move_constructible_v<T>
 {
   T ret(std::move(*pObj));
-  pushFree(slotFromObject(pObj));
-  --_liveCount;
+  destroyAndRelease(pObj);
   return ret;
 }
 

@@ -29,7 +29,7 @@ namespace aeronet {
 #endif
 
 constexpr uint64_t AsciiLowerMask(uint64_t val) {
-  auto BytewiseLower = [](uint64_t input) {
+  auto bytewiseLower = [](uint64_t input) {
     uint64_t result = 0;
     for (std::size_t bytePos = 0; bytePos < sizeof(uint64_t); ++bytePos) {
       const auto shift = static_cast<unsigned>(bytePos * 8);
@@ -41,7 +41,7 @@ constexpr uint64_t AsciiLowerMask(uint64_t val) {
   };
 
   if consteval {
-    return BytewiseLower(val);
+    return bytewiseLower(val);
   }
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64) || defined(__i386__) || defined(_M_IX86)
@@ -65,7 +65,7 @@ constexpr uint64_t AsciiLowerMask(uint64_t val) {
   const auto lowered = vorr_u8(input, lowerBit);
   return static_cast<uint64_t>(vget_lane_u64(vreinterpret_u64_u8(lowered), 0));
 #else
-  return BytewiseLower(val);
+  return bytewiseLower(val);
 #endif
 }
 

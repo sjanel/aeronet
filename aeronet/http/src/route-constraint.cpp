@@ -110,18 +110,12 @@ RouteConstraint::CharClass RouteConstraint::ParseCharClass(std::string_view patt
         continue;
       }
       if (ch == 'w') {
-        cc.ranges.emplace_back('a', 'z');
-        cc.ranges.emplace_back('A', 'Z');
-        cc.ranges.emplace_back('0', '9');
-        cc.ranges.emplace_back('_', '_');
+        cc.ranges.append_range(kWChars);
         ++pos;
         continue;
       }
       if (ch == 's') {
-        cc.ranges.emplace_back(' ', ' ');
-        cc.ranges.emplace_back('\t', '\t');
-        cc.ranges.emplace_back('\n', '\n');
-        cc.ranges.emplace_back('\r', '\r');
+        cc.ranges.append_range(kSpaces);
         ++pos;
         continue;
       }
@@ -242,29 +236,17 @@ bool RouteConstraint::TryCompileFast(std::string_view pattern, FastPattern& fast
             atom.charClass.negated = true;
             break;
           case 'w':
-            atom.charClass.ranges.emplace_back('a', 'z');
-            atom.charClass.ranges.emplace_back('A', 'Z');
-            atom.charClass.ranges.emplace_back('0', '9');
-            atom.charClass.ranges.emplace_back('_', '_');
+            atom.charClass.ranges.append_range(kWChars);
             break;
           case 'W':
-            atom.charClass.ranges.emplace_back('a', 'z');
-            atom.charClass.ranges.emplace_back('A', 'Z');
-            atom.charClass.ranges.emplace_back('0', '9');
-            atom.charClass.ranges.emplace_back('_', '_');
+            atom.charClass.ranges.append_range(kWChars);
             atom.charClass.negated = true;
             break;
           case 's':
-            atom.charClass.ranges.emplace_back(' ', ' ');
-            atom.charClass.ranges.emplace_back('\t', '\t');
-            atom.charClass.ranges.emplace_back('\n', '\n');
-            atom.charClass.ranges.emplace_back('\r', '\r');
+            atom.charClass.ranges.append_range(kSpaces);
             break;
           case 'S':
-            atom.charClass.ranges.emplace_back(' ', ' ');
-            atom.charClass.ranges.emplace_back('\t', '\t');
-            atom.charClass.ranges.emplace_back('\n', '\n');
-            atom.charClass.ranges.emplace_back('\r', '\r');
+            atom.charClass.ranges.append_range(kSpaces);
             atom.charClass.negated = true;
             break;
           default:
