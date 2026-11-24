@@ -64,6 +64,14 @@ using AddrInfoPtr = std::unique_ptr<addrinfo, AddrInfoDeleter>;
 [[nodiscard]] ConnectResult ConnectTCP(const addrinfo& addresses, int connectTimeoutMs = 0,
                                        AddressSpace minAddressSpace = AddressSpace::Loopback);
 
+// Start a non-blocking connect to 'pAddress', or to the next of its successors when a connect fails at once: the
+// addresses less public than 'minAddressSpace' are skipped. Returns the socket, connected or with its connect pending
+// (connectPending), 'pAddress' then pointing to its address: when the pending connect fails, the next attempt starts
+// from pAddress->ai_next. Returns a failure when no address is left, 'pAddress' then null, with blocked when none was
+// tried. For an event loop driving the connects itself, whose completion it learns from the writability of the socket.
+[[nodiscard]] ConnectResult StartConnectTCP(const addrinfo*& pAddress,
+                                            AddressSpace minAddressSpace = AddressSpace::Loopback);
+
 // Tell whether 'host' is a numeric IPv4 or IPv6 address (without brackets), that getaddrinfo resolves without query.
 [[nodiscard]] bool IsNumericHost(std::string_view host) noexcept;
 

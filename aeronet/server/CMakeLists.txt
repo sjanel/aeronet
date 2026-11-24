@@ -161,15 +161,6 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    tunnel-resolver_test
-    src/tunnel-resolver.cpp
-    test/tunnel-resolver_test.cpp
-    LIBRARIES
-    aeronet_sys
-    aeronet_basic_test_support
-)
-
-AeronetAddUnitTest(
     lifecycle_test
     test/lifecycle_test.cpp
     LIBRARIES

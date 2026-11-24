@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -189,9 +190,11 @@ void HtmlElement::insertAdjacentHtml(HtmlInsertPosition position, std::string_vi
   const lxb_dom_node_t& context = *point.pParent;
   const bool bodyContext =
       context.type != LXB_DOM_NODE_TYPE_ELEMENT || (context.local_name == LXB_TAG_HTML && context.ns == LXB_NS_HTML);
-  InsertFragment(internal::ParseHtmlFragment(HtmlDocumentOf(_pNode), bodyContext ? LXB_TAG_BODY : context.local_name,
-                                             bodyContext ? LXB_NS_HTML : context.ns, html),
-                 point);
+  InsertFragment(
+      internal::ParseHtmlFragment(HtmlDocumentOf(_pNode),
+                                  bodyContext ? static_cast<std::uintptr_t>(LXB_TAG_BODY) : context.local_name,
+                                  bodyContext ? static_cast<std::uintptr_t>(LXB_NS_HTML) : context.ns, html),
+      point);
 }
 
 void HtmlElement::insertAdjacentElement(HtmlInsertPosition position, HtmlElement element) {

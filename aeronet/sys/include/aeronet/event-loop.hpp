@@ -114,6 +114,10 @@ class EventLoop {
   //    with nullptr data() pointer.
   [[nodiscard]] std::span<const EventFd> poll(bool wait = true);
 
+  // The epoll (Linux) or kqueue (macOS) descriptor, readable while events are ready: an outer event loop can watch it.
+  // kInvalidHandle on Windows, where WSAPoll has none.
+  [[nodiscard]] NativeHandle fd() const noexcept { return _baseFd.fd(); }
+
   // Current allocated capacity (number of event slots available without reallocation).
   [[nodiscard]] uint32_t capacity() const noexcept { return _nbAllocatedEvents; }
 

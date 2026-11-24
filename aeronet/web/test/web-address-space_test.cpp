@@ -103,16 +103,6 @@ WebClientConfig Config() {
   return config;
 }
 
-// The JSON of window.out once the page of the script 'code', served through 'host', and its requests are done.
-std::string Out(WebClient& client, std::string_view host, std::string_view code) {
-  WebPage page = test::Navigate(client, test::PageUrl(gServer, "<script>" + std::string(code) + "</script>", host),
-                                {.until = LoadState::NetworkIdle});
-  for (const std::string_view error : page.uncaughtErrors()) {
-    ADD_FAILURE() << error;
-  }
-  return test::Eval(page, "out");
-}
-
 // The application reaches the servers of its address space and of the more public ones (WebClientConfig::addressSpace).
 TEST(WebAddressSpaceTest, NavigationsOfTheApplication) {
   const std::string url = test::PageUrl(gServer, "<p id=p>");
@@ -169,6 +159,16 @@ class WebAddressSpaceRedirectedTest : public ::testing::Test {
   test::ConnectRedirectionGuard otherLocalHost{kOtherLocalHost};
   WebClient client{Config()};
 };
+
+// The JSON of window.out once the page of the script 'code', served through 'host', and its requests are done.
+std::string Out(WebClient& client, std::string_view host, std::string_view code) {
+  WebPage page = test::Navigate(client, test::PageUrl(gServer, "<script>" + std::string(code) + "</script>", host),
+                                {.until = LoadState::NetworkIdle});
+  for (const std::string_view error : page.uncaughtErrors()) {
+    ADD_FAILURE() << error;
+  }
+  return test::Eval(page, "out");
+}
 
 // fetch() reaches the servers of the address space of the page and of the more public ones, the redirects those of the
 // address space of their server and of the more public ones.

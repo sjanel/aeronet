@@ -483,11 +483,10 @@ the [performance optimization backlog](#performance-optimization-backlog)):
   - import and export of the Netscape `cookies.txt` format (curl, wget, yt-dlp, browser extensions), so that a long-running client keeps its session across restarts and can start from the cookies of a browser;
   - the public suffix list, behind the heuristic of `RegistrableDomain()` (`aeronet/client/src/cookie-jar.cpp`): an optional libpsl (vcpkg, Conan, Linux systems) for exact registrable domains (`github.io`), and same-site checks on registrable domains instead of hosts.
 - **Reverse-proxy / forwarding** building on the client (see the reverse-proxy item below).
-- **WebSocket client, next steps** (after the [delivered](protocols/websocket-client.md) `WebSocketClient`):
-  - automatic reconnection with the backoff fields of `RetryConfig`, `onOpen` running again to replay the subscriptions, and a minimum delay between the connection attempts to a host (some CDNs ban an IP for minutes after about 150 attempts in 10 minutes);
-  - a pull-style `receive(timeout)` for request / response protocols such as CDP;
-  - sends from other threads (an eventfd waking `poll()`), and the event loop handle exposed so that a client can sit inside an outer event loop;
-  - a non-blocking opening handshake, so that a reconnecting connection does not hold the others.
+- **WebSocket client, next steps** (after the [delivered](protocols/websocket-client.md) `WebSocketClient`, with its non-blocking handshakes, reconnection, `receive()`, posts from other threads and outer event loop support):
+  - Happy Eyeballs (RFC 8305) for the handshakes, and for the connects of `HttpClient`: the addresses of a host are tried one after the other today, the next one only after a refusal, so a host whose first address does not answer at all (an IPv6 route black-holed) fails after `connectTimeout`;
+  - per-connection reconnection policies (today, those of the client: a connection that must not reconnect cancels it from `onClose`, or uses another client);
+  - WebSocket over HTTP/2 (RFC 8441), and the delivery of large messages in pieces instead of whole up to `maxMessageSize`.
 
 #### HTML parsing and JavaScript pages (`AERONET_ENABLE_HTML`, `AERONET_ENABLE_JS`)
 
@@ -938,7 +937,7 @@ Dead waits, safe to remove:
 
 Waits for a negative outcome:
 
-- `TunnelResolverTest.CancelDropsQueuedResolutions` (1.5 s) waits its whole 1500 ms bound for resolutions that must never complete: wait for the last resolution in progress instead. To check as well: `TunnelResolverTest.DestructionDoesNotWaitForResolutionsInProgress` (1.25 s).
+- `HostResolverTest.CancelDropsQueuedResolutions` (1.5 s) waits its whole 1500 ms bound for resolutions that must never complete: wait for the last resolution in progress instead. To check as well: `HostResolverTest.DestructionDoesNotWaitForResolutionsInProgress` (1.25 s).
 
 Waits for real time, needing an injectable clock or a sub-second interval:
 

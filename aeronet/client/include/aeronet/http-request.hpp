@@ -29,6 +29,7 @@ struct DecompressionConfig;
 
 namespace internal {
 class ClientConnection;
+class UpgradeHandshake;
 struct HttpClientCodec;
 struct UrlParseResult;
 }  // namespace internal
@@ -732,6 +733,7 @@ class HttpRequest final : public HttpMessage {
 
  private:
   friend class internal::ClientConnection;
+  friend class internal::UpgradeHandshake;
   friend class HttpClient;
   friend class HttpRequestView;
   friend class HttpResponseWriter;  // streaming writer needs access to finalize

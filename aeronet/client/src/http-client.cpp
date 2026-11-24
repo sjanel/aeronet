@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -12,7 +11,6 @@
 #include <span>
 #include <stdexcept>
 #include <string_view>
-#include <system_error>
 #include <thread>
 #include <utility>
 
@@ -22,7 +20,6 @@
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/connection.hpp"
 #include "aeronet/cookie-jar.hpp"
-#include "aeronet/decimal-writer.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
@@ -46,7 +43,6 @@
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/native-handle.hpp"
-#include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/response-body-sink.hpp"
 #include "aeronet/retry-config.hpp"
@@ -62,8 +58,9 @@
 #include "aeronet/transport.hpp"
 #include "aeronet/upgraded-connection.hpp"
 #include "aeronet/vector.hpp"
-#include "status-line.hpp"
+#include "proxy-tunnel.hpp"
 #include "transport-io.hpp"
+#include "upgrade-handshake.hpp"
 #include "url-parse.hpp"
 
 #ifdef AERONET_LINUX
@@ -93,22 +90,6 @@ PollTimeoutPolicy CreatePollTimeoutPolicy(const HttpClientConfig& config) {
   policy.minFactor = 1.0F;
   policy.maxFactor = 1.0F;
   return policy;
-}
-
-// Parse a delta-seconds `Retry-After` header value into a non-negative duration capped at `cap`. Returns a
-// negative sentinel when the value is absent or not a bare non-negative integer (an HTTP-date form is
-// intentionally not parsed here) so the caller can distinguish it from a legitimate "Retry-After: 0" and
-// fall back to the computed backoff.
-RetryConfig::Duration ParseRetryAfter(std::string_view value, RetryConfig::Duration cap) noexcept {
-  uint64_t seconds;
-  const char* end = value.data() + value.size();
-  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-  const auto [ptr, ec] = std::from_chars(value.data(), end, seconds);
-  if (ec != std::errc{} || ptr != end) {
-    return RetryConfig::Duration{-1};  // absent / not delta-seconds: caller uses the computed backoff
-  }
-  const auto capSeconds = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(cap).count());
-  return std::chrono::duration_cast<RetryConfig::Duration>(std::chrono::seconds{std::min(seconds, capSeconds)});
 }
 
 void FinalizeConfig(HttpClientConfig& config) {
@@ -519,8 +500,7 @@ EventBmp HttpClient::waitExchangeEvents(NativeHandle fd, EventBmp interest, Stea
 }
 
 std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectNew(const HttpRequest& req,
-                                                                                   AddressSpace minAddressSpace,
-                                                                                   bool upgrade) {
+                                                                                   AddressSpace minAddressSpace) {
   // For https, build (and thereby validate) the shared TLS context up front -- before spending a connect on
   // it. A misconfiguration (bad cipher list, unusable cert/key, ...) is a hard setup error: it throws an
   // HttpClientException deterministically here, independently of whether the origin is even reachable.
@@ -580,9 +560,7 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
   // (origin) TLS handshake driven later by finishConnect. The tunnel exchange runs on the raw socket via a
   // throwaway plain transport (no origin bytes can arrive until we speak TLS, so nothing beyond the CONNECT
   // response is consumed); the TLS transport then wraps the same fd and handshakes through the tunnel.
-  // An upgraded connection carries another protocol than HTTP after its first response, which a forward proxy would not
-  // relay: a cleartext origin is reached through a tunnel too (RFC 6455 §4.1).
-  if (proxied && (isTls || upgrade)) {
+  if (proxied && isTls) {
     Transport tunnelTransport(fd);
     if (auto err = establishProxyTunnel(tunnelTransport, fd, req); err != HttpClientErrc::noError) {
       unregisterIfCurrent(fd);  // establishProxyTunnel may have armed the loop on this fd before failing
@@ -592,7 +570,7 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
 #ifdef AERONET_ENABLE_OPENSSL
   if (isTls) {
     // The context is already built above; makeTransport only wraps the freshly connected fd.
-    conn.transport = tlsContext().makeTransport(fd, req.hostCStr().c_str(), _config.tlsVerifyPeer, upgrade);
+    conn.transport = tlsContext().makeTransport(fd, req.hostCStr().c_str(), _config.tlsVerifyPeer);
   } else
 #endif
   {
@@ -602,41 +580,10 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
 }
 
 HttpClientErrc HttpClient::establishProxyTunnel(Transport& transport, NativeHandle fd, const HttpRequest& req) {
-  static constexpr std::string_view kConnect = "CONNECT ";
-  static constexpr std::string_view kConnectMid = " HTTP/1.1\r\nHost: ";  // between request-target and Host value
-
   const auto deadline = SteadyClock::now() + _config.connectTimeout;
 
-  // CONNECT needs an explicit "host:port" authority (RFC 9110 section 9.3.6); IPv6 literals are bracketed.
-  const std::string_view host = req.host();
-  const bool ipv6 = host.contains(':');
-  const auto port = req.port();
-  const auto postNbDigits = ndigits(port);
-  const std::size_t authorityLen = host.size() + (ipv6 ? 2U : 0U) + 1U + postNbDigits;
-
   RawChars& reqBuffer = _reqBodyScratch;
-  reqBuffer.clear();
-  reqBuffer.reserve(kConnect.size() + authorityLen + kConnectMid.size() + authorityLen + http::DoubleCRLF.size());
-  const auto appendAuthority = [ipv6, host, port, postNbDigits](char* out) {
-    if (ipv6) {
-      *out++ = '[';
-    }
-    out = Append(host, out);
-    if (ipv6) {
-      *out++ = ']';
-    }
-    *out++ = ':';
-    return WriteUInt(out, port, postNbDigits);
-  };
-
-  char* pData = reqBuffer.data();
-  pData = AppendFixed<kConnect>(pData);
-  pData = appendAuthority(pData);
-  pData = AppendFixed<kConnectMid>(pData);
-  pData = appendAuthority(pData);
-  pData = AppendFixed<http::DoubleCRLF>(pData);
-
-  reqBuffer.setEnd(pData);
+  internal::BuildProxyConnectRequest(req, reqBuffer);
 
   // Write the CONNECT request in full, pumping the event loop on would-block.
   const std::string_view head = reqBuffer;
@@ -655,23 +602,18 @@ HttpClientErrc HttpClient::establishProxyTunnel(Transport& transport, NativeHand
     }
   }
 
-  // Read the proxy response up to the end-of-headers marker. A CONNECT response is small; cap the buffered
-  // size so a misbehaving proxy cannot make us read unbounded data.
-  static constexpr std::size_t kMaxTunnelResponse = 8192;
+  // Read the proxy response up to the end-of-headers marker.
   static constexpr std::size_t kReadChunk = 512;
   RawChars& respBuffer = _responseBuffer;
   respBuffer.clear();
   for (;;) {
-    const std::string_view view(respBuffer.data(), respBuffer.size());
-    if (const auto endPos = view.find(http::DoubleCRLF); endPos != std::string_view::npos) {
-      // Status line is everything up to the first CRLF (guaranteed present within [0, endPos]). Any 2xx response opens
-      // the tunnel (RFC 9110 §9.3.6); anything else, or a line that is not a status line, is a proxy failure.
-      const http::StatusCode code = http::ParseStatusLine(view.substr(0, view.find(http::CRLF))).code;
-      return code >= http::StatusCodeOK && code < http::StatusCodeMultipleChoices ? HttpClientErrc::noError
-                                                                                  : HttpClientErrc::proxyError;
-    }
-    if (respBuffer.size() >= kMaxTunnelResponse) {
-      return HttpClientErrc::proxyError;
+    switch (internal::CheckProxyTunnelResponse(respBuffer)) {
+      case internal::ProxyTunnelStatus::Open:
+        return HttpClientErrc::noError;
+      case internal::ProxyTunnelStatus::Refused:
+        return HttpClientErrc::proxyError;
+      default:
+        break;
     }
     const TransportResult rd = internal::ReadAppend(transport, respBuffer, kReadChunk);
     if (rd.bytesProcessed > 0) {
@@ -996,15 +938,7 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFoll
       // a delta-seconds Retry-After when present) and try again, discarding this response.
       if (canBackoff() && retry.retryStatuses.contains(result->status())) {
         assert(!_streamer.headDelivered());
-        RetryConfig::Duration delay = computedBackoff();
-        if (retry.honorRetryAfter) {
-          const RetryConfig::Duration ra =
-              ParseRetryAfter(result->headerValueOrEmpty(http::RetryAfter), retry.maxDelay);
-          if (ra >= RetryConfig::Duration::zero()) {
-            delay = ra;
-          }
-        }
-        sleepBackoff(delay);
+        sleepBackoff(retry.statusRetryDelay(result->headerValueOrEmpty(http::RetryAfter), computedBackoff()));
         continue;
       }
       return result;
@@ -1071,52 +1005,23 @@ HttpRequest HttpClient::makeUpgradeRequest(std::string_view url, std::string_vie
 }
 
 HttpUpgradeResult HttpClient::upgrade(HttpRequest&& req) {
+  internal::UpgradeHandshake::CheckRequest(req);
   const FlushTelemetryOnExit flushTelemetryOnExit(_telemetry);
 #ifdef AERONET_LINUX
   // See performExchange().
   const SigpipeBlocker sigpipeBlocker(req.isTlsRequest());
 #endif
-  req.HttpMessage::finalizeHeadersAndBody();
-  // No response goes to a sink, the one of a previous request interrupted by an exception included.
-  _streamer.beginRequest(nullptr, _config, _codec);
-
-  std::expected<ActiveConnection, HttpClientErrc> acquired = connectNew(req, AddressSpace::Loopback, true);
-  if (!acquired) {
-    return std::unexpected(acquired.error());
+  internal::UpgradeHandshake handshake(std::move(req));
+  handshake.run(*this, {});
+  req = std::move(handshake.request());  // left as sent
+  if (handshake.phase() == internal::UpgradeHandshake::Phase::Failed) {
+    return std::unexpected(handshake.error());
   }
-  ActiveConnection& conn = *acquired;
-  const NativeHandle fd = conn.cnx.fd();
-  const UnregisterOnUnwind unregisterOnUnwind(*this, fd);
-  if (_config.cookies.enabled()) {
-    _cookieJar.prepareRequestCookies(req, internal::CookieSiteContext::SameSite, SysClock::now());
+  HttpUpgradeResult upgraded(std::in_place);
+  if (handshake.response().status() == http::StatusCodeSwitchingProtocols) {
+    upgraded->connection = handshake.takeConnection();
   }
-  const auto now = SteadyClock::now();
-  bool requestSent = false;
-  conn.proto = internal::ClientConnection(internal::ClientConnection::Type::Http11);
-  HttpClientResult result = check(finishTlsHandshake(conn, now + _config.connectTimeout)).and_then([&] {
-    return conn.proto.upgradeExchange(*this, conn.transport, fd, req, DeadlineAfter(now, _config.requestTimeout),
-                                      requestSent);
-  });
-  // The connection leaves the client in any case: closed below, or handed over.
-  unregisterIfCurrent(fd);
-  if (!result) {
-    return std::unexpected(result.error());
-  }
-  if (_config.cookies.enabled()) {
-    _cookieJar.storeResponseCookies(req, *result, internal::CookieSiteContext::SameSite, SysClock::now());
-  }
-  HttpUpgradeResult upgraded(std::in_place, std::move(*result));
-  if (upgraded->response.status() == http::StatusCodeSwitchingProtocols) {
-    UpgradedConnection& out = upgraded->connection;
-    out.transport = std::move(conn.transport);
-    out.cnx = std::move(conn.cnx);
-    // Usually empty: a server rarely sends data of the new protocol along with its 101 response. The receive buffer
-    // of the client stays with it.
-    if (!_responseBuffer.empty()) {
-      out.received.assign(_responseBuffer.data(), _responseBuffer.size());
-      _responseBuffer.clear();
-    }
-  }
+  upgraded->response = std::move(handshake.response());
   return upgraded;
 }
 

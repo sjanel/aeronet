@@ -25,6 +25,8 @@ enum class CookieSameSite : uint8_t { Default, None, Lax, Strict };
 
 namespace internal {
 
+class UpgradeHandshake;
+
 // How a request relates to the requests of its redirect chain (RFC 6265bis §5.2). HttpClient requests are navigations,
 // so SameSite=Lax cookies are still sent after a redirect to another site, but only with a safe method. The requests
 // of the documents of a web page (see PageRequestContext) are not.
@@ -139,6 +141,7 @@ class CookieJar {
 
  private:
   friend class HttpClient;
+  friend class internal::UpgradeHandshake;
   friend class CookieJarTest;
 
   struct StoredCookie {

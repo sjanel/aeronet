@@ -70,6 +70,15 @@ AeronetAddUnitTest(
     aeronet_sys
 )
 
+# Background host name resolution (getaddrinfo delayed or failed by an override on POSIX)
+AeronetAddUnitTest(
+    host-resolver_test
+    test/host-resolver_test.cpp
+    LIBRARIES
+    aeronet_sys
+    aeronet_basic_test_support
+)
+
 # The remaining sys tests use Linux-specific APIs (epoll, eventfd, timerfd,
 # accept4, zerocopy, AF_UNIX socketpair) or dlsym/RTLD_NEXT overrides.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

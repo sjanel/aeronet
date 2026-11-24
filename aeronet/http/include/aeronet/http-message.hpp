@@ -51,6 +51,7 @@ namespace internal {
 class HttpResponseAccess;
 #ifdef AERONET_ENABLE_HTTP_CLIENT
 class ClientConnection;
+class UpgradeHandshake;
 #endif
 #ifdef AERONET_ENABLE_HTTP_SERVER
 class Http1Pipeline;
@@ -737,6 +738,7 @@ class HttpMessage {
 #endif
 #ifdef AERONET_ENABLE_HTTP_CLIENT
   friend class internal::ClientConnection;
+  friend class internal::UpgradeHandshake;
   friend class HttpClient;
   friend class HttpRequest;
   friend class Http1ResponseParser;
