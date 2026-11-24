@@ -52,6 +52,7 @@
 #include "html-tree-walk.hpp"
 #include "js-dom.hpp"
 #include "js-engine.hpp"
+#include "js-module.hpp"
 #include "js-network.hpp"
 #include "js-prelude.hpp"
 #include "js-window.hpp"
@@ -121,6 +122,13 @@ RequestCredentials ScriptCredentials(const HtmlElement& script) noexcept {
   if (!script.hasAttribute("crossorigin")) {
     return RequestCredentials::Include;
   }
+  return CaseInsensitiveEqual(script.attribute("crossorigin"), "use-credentials") ? RequestCredentials::Include
+                                                                                  : RequestCredentials::SameOrigin;
+}
+
+// The credentials of the graph of a module script, fetched in the cors mode: only for its own origin, unless its
+// crossorigin attribute is "use-credentials".
+RequestCredentials ModuleCredentials(const HtmlElement& script) noexcept {
   return CaseInsensitiveEqual(script.attribute("crossorigin"), "use-credentials") ? RequestCredentials::Include
                                                                                   : RequestCredentials::SameOrigin;
 }
@@ -196,6 +204,9 @@ Page::Page(WebSession& session, std::string_view url, http::StatusCode status, s
   }
   JS_SetContextOpaque(context(), this);
   JS_SetHostPromiseRejectionTracker(_engine.runtime(), &TrackRejection, this);
+  if (ModulesEnabled()) {
+    InstallModuleLoader(*this);
+  }
   installBindings();
 }
 
@@ -538,15 +549,44 @@ bool Page::startScript(lxb_dom_node_t* pScript) {
   }
   const ScriptQueue::Start start = _scripts.start(pScript, url());
   const HtmlElement script = HtmlNodeAccess::Element(pScript);
-  if (start == ScriptQueue::Start::Inline) {
-    // It runs inside the native function that inserted it.
-    setCode(script.textContent(_htmlBuffer));
-    return !admitCode("inline") || runCode(pScript, _url.c_str(), false, true);
+  switch (start) {
+    case ScriptQueue::Start::Inline:
+      // It runs inside the native function that inserted it.
+      setCode(script.textContent(_htmlBuffer));
+      return !admitCode("inline") || runCode(pScript, _url.c_str(), false, true);
+    // What their preparation reads: a later change of their attributes or text does not change what runs.
+    case ScriptQueue::Start::External:
+      return queueInsertedScript({
+          .url = scriptUrl(script),
+          .text = script.attribute("charset"),
+          .pScript = pScript,
+          .credentials = ScriptCredentials(script),
+          .kind = ScriptQueue::Inserted::Classic,
+      });
+    case ScriptQueue::Start::Module:
+      return queueInsertedScript({
+          .url = script.hasAttribute("src") ? scriptUrl(script) : std::string_view{},
+          .text = script.hasAttribute("src") ? std::string_view{} : script.textContent(_htmlBuffer),
+          .pScript = pScript,
+          .credentials = ModuleCredentials(script),
+          .kind =
+              script.hasAttribute("src") ? ScriptQueue::Inserted::ExternalModule : ScriptQueue::Inserted::InlineModule,
+      });
+    case ScriptQueue::Start::No:
+      break;
   }
-  if (start == ScriptQueue::Start::External) {
-    // What its preparation reads: a later change of its attributes does not change what runs.
-    _scripts.queueInserted({scriptUrl(script), script.attribute("charset"), pScript, ScriptCredentials(script)});
+  return true;
+}
+
+bool Page::queueInsertedScript(const ScriptQueue::InsertedScript& script) {
+  // Its copy waits for the end of the task: counted, as the task can insert any number of scripts.
+  const std::size_t memory = script.url.size() + script.text.size();
+  if (!_memory.canHold(memory)) {
+    JS_ThrowOutOfMemory(context());
+    return false;
   }
+  _scripts.queueInserted(script);
+  _memory.charge(memory);
   return true;
 }
 
@@ -555,8 +595,18 @@ std::string_view Page::scriptUrl(const HtmlElement& script) {
   return src.empty() ? std::string_view{} : resolveUrl(src);
 }
 
-void Page::runParserScript(lxb_dom_node_t* pScript) {
+void Page::runParserScript(const ScriptQueue::ParserScript& parserScript) {
+  lxb_dom_node_t* pScript = parserScript.pScript;
   const HtmlElement script = HtmlNodeAccess::Element(pScript);
+  if (parserScript.module) {
+    if (script.hasAttribute("src")) {
+      runExternalModule(pScript, scriptUrl(script), ModuleCredentials(script));
+    } else {
+      setCode(script.textContent(_htmlBuffer));
+      runInlineModule(pScript, ModuleCredentials(script));
+    }
+    return;
+  }
   if (script.hasAttribute("src")) {
     runExternalScript(pScript, scriptUrl(script), script.attribute("charset"), ScriptCredentials(script), true);
     return;
@@ -569,12 +619,43 @@ void Page::runParserScript(lxb_dom_node_t* pScript) {
 }
 
 void Page::runInsertedScript(const ScriptQueue::InsertedScript& script) {
+  _memory.release(script.url.size() + script.text.size());
+  if (script.kind == ScriptQueue::Inserted::InlineModule) {
+    setCode(script.text);
+    runInlineModule(script.pScript, script.credentials);
+    return;
+  }
   if (!_requests.admit(session().config.maxRequests)) {
     log::debug("[js {}] inserted script not fetched: the document made WebClientConfig::maxRequests requests", url());
     dispatchEvent(script.pScript, "error", false);
     return;
   }
-  runExternalScript(script.pScript, script.url, script.charset, script.credentials, false);
+  if (script.kind == ScriptQueue::Inserted::ExternalModule) {
+    runExternalModule(script.pScript, script.url, script.credentials);
+  } else {
+    runExternalScript(script.pScript, script.url, script.text, script.credentials, false);
+  }
+}
+
+void Page::runExternalModule(lxb_dom_node_t* pScript, std::string_view url, RequestCredentials credentials) {
+  if (url.empty()) {
+    dispatchEvent(pScript, "error", false);
+    return;
+  }
+  // No document.currentScript in a module, and no document.write() after the parsing.
+  const RunningScript running(_scripts, nullptr, false);
+  const ModuleRun run = RunExternalModule(*this, url, credentials);
+  dispatchEvent(pScript, run == ModuleRun::FetchFailed ? "error" : "load", false);
+}
+
+void Page::runInlineModule(lxb_dom_node_t* pScript, RequestCredentials credentials) {
+  if (!admitCode("inline module")) {
+    return;
+  }
+  const RunningScript running(_scripts, nullptr, false);
+  if (RunInlineModule(*this, std::string_view(_code), credentials) == ModuleRun::FetchFailed) {
+    dispatchEvent(pScript, "error", false);
+  }
 }
 
 void Page::runExternalScript(lxb_dom_node_t* pScript, std::string_view url, std::string_view charset,
@@ -630,21 +711,35 @@ bool Page::runCode(lxb_dom_node_t* pScript, const char* filename, bool parserIns
 }
 
 JsValue Page::evalScript(std::string_view code, const char* filename) {
-  ScriptCache& cache = session().scripts;
-  if (!cache.caches(code.size())) {
+  if (!session().scripts.caches(code.size())) {
     return _engine.eval(code, filename);
   }
-  JSContext* pCtx = context();
+  JsValue compiled = compileScript(code, filename, false);
+  if (JS_IsException(compiled.get())) {
+    return compiled;
+  }
+  return {context(), JS_EvalFunction(context(), compiled.release())};
+}
 
-  const ScriptCache::Script script(filename, code);
-  if (const std::span<const std::byte> bytecode = cache.find(script); !bytecode.empty()) {
-    const JSValue function =
-        JS_ReadObject(pCtx, reinterpret_cast<const uint8_t*>(bytecode.data()), bytecode.size(), JS_READ_OBJ_BYTECODE);
-    return {pCtx, JS_IsException(function) ? JS_EXCEPTION : JS_EvalFunction(pCtx, function)};
+JsValue Page::compileScript(std::string_view code, const char* filename, bool module) const {
+  JSContext* pCtx = context();
+  // The JS_EVAL_* flags are distinct bits of signed int macros: added rather than or-ed (bugprone-signed-bitwise).
+  const int flags = (module ? JS_EVAL_TYPE_MODULE : JS_EVAL_TYPE_GLOBAL) + JS_EVAL_FLAG_COMPILE_ONLY;
+  ScriptCache& cache = session().scripts;
+  if (!cache.caches(code.size())) {
+    return {pCtx, JS_Eval(pCtx, code.data(), code.size(), filename, flags)};
   }
 
-  // Of type JS_EVAL_TYPE_GLOBAL (0), as _engine.eval().
-  JsValue compiled(pCtx, JS_Eval(pCtx, code.data(), code.size(), filename, JS_EVAL_FLAG_COMPILE_ONLY));
+  // Its hash first: the code of a module is in a buffer that its imports reuse (see ModuleMap::code()).
+  const ScriptCache::Script script(filename, code, module);
+  if (const std::span<const std::byte> bytecode = cache.find(script); !bytecode.empty()) {
+    // The read of a module resolves its imports, which can store their bytecode: its entry stays until the read ends.
+    const ScriptCache::Reading reading(cache);
+    return {pCtx, JS_ReadObject(pCtx, reinterpret_cast<const uint8_t*>(bytecode.data()), bytecode.size(),
+                                JS_READ_OBJ_BYTECODE)};
+  }
+
+  JsValue compiled(pCtx, JS_Eval(pCtx, code.data(), code.size(), filename, flags));
   if (JS_IsException(compiled.get())) {
     return compiled;
   }
@@ -658,8 +753,7 @@ JsValue Page::evalScript(std::string_view code, const char* filename) {
     // Out of memory of the JavaScript heap: the script still runs, its bytecode not cached.
     JS_FreeValue(pCtx, JS_GetException(pCtx));
   }
-
-  return {pCtx, JS_EvalFunction(pCtx, compiled.release())};
+  return compiled;
 }
 
 void Page::flushDocumentWrite(lxb_dom_node_t* pScript) {
@@ -742,8 +836,9 @@ Page::Outcome Page::run(const CssSelector* pSelector, LoadState until, SteadyClo
   };
 
   const auto runScripts = [&](ScriptQueue::Kind kind) {
-    for (lxb_dom_node_t* pScript = _scripts.next(kind); pScript != nullptr; pScript = _scripts.next(kind)) {
-      if (!step([this, pScript] { runParserScript(pScript); })) {
+    for (ScriptQueue::ParserScript script = _scripts.next(kind); script.pScript != nullptr;
+         script = _scripts.next(kind)) {
+      if (!step([this, script] { runParserScript(script); })) {
         return false;
       }
     }

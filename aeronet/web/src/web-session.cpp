@@ -27,6 +27,10 @@ WebClientConfig WithCookies(WebClientConfig config) {
   return config;
 }
 
+// Mixed into the hash of the code of a module: the same code at the same URL compiles to another bytecode as a
+// classic script (a UMD bundle can be both).
+constexpr uint64_t kModuleHashSalt = 0x9E3779B97F4A7C15ULL;
+
 }  // namespace
 
 StorageAreas::Item::Item(std::string_view key, std::string_view value)
@@ -41,8 +45,8 @@ void StorageAreas::Item::setValue(std::string_view value) {
   _chars.unchecked_append(value);
 }
 
-ScriptCache::Script::Script(std::string_view url, std::string_view code) noexcept
-    : url(url), code(code), hash(CityHash{}(code)) {}
+ScriptCache::Script::Script(std::string_view url, std::string_view code, bool module) noexcept
+    : url(url), code(code), hash(CityHash{}(code) ^ (module ? kModuleHashSalt : 0U)) {}
 
 ScriptCache::Entry* ScriptCache::entryOf(const Script& script) noexcept {
   const auto entryIt = std::ranges::find_if(_entries, [&script](const Entry& entry) {
@@ -76,7 +80,13 @@ void ScriptCache::store(const Script& script, std::span<const std::byte> bytecod
   _bytes = _bytes - previousSize + bytecode.size();
   pEntry->lastUse = ++_sequence;
 
-  // The new entry, the most recently used one, fits alone: it stays.
+  if (_readings == 0) {
+    trim();
+  }
+}
+
+void ScriptCache::trim() noexcept {
+  // The most recently used entry fits alone: it stays.
   while (_bytes > _maxBytes) {
     const auto oldestIt = std::ranges::min_element(_entries, {}, &Entry::lastUse);
     _bytes -= oldestIt->bytecode.size();

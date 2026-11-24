@@ -4,6 +4,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <initializer_list>
@@ -30,6 +31,7 @@
 #include "js-engine.hpp"
 #include "js-prelude.hpp"
 #include "memory-budget.hpp"
+#include "module-map.hpp"
 #include "rejection-tracker.hpp"
 #include "request-queue.hpp"
 #include "script-queue.hpp"
@@ -137,6 +139,9 @@ class Page {
 
   [[nodiscard]] std::string_view url() const noexcept { return _url.view(); }
 
+  // url(), null-terminated: the file name of the inline scripts.
+  [[nodiscard]] const char* urlCStr() const noexcept { return _url.c_str(); }
+
   // The origin of the URL of the page ("https://example.com:8443"), the key of its storage.
   [[nodiscard]] std::string_view origin() const noexcept { return _url.origin(); }
 
@@ -203,8 +208,9 @@ class Page {
   // changed, and the scripts that scripts created among them and their descendants start once connected (HTML "prepare
   // the script element"), also their parent when it is such a script ("a node is inserted into the script element"),
   // after them. An inline script runs now, before this returns, an external one is fetched and run as a task. Returns
-  // false when an uncatchable error (the deadline, memory exhaustion) stopped an inline one: the error is pending, for
-  // the native function that inserted the nodes to fail with it, so that it stops the script that called it too.
+  // false when an uncatchable error (the deadline, memory exhaustion) stopped an inline one, or when the page cannot
+  // hold the copy of one to run as a task (an out of memory error): the error is pending, for the native function that
+  // inserted the nodes to fail with it, so that it stops the script that called it too.
   [[nodiscard]] bool nodesInserted(lxb_dom_node* pFirst, lxb_dom_node* pEnd) {
     touchDom();
     return !_scripts.hasCreated() || startInsertedScripts(pFirst, pEnd);
@@ -219,6 +225,30 @@ class Page {
   // Whether the deadline stopped a script (see JsEngine::interrupted()): a native function that caught its error (the
   // conversion of a value) fails with ThrowInterrupted() instead, so that the scripts stop.
   [[nodiscard]] bool interrupted() const noexcept { return _engine.interrupted(); }
+
+  // Whether the deadline has passed: no request starts any more.
+  [[nodiscard]] bool expired() const noexcept { return _engine.expired(); }
+
+  // Counts the 'size' bytes of the code of a script about to run in WebClientConfig::maxScriptBytes: false, nothing
+  // counted, when they exceed it with those of the scripts run before.
+  [[nodiscard]] bool admitScriptBytes(std::size_t size) noexcept {
+    return _scripts.admit(size, session().config.maxScriptBytes);
+  }
+
+  // 'code' (null-terminated at its size) compiled as a classic script, or as a module for 'module' (its imports
+  // resolved, but those of a module read back), named 'filename': read back from the script cache of the session when
+  // it has it, else compiled (and cached when large enough). JS_EXCEPTION, the exception pending, when it does not
+  // compile.
+  [[nodiscard]] JsValue compileScript(std::string_view code, const char* filename, bool module) const;
+
+  // The modules of the page (see js-module.cpp).
+  [[nodiscard]] ModuleMap& modules() noexcept { return _modules; }
+
+  // Forgets the rejection of 'promise', which the page handles: it is not reported as unhandled.
+  void forgetRejection(JSValueConst promise) noexcept { _rejections.track(promise, JS_UNDEFINED, true); }
+
+  // Reports the pending exception, unless it is that of the deadline: 'context' names its source for the log.
+  void reportPendingException(const char* context);
 
   // Appends 'html', followed by a line feed for 'newLine' (writeln()), to the output of document.write() of the
   // running script, inserted after it when it ends. Ignored outside of a script run by the page loop. Returns false,
@@ -295,13 +325,21 @@ class Page {
   // the document: HTML "prepare the script element"). Valid until the next resolution.
   [[nodiscard]] std::string_view scriptUrl(const HtmlElement& script);
 
-  // Runs pScript, a classic script of the parser, fetched first if external, followed by the output of its
-  // document.write() calls.
-  void runParserScript(lxb_dom_node* pScript);
+  // Runs 'script', a script of the parser: a classic one fetched first if external, followed by the output of its
+  // document.write() calls, or a module one.
+  void runParserScript(const ScriptQueue::ParserScript& script);
 
-  // Runs 'script', an external script inserted by a script (a task), within the WebClientConfig::maxRequests of the
-  // document.
+  // Runs 'script', a script inserted by a script to run as a task, within the WebClientConfig::maxRequests of the
+  // document for an external one.
   void runInsertedScript(const ScriptQueue::InsertedScript& script);
+
+  // Runs pScript, an external module script of 'url' (empty: an error) whose graph is fetched with 'credentials', then
+  // dispatches its error event if its graph could not be fetched, else its load event.
+  void runExternalModule(lxb_dom_node* pScript, std::string_view url, RequestCredentials credentials);
+
+  // Runs pScript, an inline module script whose code is in _code, its imports fetched with 'credentials': its error
+  // event if its graph could not be fetched.
+  void runInlineModule(lxb_dom_node* pScript, RequestCredentials credentials);
 
   // Fetches pScript from 'url' (empty: an error) with its 'charset' attribute and 'credentials', and runs it: its error
   // event when it cannot be fetched, else its load event after it ran, and after the output of its document.write()
@@ -325,6 +363,10 @@ class Page {
   // nodesInserted().
   [[nodiscard]] bool startScript(lxb_dom_node* pScript);
 
+  // Queues 'script', inserted by a script, to run as a task, its URL and code counted in the native memory of the
+  // page until it runs. Returns false, an out of memory error thrown, when the page cannot hold them.
+  [[nodiscard]] bool queueInsertedScript(const ScriptQueue::InsertedScript& script);
+
   // Runs 'code' (null-terminated at its size) as a classic script named 'filename', from the bytecode of the script
   // cache of the session when it has it, else compiled (and cached when large enough). Returns its completion value,
   // JS_EXCEPTION with the exception pending.
@@ -343,8 +385,6 @@ class Page {
   bool fetchScript(std::string_view url, std::string_view charset, RequestCredentials credentials);
 
   void flushDocumentWrite(lxb_dom_node* pScript);
-
-  void reportPendingException(const char* context);
 
   // Dispatches a trusted event 'type' at pNode, at the window if null.
   void dispatchEvent(lxb_dom_node* pNode, const char* type, bool bubbles);
@@ -401,6 +441,7 @@ class Page {
   TimerQueue _timers;
   RequestQueue _requests{_engine.context(), _memory};
   RejectionTracker _rejections{_engine.context()};
+  ModuleMap _modules{_engine.context()};
 };
 
 }  // namespace aeronet::internal

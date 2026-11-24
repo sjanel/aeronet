@@ -4,15 +4,18 @@
 
 #include <chrono>
 #include <fstream>
+#include <ios>
 #include <iterator>
 #include <string>
 #include <string_view>
 #include <utility>
 
+#include "../src/js-module.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/test_server_fixture.hpp"
 #include "aeronet/web-client-config.hpp"
 #include "aeronet/web-client.hpp"
 #include "aeronet/web-page.hpp"
@@ -172,7 +175,9 @@ TEST(WebAppTest, TypesOfInsertedScripts) {
                    "const json = document.body.lastChild.previousSibling.previousSibling.previousSibling;"
                    // A data block becomes a classic script when its type changes, and its text is inserted again.
                    "json.type = 'text/javascript'; json.append(';');</script>"));
-  EXPECT_EQ(Log(page), R"(["text/javascript","","application/json"])");
+  // The module runs as a task, after the script that inserted it (not at all without module support).
+  EXPECT_EQ(Log(page), internal::ModulesEnabled() ? R"(["text/javascript","","application/json","module"])"
+                                                  : R"(["text/javascript","","application/json"])");
 }
 
 TEST(WebAppTest, ClonedScripts) {
@@ -445,9 +450,12 @@ TEST(WebAppTest, IntersectionObserverReportsEverythingVisible) {
   EXPECT_EQ(Log(page),
             R"([[0,0.5],null,"0px 0px 0px 0px",1,true,[["a",true,1,true,0,1280],["c",true,1,true,0,1280]]])");
   EXPECT_EQ(test::Eval(page, "'intersectionRatio' in IntersectionObserverEntry.prototype"), "true");
-  for (const std::string_view script :
-       {"new IntersectionObserver()", "new IntersectionObserver(() => {}, {threshold: 2})",
-        "new IntersectionObserver(() => {}).observe({})", "IntersectionObserver(() => {})"}) {
+  for (const std::string_view script : {
+           "new IntersectionObserver()",
+           "new IntersectionObserver(() => {}, {threshold: 2})",
+           "new IntersectionObserver(() => {}).observe({})",
+           "IntersectionObserver(() => {})",
+       }) {
     auto result = page.evaluate(script);
     ASSERT_FALSE(result) << script;
     EXPECT_TRUE(result.error().starts_with("TypeError") || result.error().starts_with("RangeError")) << result.error();
@@ -462,6 +470,57 @@ TEST(WebAppTest, ResizeObserverReportsEmptyElements) {
                    "entry instanceof ResizeObserverEntry])));"
                    "observer.observe(document.body); observer.observe(document.body);</script>"));
   EXPECT_EQ(Log(page), "[[[true,0,0,true]]]");
+}
+
+// The mutations are not reported, but the observers are created and check their options as in browsers.
+TEST(WebAppTest, MutationObserverReportsNothing) {
+  WebClient client;
+  WebPage page = test::Navigate(
+      client,
+      Page("<p id=a>text</p><script>log = []; const observer = new MutationObserver(() => log.push('called'));"
+           "observer.observe(document.body, {childList: true, subtree: true, attributes: true});"
+           "observer.observe(document.getElementById('a').firstChild, {characterDataOldValue: true});"
+           "observer.observe(document.body, {attributeFilter: ['id']});"
+           "document.body.append(document.createElement('div')); document.body.id = 'x';"
+           "document.getElementById('a').firstChild.data = 'changed';"
+           "log.push(observer.takeRecords().length, observer.disconnect());</script>"),
+      {.until = LoadState::NetworkIdle});
+  EXPECT_EQ(Log(page), "[0,null]");
+  for (const std::string_view script : {
+           "new MutationObserver()",
+           "MutationObserver(() => {})",
+           "new MutationObserver(() => {}).observe({}, {childList: true})",
+           "new MutationObserver(() => {}).observe(document.body)",
+           "new MutationObserver(() => {}).observe(document.body, {subtree: true})",
+           "new MutationObserver(() => {}).observe(document.body, {attributes: false, attributeOldValue: true})",
+           "new MutationObserver(() => {}).observe(document.body, {attributes: false, attributeFilter: []})",
+           "new MutationObserver(() => {}).observe(document, {characterData: false, characterDataOldValue: true})",
+       }) {
+    EXPECT_EQ(test::ErrorName(page, script), R"("TypeError")") << script;
+  }
+}
+
+// The queries and the child lists are arrays: a script that checks for a NodeList or an HTMLCollection gets one.
+TEST(WebAppTest, CollectionsAreArrays) {
+  WebClient client;
+  WebPage page = test::Navigate(client, Page("<p>a</p> <p>b</p>"));
+  EXPECT_EQ(test::Eval(page,
+                       "const body = document.body;"
+                       "[document.querySelectorAll('p') instanceof NodeList, body.childNodes instanceof NodeList,"
+                       "body.children instanceof HTMLCollection, body.childNodes instanceof HTMLCollection,"
+                       "document.getElementsByTagName('p') instanceof HTMLCollection, [] instanceof NodeList,"
+                       "[body, 1] instanceof NodeList, {length: 0} instanceof NodeList,"
+                       "body.childNodes instanceof Array, NodeList.name, HTMLCollection.name]"),
+            R"([true,true,true,false,true,true,false,false,true,"NodeList","HTMLCollection"])");
+  EXPECT_EQ(test::ErrorName(page, "new NodeList()"), R"("TypeError")");
+  EXPECT_EQ(test::ErrorName(page, "new HTMLCollection()"), R"("TypeError")");
+  // The removal of the cookie banner of OneTrust, which tests for both.
+  EXPECT_EQ(test::Eval(page,
+                       "const remove = e => { if (e instanceof NodeList || e instanceof Array) {"
+                       "for (let i = 0; i < e.length; i++) e[i].parentElement.removeChild(e[i]); } else {"
+                       "e.parentElement.removeChild(e); } }; remove(document.querySelectorAll('p'));"
+                       "document.querySelectorAll('p').length"),
+            "0");
 }
 
 TEST(WebAppTest, LazyGlobalsCanBeReplaced) {

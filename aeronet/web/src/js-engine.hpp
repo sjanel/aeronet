@@ -106,9 +106,10 @@ JSValue JsMagicMethod(JSContext* pCtx, JSValueConst thisVal, int argc, JSValueCo
 }
 
 // When the allocation of the UTF-8 fails, JS_ToCStringLen() keeps the reference it took to the string it converts
-// (QuickJS-ng 0.16 to 0.18 at least, and its master on 2026-11-21): the string then outlives its runtime. Not assumed
-// of the next versions: a fixed one would free the string twice, an unfixed one leaks it again (caught by
-// FailedConversionsKeepNoString in web-engine_test.cpp).
+// (QuickJS-ng 0.16 to 0.18 at least, and its master of 2026-11-23 that the download pins, which reports 0.18 too: check
+// it again when the pin moves): the string then outlives its runtime. Not assumed of the next versions: a fixed one
+// would free the string twice, an unfixed one leaks it again (caught by FailedConversionsKeepNoString in
+// web-engine_test.cpp).
 inline constexpr bool kToCStringLeaksOnFailure = QJS_VERSION_MAJOR == 0 && QJS_VERSION_MINOR <= 18;
 
 // The UTF-8 of 'str', a string (not a rope), as JS_ToCStringLen() without its leak. Null on memory exhaustion, the

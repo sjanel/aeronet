@@ -6,10 +6,13 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 
+#include "../src/js-module.hpp"
 #include "../src/web-url.hpp"
 #include "aeronet/cookie-jar.hpp"
 #include "aeronet/http-client-config.hpp"
@@ -20,6 +23,7 @@
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/test_server_fixture.hpp"
 #include "aeronet/web-client-config.hpp"
 #include "aeronet/web-page.hpp"
 #include "web-test-util.hpp"
@@ -168,7 +172,9 @@ TEST(WebClientTest, DomContentLoadedStopsBeforeTheAsyncScripts) {
   EXPECT_EQ(test::Eval(page, "document.readyState"), R"("interactive")");
 }
 
-TEST(WebClientTest, OnlyClassicScriptsRun) {
+// The classic scripts and the module scripts run (deferred: after the others, see web-module_test.cpp), not the data
+// blocks, nor the nomodule scripts, fallbacks of the browsers without modules.
+TEST(WebClientTest, ScriptTypes) {
   WebClient client;
   WebPage page = test::Navigate(
       client, Page("<script>log = []</script>"
@@ -179,7 +185,9 @@ TEST(WebClientTest, OnlyClassicScriptsRun) {
                    "<script language=javascript>log.push('language')</script>"
                    "<script language=vbscript>log.push('vbscript')</script><script language=''>log.push('no "
                    "language')</script><script src=''></script><script></script>"));
-  EXPECT_EQ(Log(page), R"(["nomodule","empty","case","language","no language"])");
+  // Without module support, as in a browser without modules: the nomodule scripts run, not the module ones.
+  EXPECT_EQ(Log(page), internal::ModulesEnabled() ? R"(["empty","case","language","no language","module"])"
+                                                  : R"(["nomodule","empty","case","language","no language"])");
 }
 
 TEST(WebClientTest, ExternalScriptErrors) {

@@ -28,8 +28,8 @@ enum class LazyPrelude : uint8_t {
   // fetch(), Headers, Request, Response, AbortController, AbortSignal, XMLHttpRequest, ProgressEvent,
   // navigator.sendBeacon(), TextEncoder, TextDecoder, URL, URLSearchParams.
   Network,
-  // DOMRect, DOMRectReadOnly, IntersectionObserver, ResizeObserver, MediaQueryList, matchMedia(),
-  // getComputedStyle(): no layout, every element is visible and empty.
+  // DOMRect, DOMRectReadOnly, IntersectionObserver, ResizeObserver, MutationObserver, MediaQueryList, matchMedia(),
+  // getComputedStyle(): no layout, every element is visible and empty, no mutation reported; NodeList, HTMLCollection.
   View,
   // Intl, which QuickJS-ng does not have: en-US formatting.
   Intl,

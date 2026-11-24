@@ -34,6 +34,7 @@ class RequestQueue {
     RequestCredentials credentials;
     bool crossOrigin;  // its URL, or one of its redirects, is not of the origin of the document
     bool preflight;    // it needs a CORS preflight at its current URL
+    bool redirected;   // a redirect was followed
   };
 
   RequestQueue(JSContext* pCtx, MemoryBudget& memory) noexcept : _pCtx(pCtx), _pMemory(&memory) {}

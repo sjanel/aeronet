@@ -76,3 +76,8 @@ if(AERONET_ENABLE_HTTP_SERVER)
 	endif()
 endif()
 
+
+if(AERONET_ENABLE_JS)
+	AeronetAddProjectExecutable(aeronet-web-page web-page.cpp)
+	target_link_libraries(aeronet-web-page PRIVATE aeronet_web)
+endif()

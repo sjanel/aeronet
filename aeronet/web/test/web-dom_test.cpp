@@ -7,7 +7,7 @@
 
 #include "aeronet/html-document.hpp"
 #include "aeronet/html-element.hpp"
-#include "aeronet/web-client.hpp"
+#include "aeronet/test_server_fixture.hpp"
 #include "aeronet/web-page.hpp"
 #include "web-test-util.hpp"
 
@@ -534,6 +534,11 @@ TEST_F(WebDomTest, Events) {
   EXPECT_EQ(eval("first.onfalse = () => false; const falseEvent = new Event('false', {cancelable: true});"
                  "first.dispatchEvent(falseEvent); falseEvent.defaultPrevented"),
             "true");
+  // Called without receiver, the methods are those of the window.
+  EXPECT_EQ(eval("let bare = 0; const onBare = () => ++bare; addEventListener('bare', onBare);"
+                 "dispatchEvent(new Event('bare')); removeEventListener('bare', onBare);"
+                 "window.dispatchEvent(new Event('bare')); bare"),
+            "1");
   // The event handler content attributes.
   EXPECT_EQ(eval("first.setAttribute('onclick', 'window.clicked = event.type + this.id');"
                  "first.dispatchEvent(new Event('click')); clicked"),

@@ -69,6 +69,13 @@ constexpr bool IsOfOrigin(std::string_view url, std::string_view origin) noexcep
   return url.size() > origin.size() && url.starts_with(origin) && url[origin.size()] == '/';
 }
 
+// The origin of 'url', a serialized http or https URL without user information ("https://example.com:8443"): its prefix
+// before its path.
+constexpr std::string_view OriginOf(std::string_view url) noexcept {
+  const std::size_t authorityPos = url.find("//") + 2U;
+  return url.substr(0, url.find_first_of("/?#", authorityPos));
+}
+
 // 'url' without its fragment.
 constexpr std::string_view WithoutFragment(std::string_view url) noexcept { return url.substr(0, url.find('#')); }
 
