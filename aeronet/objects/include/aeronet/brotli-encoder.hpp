@@ -7,39 +7,64 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoder-result.hpp"
 #include "aeronet/encoder.hpp"
-#include "aeronet/object-array-pool.hpp"
 
 extern "C" struct BrotliEncoderStateStruct;
 using BrotliEncoderState = BrotliEncoderStateStruct;
 
 namespace aeronet {
 
-/// Brotli memory allocator wrapper using ObjectArrayPool for efficient reuse.
-///
-/// Memory management strategy:
-/// - Allocations are pooled in blocks with exponential growth (2x multiplier)
-/// - At the start of each compression session, clear() clears the pool state (but keeps blocks)
-/// - This allows efficient reuse of allocated blocks across multiple sessions
-/// - Actual memory is freed only when the encoder is destroyed
-/// - This design is ideal for long-running servers: allocate once, reuse many times
-struct BrotliScratch {
-  void clear() noexcept { _pool.clear(); }
+/// Allocator of a brotli encoder, keeping the blocks brotli frees for its next allocations: brotli allocates the same
+/// tables in each session (MBs from quality 5, 32 MiB from quality 9 with the default window), and similar temporaries
+/// for each block of input. The cache stays close to the memory brotli uses at once, whatever the length of the
+/// streams:
+/// - an allocation takes the smallest cached block that fits, unless it is more than twice as large
+/// - an allocation finding no such block frees the largest smaller one if it is at least half as large, an outgrown
+///   copy of a growing buffer
+/// - trim(), between two sessions, frees the cached blocks the last session did not allocate
+class BrotliScratch {
+ public:
+  BrotliScratch() noexcept = default;
 
-  void* alloc(std::size_t size) { return _pool.allocateAndDefaultConstruct(size); }
+  BrotliScratch(const BrotliScratch&) = delete;
+  // Moves need brotli to hold no block of rhs: its states keep the address of their scratch.
+  BrotliScratch(BrotliScratch&& rhs) noexcept;
+  BrotliScratch& operator=(const BrotliScratch&) = delete;
+  BrotliScratch& operator=(BrotliScratch&& rhs) noexcept;
 
-  static void* Alloc(void* opaque, size_t size);
-  static void Free([[maybe_unused]] void* opaque, [[maybe_unused]] void* address) {
-    // Note: We don't free individual allocations here because:
-    // 1. ObjectArrayPool manages memory in blocks, not individual allocations
-    // 2. The pool is cleared at the start of each session (clear() calls _pool.clear())
-    //    which destroys objects but keeps blocks allocated for efficient reuse
-    // 3. This design allows long-running servers to reuse pool blocks across sessions
-    //    without the overhead of repeated allocation/deallocation
-    // 4. Actual memory is freed only when the pool is destroyed (end of encoder lifetime)
-  }
+  ~BrotliScratch() { release(); }
+
+  /// Frees the cached blocks not allocated since the previous call. Brotli must hold no block: call it between the
+  /// destruction of a brotli state and the creation of the next one.
+  void trim() noexcept;
+
+  /// Allocation functions given to brotli, with this scratch as opaque pointer.
+  static void* Alloc(void* opaque, std::size_t size) noexcept;
+  static void Free(void* opaque, void* address) noexcept;
 
  private:
-  ObjectArrayPool<std::byte> _pool;
+  friend struct BrotliScratchTestAccess;
+
+  // Header of a block, followed by its data: aligned as max_align_t, so that the data is aligned as malloc memory.
+  struct alignas(std::max_align_t) Block {
+    // Set in capacityAndAllocated when the block was allocated since the last trim().
+    static constexpr std::size_t kAllocatedFlag = 1;
+
+    [[nodiscard]] std::size_t capacity() const noexcept { return capacityAndAllocated & ~kAllocatedFlag; }
+
+    [[nodiscard]] std::byte* data() noexcept { return reinterpret_cast<std::byte*>(this + 1); }
+
+    [[nodiscard]] static Block* FromData(void* address) noexcept {
+      return reinterpret_cast<Block*>(static_cast<std::byte*>(address) - sizeof(Block));
+    }
+
+    // Capacity of the data in bytes, a multiple of alignof(Block), with kAllocatedFlag in its lowest bit.
+    std::size_t capacityAndAllocated;
+    Block* pNext;  // next cached block
+  };
+
+  void release() noexcept;
+
+  Block* _pFirstCached{nullptr};  // cached blocks, by increasing capacity
 };
 
 class BrotliEncoderContext final : public EncoderContext {
@@ -64,7 +89,7 @@ class BrotliEncoderContext final : public EncoderContext {
   EncoderResult end(std::size_t availableCapacity, char* buf) noexcept override;
 
   /// Initialize (or reinitialize) the compression context with given parameters.
-  /// Since Brotli has no public reset API, a new state is created each time.
+  /// Since Brotli has no public reset API, a new state is created each time, from the blocks its scratch kept.
   void init(int quality, int window);
 
  private:
