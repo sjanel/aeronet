@@ -9,6 +9,9 @@
 //
 //   # Two messages echoed by the aeronet-websocket-echo example
 //   aeronet-websocket-client -n 2 ws://localhost:8080/ws hello world
+//
+//   # The Kraken ticker, followed across disconnections: the subscription is sent again by each new connection
+//   aeronet-websocket-client --reconnect wss://ws.kraken.com/v2 "$SUBSCRIBE"
 
 #include <aeronet/aeronet-client.hpp>
 #include <aeronet/log.hpp>
@@ -24,6 +27,7 @@
 #include <exception>
 #include <ios>
 #include <iostream>
+#include <limits>
 #include <ostream>
 #include <span>
 #include <stdexcept>
@@ -49,6 +53,8 @@ void PrintUsage(std::string_view programName) {
             << "  -t, --duration <seconds>    Close the connection after <seconds>\n"
             << "  -H, --header <line>         Add a header to the opening handshake ('Name: value'), repeatable\n"
             << "  -p, --protocol <list>       Offer subprotocols (comma-separated)\n"
+            << "  -r, --reconnect             Connect again when the connection fails or ends (backoff from 1 s to\n"
+            << "                              60 s, attempts 4 s apart at least), the messages being sent again\n"
             << "      --no-compression        Do not offer permessage-deflate\n"
             << "  -v, --verbose               Print the debug logs of aeronet (on the standard output)\n"
             << "  -h, --help                  Show this help message\n"
@@ -65,6 +71,7 @@ struct Options {
   std::chrono::seconds duration{0};        // 0: no limit
   uint64_t maxMessages{0};                 // 0: no limit
   bool compression{true};
+  bool reconnect{false};
   bool verbose{false};
   bool help{false};
 };
@@ -106,6 +113,8 @@ bool ParseOptions(int argc, char** argv, Options& options) {
       return true;
     } else if (arg == "--no-compression") {
       options.compression = false;
+    } else if (arg == "-r" || arg == "--reconnect") {
+      options.reconnect = true;
     } else if (arg == "-v" || arg == "--verbose") {
       options.verbose = true;
     } else if (arg == "-n" || arg == "--max-messages") {
@@ -163,10 +172,11 @@ void AddHeaders(std::span<const std::string_view> headers, HttpRequest& request)
   }
 }
 
-// The state of the callbacks, given to connect() and returned by WebSocketConnection::userData().
+// The state of the callbacks, given to connectAsync() and returned by WebSocketConnection::userData().
 struct Session {
+  std::string_view url;
   std::span<const std::string_view> messages;  // sent by onOpen
-  WebSocketConnection* pConnection{nullptr};   // set by onOpen, null again once the connection ended
+  WebSocketConnection* pConnection{nullptr};   // null once the connection ended for good
   uint64_t maxMessages{0};
   uint64_t nbReceived{0};
   websocket::CloseCode closeCode{websocket::CloseCode::AbnormalClosure};
@@ -175,7 +185,8 @@ struct Session {
 
 Session& SessionOf(WebSocketConnection& cnx) { return *static_cast<Session*>(cnx.userData()); }
 
-// Starts the closing handshake, once: the connection ends when the server answers it, or after closeTimeout.
+// Starts the closing handshake, once: the connection ends when the server answers it, or after closeTimeout. Before
+// the connection is open (or while it waits to reconnect), it ends at once.
 void RequestClose(Session& session, std::string_view reason) {
   if (session.pConnection != nullptr && !session.closeRequested) {
     session.closeRequested = true;
@@ -198,10 +209,36 @@ void PrintHex(std::span<const std::byte> payload) {
   std::cout << line;
 }
 
+// Prints the response of a server refusing the upgrade: its status, and the start of its body, which often tells why.
+void PrintRefusal(const HttpResponse& response) {
+  static constexpr std::size_t kMaxBodyBytes = 512;
+  std::cerr << "Response status: " << static_cast<int>(response.status());
+  if (!response.reason().empty()) {
+    std::cerr << ' ' << response.reason();
+  }
+  std::cerr << '\n';
+  const std::string_view body = response.bodyInMemory();
+  if (!body.empty()) {
+    std::cerr << body.substr(0, kMaxBodyBytes) << (body.size() > kMaxBodyBytes ? "...\n" : "\n");
+  }
+}
+
 void OnOpen(WebSocketConnection& cnx) {
-  Session& session = SessionOf(cnx);
-  session.pConnection = &cnx;
-  // Sent before anything the server may send next: the subscriptions of a market data feed, for instance.
+  const Session& session = SessionOf(cnx);
+  // The 101 response of the server, during this call.
+  const HttpResponse& response = *cnx.handshakeResponse();
+  std::cerr << "Connected to " << session.url;
+  if (const std::string_view protocol = response.headerValueOrEmpty(websocket::SecWebSocketProtocol);
+      !protocol.empty()) {
+    std::cerr << ", subprotocol " << protocol;
+  }
+  if (const std::string_view extensions = response.headerValueOrEmpty(websocket::SecWebSocketExtensions);
+      !extensions.empty()) {
+    std::cerr << ", extensions " << extensions;
+  }
+  std::cerr << '\n';
+  // Sent before anything the server may send next: the subscriptions of a market data feed, for instance. A new
+  // connection, after a reconnection, sends them again.
   for (const std::string_view message : session.messages) {
     if (!cnx.sendText(message)) {
       std::cerr << "Could not send '" << message << "': the connection is closing\n";
@@ -231,26 +268,25 @@ void OnMessage(WebSocketConnection& cnx, std::span<const std::byte> payload, boo
 
 void OnClose(WebSocketConnection& cnx, websocket::CloseCode code, std::string_view reason) {
   Session& session = SessionOf(cnx);
-  session.pConnection = nullptr;  // destroyed after this call
   session.closeCode = code;
-  std::cerr << "Closed with code " << static_cast<uint16_t>(code);
-  if (!reason.empty()) {
-    std::cerr << ": " << reason;
+  const HttpResponse* pResponse = cnx.handshakeResponse();
+  if (pResponse != nullptr || cnx.handshakeError() != HttpClientErrc::noError) {
+    std::cerr << "Connection to " << session.url << " failed: " << reason << '\n';
+    if (pResponse != nullptr) {
+      // The server answered, but refused the upgrade (a 401, a 429...) or sent an invalid 101 response.
+      PrintRefusal(*pResponse);
+    }
+  } else {
+    std::cerr << "Closed with code " << static_cast<uint16_t>(code);
+    if (!reason.empty()) {
+      std::cerr << ": " << reason;
+    }
+    std::cerr << " (received messages: " << session.nbReceived << ")\n";
   }
-  std::cerr << " (received messages: " << session.nbReceived << ")\n";
-}
-
-// Prints the response of a server refusing the upgrade: its status, and the start of its body, which often tells why.
-void PrintRefusal(const HttpResponse& response) {
-  static constexpr std::size_t kMaxBodyBytes = 512;
-  std::cerr << "Response status: " << static_cast<int>(response.status());
-  if (!response.reason().empty()) {
-    std::cerr << ' ' << response.reason();
-  }
-  std::cerr << '\n';
-  const std::string_view body = response.bodyInMemory();
-  if (!body.empty()) {
-    std::cerr << body.substr(0, kMaxBodyBytes) << (body.size() > kMaxBodyBytes ? "...\n" : "\n");
+  if (cnx.reconnecting()) {
+    std::cerr << "Reconnecting...\n";
+  } else {
+    session.pConnection = nullptr;  // destroyed after this call
   }
 }
 
@@ -262,7 +298,13 @@ int Run(const Options& options) {
 #ifdef AERONET_ENABLE_ZLIB
   config.deflateConfig.enabled = options.compression;
 #endif
-  WebSocketClient client(config);
+  WebSocketReconnectConfig reconnect;
+  if (options.reconnect) {
+    // The backoff recommended by Kraken and Cloudflare, which ban an IP address after about 150 attempts in 10 minutes.
+    reconnect.retry.maxAttempts = std::numeric_limits<uint32_t>::max();
+    reconnect.minConnectInterval = std::chrono::seconds{4};
+  }
+  WebSocketClient client(config, HttpClientConfig{}, reconnect);
 
   HttpRequest request = client.makeUpgradeRequest(options.url);
   AddHeaders(options.headers, request);
@@ -271,31 +313,14 @@ int Run(const Options& options) {
   }
 
   Session session;
+  session.url = options.url;
   session.messages = options.messages;
   session.maxMessages = options.maxMessages;
-  const WebSocketConnectResult result = client.connect(
+  // The handshake runs in poll(), which calls onOpen once connected, or onClose if it failed.
+  session.pConnection = &client.connectAsync(
       std::move(request),
       WebSocketClientCallbacks{.onOpen = OnOpen, .onMessage = OnMessage, .onPong = nullptr, .onClose = OnClose},
       &session);
-  if (!result) {
-    std::cerr << "Connection to " << options.url << " failed: " << result.pErrorMessage << '\n';
-    if (result.httpError == HttpClientErrc::noError) {
-      // The server answered, but refused the upgrade (a 401, a 429...) or sent an invalid 101 response.
-      PrintRefusal(result.response);
-    }
-    return EXIT_FAILURE;
-  }
-
-  std::cerr << "Connected to " << options.url;
-  if (const std::string_view protocol = result.response.headerValueOrEmpty(websocket::SecWebSocketProtocol);
-      !protocol.empty()) {
-    std::cerr << ", subprotocol " << protocol;
-  }
-  if (const std::string_view extensions = result.response.headerValueOrEmpty(websocket::SecWebSocketExtensions);
-      !extensions.empty()) {
-    std::cerr << ", extensions " << extensions;
-  }
-  std::cerr << '\n';
 
   // Ctrl+C starts the closing handshake, which the server answers within closeTimeout.
   SignalHandler::Enable(config.closeTimeout);

@@ -63,6 +63,7 @@
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-raii.hpp"
 #include "aeronet/tls-transport.hpp"
+#include "aeronet/upgraded-connection.hpp"
 #include "collecting-body-sink.hpp"
 #include "http-client-test-access.hpp"
 
@@ -795,12 +796,15 @@ TEST(HttpClientMtlsTest, RejectsClientWithoutCert) {
 namespace {
 
 // TLS server serving its connections one after the other: `handler` runs on each connection whose handshake succeeded,
-// then the connection is closed, without close_notify. A non-zero `maxProtoVersion` caps the TLS version.
+// then the connection is closed, without close_notify. A non-zero `maxProtoVersion` caps the TLS version, a non-zero
+// `handshakeDelay` delays the handshake of each connection (the answer to its ClientHello).
 class RawTlsServer {
  public:
   using Handler = std::function<void(SSL*)>;
 
-  explicit RawTlsServer(Handler handler, int maxProtoVersion = 0) : _handler(std::move(handler)) {
+  explicit RawTlsServer(Handler handler, int maxProtoVersion = 0,
+                        std::chrono::milliseconds handshakeDelay = std::chrono::milliseconds{0})
+      : _handler(std::move(handler)), _handshakeDelay(handshakeDelay) {
     auto [certPem, keyPem] = test::MakeEphemeralCertKey("localhost");
     auto certBio = MakeMemBio(certPem.data(), static_cast<int>(certPem.size()));
     auto keyBio = MakeMemBio(keyPem.data(), static_cast<int>(keyPem.size()));
@@ -842,6 +846,7 @@ class RawTlsServer {
       ::setsockopt(cnx.fd(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));  // NOLINT(misc-include-cleaner)
       SslPtr ssl(::SSL_new(_ctx.get()), ::SSL_free);
       ::SSL_set_fd(ssl.get(), cnx.fd());
+      std::this_thread::sleep_for(_handshakeDelay);
       if (::SSL_accept(ssl.get()) == 1) {
         _handler(ssl.get());
       }
@@ -850,6 +855,7 @@ class RawTlsServer {
   }
 
   Handler _handler;
+  std::chrono::milliseconds _handshakeDelay;
   SslCtxPtr _ctx{::SSL_CTX_new(::TLS_server_method()), ::SSL_CTX_free};
   BaseFd _listenFd{::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)};
   uint16_t _port{0};
@@ -981,6 +987,35 @@ TEST(HttpClientTlsRawServerTest, CloseWhileAwaitingContinueFailsTheRequestAtOnce
   const auto result = client.request(std::move(req));
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error(), HttpClientErrc::connectionClosed) << ErrcToStr(result.error());
+}
+
+// The TLS handshake of an upgrade is bounded by connectTimeout, then requestTimeout bounds the exchange from its end: a
+// handshake slower than requestTimeout leaves the exchange its whole time.
+TEST(HttpClientTlsRawServerTest, SlowTlsHandshakeOfAnUpgradeLeavesTheRequestTimeoutToTheExchange) {
+  static constexpr std::string_view kSwitching =
+      "HTTP/1.1 101 Switching Protocols\r\nUpgrade: tcp\r\nConnection: Upgrade\r\n\r\n";
+  RawTlsServer server(
+      [](SSL* ssl) {
+        std::string request;
+        char buf[1024];
+        for (std::size_t nbRead = 0; !request.contains(http::DoubleCRLF);) {
+          ASSERT_EQ(::SSL_read_ex(ssl, buf, sizeof(buf), &nbRead), 1);
+          request.append(buf, nbRead);
+        }
+        std::size_t nbWritten = 0;
+        ASSERT_EQ(::SSL_write_ex(ssl, kSwitching.data(), kSwitching.size(), &nbWritten), 1);
+      },
+      0, std::chrono::milliseconds{400});
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = false;  // self-signed server cert
+  cfg.connectTimeout = std::chrono::seconds{10};
+  cfg.requestTimeout = std::chrono::milliseconds{200};
+  HttpClient client(cfg);
+  auto result =
+      client.upgrade(client.makeUpgradeRequest("https://127.0.0.1:" + std::to_string(server.port()) + "/up", "tcp"));
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(result->response.status(), http::StatusCodeSwitchingProtocols);
+  EXPECT_TRUE(result->connection.valid());
 }
 #endif
 

@@ -20,7 +20,6 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/response-streamer.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
@@ -33,9 +32,45 @@
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #include "http1-response-parser.hpp"
+#include "request-head-lines.hpp"
 #include "transport-io.hpp"
 
 namespace aeronet::internal {
+
+std::size_t SpliceRequestHeadLines(std::string_view wire, std::size_t headEnd, std::string_view cookies,
+                                   std::string_view extraLines, bool addClose, RawChars& out) {
+  static constexpr std::string_view kConnectionCloseLine =
+      JoinStringView_v<http::CRLF, http::Connection, http::HeaderSep, http::close>;
+  static constexpr std::string_view kCookieLinePrefix = JoinStringView_v<http::CRLF, http::Cookie, http::HeaderSep>;
+
+  // Where the cookies go: at the end of the Cookie line of the request, else in a new line at the end of the head.
+  std::size_t cookiesPos = headEnd;
+  std::string_view cookiesPrefix = kCookieLinePrefix;
+  if (!cookies.empty()) {
+    const std::string_view head = wire.substr(0, headEnd);
+    if (const std::size_t cookieLinePos = head.find(kCookieLinePrefix); cookieLinePos != std::string_view::npos) {
+      const std::size_t valuePos = cookieLinePos + kCookieLinePrefix.size();
+      cookiesPos = std::min(head.find(http::CRLF, valuePos), headEnd);
+      cookiesPrefix = cookiesPos == valuePos ? std::string_view{} : http::CookiePairSep;
+    }
+  }
+  const std::size_t cookiesSize = cookies.empty() ? 0 : cookiesPrefix.size() + cookies.size();
+  const std::size_t closeSize = addClose ? kConnectionCloseLine.size() : 0;
+
+  out.ensureAvailableCapacity(wire.size() + cookiesSize + extraLines.size() + closeSize);
+  char* pData = Append(wire.substr(0, cookiesPos), out.data() + out.size());
+  if (!cookies.empty()) {
+    pData = Append(cookiesPrefix, pData);
+    pData = Append(cookies, pData);
+  }
+  pData = Append(wire.substr(cookiesPos, headEnd - cookiesPos), pData);
+  pData = Append(extraLines, pData);
+  if (addClose) {
+    pData = AppendFixed<kConnectionCloseLine>(pData);
+  }
+  out.setEnd(Append(wire.substr(headEnd), pData));
+  return headEnd + cookiesSize + extraLines.size() + closeSize;
+}
 
 // Writes the request of an HTTP/1.1 exchange while watching the connection for its response (RFC 9112 §9.5): a final
 // response from 300 received before the end of the request, or the closing of the connection, stops the writing, as the
@@ -78,7 +113,13 @@ class ClientConnection::Http11RequestWriter {
     const bool addClose = !chunkedReq.has_value() && !config.keepAlive && !req.hasHeader(http::Connection);
     const std::string_view cookies = _client.requestCookies();
     if (addClose || !cookies.empty()) {
-      headEnd = spliceHeadLines(wire, headEnd, cookies, addClose);
+      // Into the request scratch buffer of the client, idle until the response phase. The request itself stays
+      // protocol-neutral, because a retry or redirect may select HTTP/2, which sends the cookies apart and forbids the
+      // Connection header. The captured body, if any, is still written straight from the request.
+      RawChars& out = _client.bodyBuffer();
+      out.clear();
+      headEnd = SpliceRequestHeadLines(wire, headEnd, cookies, {}, addClose, out);
+      wire = out;
     }
     // A body with trailers is in memory, never a file: when captured, it holds the chunked framing and the trailers.
     const std::string_view body = wireReq.hasBodyCaptured() ? wireReq.capturedPayloadForHttp11() : std::string_view{};
@@ -104,48 +145,6 @@ class ClientConnection::Http11RequestWriter {
   [[nodiscard]] bool writeFailed() const noexcept { return _writeFailed; }
 
  private:
-  // Copies 'wire' (the head, then the inline body if any) into the request scratch buffer of the client, idle until the
-  // response phase, with 'cookies' added to the Cookie header line (a request has a single one, RFC 6265bis §5.8.3),
-  // or in a new one, and with the "close" connection option when 'addClose' is set. The request itself stays
-  // protocol-neutral, because a retry or redirect may select HTTP/2, which sends the cookies apart and forbids the
-  // Connection header. The captured body, if any, is still written straight from the request. Points 'wire' to the
-  // copy and returns its head end.
-  std::size_t spliceHeadLines(std::string_view& wire, std::size_t headEnd, std::string_view cookies, bool addClose) {
-    static constexpr std::string_view kConnectionCloseLine =
-        JoinStringView_v<http::CRLF, http::Connection, http::HeaderSep, http::close>;
-    static constexpr std::string_view kCookieLinePrefix = JoinStringView_v<http::CRLF, http::Cookie, http::HeaderSep>;
-
-    // Where the cookies go: at the end of the Cookie line of the request, else in a new line at the end of the head.
-    std::size_t cookiesPos = headEnd;
-    std::string_view cookiesPrefix = kCookieLinePrefix;
-    if (!cookies.empty()) {
-      const std::string_view head = wire.substr(0, headEnd);
-      if (const std::size_t cookieLinePos = head.find(kCookieLinePrefix); cookieLinePos != std::string_view::npos) {
-        const std::size_t valuePos = cookieLinePos + kCookieLinePrefix.size();
-        cookiesPos = std::min(head.find(http::CRLF, valuePos), headEnd);
-        cookiesPrefix = cookiesPos == valuePos ? std::string_view{} : http::CookiePairSep;
-      }
-    }
-    const std::size_t cookiesSize = cookies.empty() ? 0 : cookiesPrefix.size() + cookies.size();
-    const std::size_t closeSize = addClose ? kConnectionCloseLine.size() : 0;
-
-    RawChars& out = _client.bodyBuffer();
-    out.clear();
-    out.reserve(wire.size() + cookiesSize + closeSize);
-    char* pData = Append(wire.substr(0, cookiesPos), out.data());
-    if (!cookies.empty()) {
-      pData = Append(cookiesPrefix, pData);
-      pData = Append(cookies, pData);
-    }
-    pData = Append(wire.substr(cookiesPos, headEnd - cookiesPos), pData);
-    if (addClose) {
-      pData = AppendFixed<kConnectionCloseLine>(pData);
-    }
-    out.setEnd(Append(wire.substr(headEnd), pData));
-    wire = out;
-    return headEnd + cookiesSize + closeSize;
-  }
-
   // What a step of the writing tells about the rest of the request.
   enum class Step : uint8_t {
     Continue,    // the writing goes on
@@ -349,7 +348,7 @@ class ClientConnection::Http11RequestWriter {
 
 HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transport& transport, NativeHandle fd,
                                                      HttpRequest& req, SteadyClock::time_point ioDeadline,
-                                                     bool& requestSent, bool upgradeRequest) {
+                                                     bool& requestSent) {
   const HttpClientConfig& config = client.config();
   _keepAlive = false;  // until the response is complete: a failed exchange never leaves the connection reusable
   RawChars& responseBuffer = client.responseBuffer();
@@ -364,7 +363,7 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
   // body is copied. Both paths preserve reuse without making a later request invalidate the returned response.
   ResponseStreamer& streamer = client._streamer;
   Http1ResponseParser parser(client.bodyBuffer());
-  parser.reset(req.method() == http::Method::HEAD, streamer.active(), upgradeRequest);
+  parser.reset(req.method() == http::Method::HEAD, streamer.active());
   if (config.decompression.enable) {
     // Decode Content-Encoding'd response bodies in place at install time (straight from the receive
     // buffer / de-framed chunk buffer, no intermediate copy of the compressed bytes).
@@ -465,13 +464,6 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
       streamer.setBufferedBody(parser.bufferedBody(), parser.contentType(responseBuffer));
     }
     break;
-  }
-
-  if (upgradeRequest && resp.status() == http::StatusCodeSwitchingProtocols) {
-    // The connection now speaks the new protocol: the receive buffer keeps the bytes of it received with the head, and
-    // the transport the ones TLS already decrypted (the caller reads them before waiting for the socket).
-    responseBuffer.erase_front(parser.consumed());
-    return resp;
   }
 
   // Bytes still held by the transport (decrypted by TLS but not read yet) were received after the end of the response,

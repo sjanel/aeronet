@@ -51,6 +51,12 @@
 
 namespace aeronet {
 
+class WebSocketClient;
+
+namespace internal {
+class UpgradeHandshake;  // defined in upgrade-handshake.hpp (opening handshake of upgrade())
+}  // namespace internal
+
 #ifdef AERONET_ENABLE_HTTP2
 namespace http2::internal {
 class Http2ClientEngine;  // defined in http2-connection.cpp (native HTTP/2 client engine)
@@ -360,6 +366,7 @@ class HttpClient {
   // not followed and nothing is retried. The cookies of the jar are sent, and the ones of the response stored, as by
   // request(). A transport failure (connect, TLS, timeout, malformed response...) is returned as an HttpClientErrc.
   // `req` is not moved from: its headers are those sent, except the cookies of the jar, added on the wire only.
+  // Throws std::invalid_argument if `req` has a file body or trailers.
   HttpUpgradeResult upgrade(HttpRequest&& req);
 
   // Convenience verbs.
@@ -491,10 +498,8 @@ class HttpClient {
                                                                     AddressSpace minAddressSpace);
 
   // Establish a fresh connection for `req` to an address of `minAddressSpace` or of a more public one (see
-  // PageRequestContext::addressSpace). An `upgrade` connection offers only HTTP/1.1 over TLS, and reaches a cleartext
-  // origin through a forward proxy with a CONNECT tunnel too.
-  std::expected<ActiveConnection, HttpClientErrc> connectNew(const HttpRequest& req, AddressSpace minAddressSpace,
-                                                             bool upgrade = false);
+  // PageRequestContext::addressSpace).
+  std::expected<ActiveConnection, HttpClientErrc> connectNew(const HttpRequest& req, AddressSpace minAddressSpace);
 
   // Whether a forward proxy is configured (see HttpClientConfig::withProxy). When true, connectNew connects
   // to the proxy and, for an https origin, opens a CONNECT tunnel before the TLS handshake.
@@ -535,6 +540,10 @@ class HttpClient {
   // internal::ClientConnection (and the HTTP/2 engine it owns) read these (private) accessors during an
   // exchange, so they are friends.
   friend class internal::ClientConnection;
+  // The opening handshake of upgrade(), also driven step by step by WebSocketClient, which picks the backoff jitter of
+  // its reconnections from this client.
+  friend class internal::UpgradeHandshake;
+  friend class WebSocketClient;
 #ifdef AERONET_ENABLE_HTTP2
   friend class http2::internal::Http2ClientEngine;
 #endif

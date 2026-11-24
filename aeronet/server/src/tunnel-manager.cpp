@@ -14,6 +14,7 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
+#include "aeronet/host-resolver.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -29,7 +30,7 @@
 #include "aeronet/transport.hpp"
 #include "aeronet/vector.hpp"
 #include "http-error-build.hpp"
-#include "tunnel-resolver.hpp"
+#include "pending-tunnel.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-error-code-name.hpp"
@@ -300,7 +301,7 @@ void TunnelManager::expirePendingTunnels(std::chrono::steady_clock::time_point n
   for (const auto& pending : expired) {
     // Its resolution, if in progress, cannot be interrupted: its result will be ignored.
     pending->cancelled = true;
-    _resolver.cancel(pending);
+    _resolver.cancel(*pending);
     log::warn("CONNECT target {}:{} not resolved within the keep-alive timeout", pending->host(), pending->port);
 #ifdef AERONET_ENABLE_HTTP2
     if (pending->streamId != 0) {
@@ -320,22 +321,25 @@ void TunnelManager::expirePendingTunnels(std::chrono::steady_clock::time_point n
 }
 
 void TunnelManager::completeResolvedTunnels() {
-  vector<std::shared_ptr<PendingTunnel>> resolved;
+  vector<std::shared_ptr<HostResolution>> resolved;
   _resolver.takeResolved(resolved);
-  for (const auto& pending : resolved) {
-    if (pending->cancelled) {
+  for (const auto& resolution : resolved) {
+    // The resolver only resolves the targets of pending tunnels.
+    const auto& pending = static_cast<const PendingTunnel&>(*resolution);
+    if (pending.cancelled) {
       continue;  // its client connection closed meanwhile
     }
-    const auto pendingIt = std::ranges::find(_pendingTunnels, pending);
+    const auto pendingIt = std::ranges::find_if(
+        _pendingTunnels, [&pending](const std::shared_ptr<PendingTunnel>& tunnel) { return tunnel.get() == &pending; });
     assert(pendingIt != _pendingTunnels.end());
     _pendingTunnels.erase(pendingIt);
 #ifdef AERONET_ENABLE_HTTP2
-    if (pending->streamId != 0) {
-      completeH2Tunnel(*pending);
+    if (pending.streamId != 0) {
+      completeH2Tunnel(pending);
       continue;
     }
 #endif
-    completeHttp1Tunnel(*pending);
+    completeHttp1Tunnel(pending);
   }
 }
 
@@ -440,7 +444,7 @@ void TunnelManager::closeTunnelsOf(ConnectionIt cnxIt) {
             return false;
           }
           pending->cancelled = true;
-          _resolver.cancel(pending);
+          _resolver.cancel(*pending);
           return true;
         });
     _pendingTunnels.erase(first, last);

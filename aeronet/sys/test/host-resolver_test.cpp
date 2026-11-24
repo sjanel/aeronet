@@ -1,4 +1,4 @@
-#include "../src/tunnel-resolver.hpp"
+#include "aeronet/host-resolver.hpp"
 
 #include <gtest/gtest.h>
 
@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -13,7 +14,6 @@
 #include "aeronet/event-fd.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
-#include "aeronet/native-handle.hpp"
 #include "aeronet/vector.hpp"
 
 #ifdef AERONET_POSIX
@@ -28,20 +28,32 @@ namespace {
 
 using namespace std::chrono_literals;
 
-// The resolver ignores the deadline, which the TunnelManager checks.
-constexpr std::chrono::steady_clock::time_point kNoDeadline{};
+// A resolution telling its requester apart.
+struct TaggedResolution : HostResolution {
+  TaggedResolution(std::string_view host, uint32_t requester) : HostResolution(host, 80), tag(requester) {}
 
-// Collects the resolved tunnels until 'expected' were received, or the timeout elapsed.
-vector<std::shared_ptr<PendingTunnel>> WaitForResolved(TunnelResolver& resolver, std::size_t expected,
-                                                       std::chrono::milliseconds timeout = 10s) {
-  vector<std::shared_ptr<PendingTunnel>> all;
-  vector<std::shared_ptr<PendingTunnel>> batch;
+  uint32_t tag;
+};
+
+std::shared_ptr<TaggedResolution> MakeResolution(std::string_view host, uint32_t tag) {
+  return std::make_shared<TaggedResolution>(host, tag);
+}
+
+uint32_t TagOf(const std::shared_ptr<HostResolution>& resolution) {
+  return static_cast<const TaggedResolution&>(*resolution).tag;
+}
+
+// Collects the resolutions done until 'expected' were received, or the timeout elapsed.
+vector<std::shared_ptr<HostResolution>> WaitForResolved(HostResolver& resolver, std::size_t expected,
+                                                        std::chrono::milliseconds timeout = 10s) {
+  vector<std::shared_ptr<HostResolution>> all;
+  vector<std::shared_ptr<HostResolution>> batch;
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (all.size() < expected && std::chrono::steady_clock::now() < deadline) {
     if (resolver.hasResolved()) {
       resolver.takeResolved(batch);
-      for (auto& pending : batch) {
-        all.push_back(std::move(pending));
+      for (auto& resolution : batch) {
+        all.push_back(std::move(resolution));
       }
     } else {
       std::this_thread::sleep_for(1ms);
@@ -59,47 +71,41 @@ bool IsSignaled(const EventFd& wakeupFd) {
 
 }  // namespace
 
-TEST(TunnelResolverTest, PendingTunnelKeepsANullTerminatedHost) {
-  const auto deadline = std::chrono::steady_clock::now() + 5s;
-  const PendingTunnel pending("example.com", 443, NativeHandle{3}, 5U, 42U, deadline);
-  EXPECT_EQ(pending.host(), "example.com");
-  EXPECT_EQ(pending.hostBuffer.data()[pending.host().size()], '\0');
-  EXPECT_EQ(pending.port, 443);
-  EXPECT_EQ(pending.clientFd, NativeHandle{3});
-  EXPECT_EQ(pending.streamId, 5U);
-  EXPECT_EQ(pending.consumedBytes, 42U);
-  EXPECT_EQ(pending.deadline, deadline);
-  EXPECT_FALSE(pending.cancelled);
+TEST(HostResolverTest, ResolutionKeepsANullTerminatedHost) {
+  const HostResolution resolution("example.com", 443);
+  EXPECT_EQ(resolution.host(), "example.com");
+  EXPECT_EQ(resolution.hostBuffer.data()[resolution.host().size()], '\0');
+  EXPECT_EQ(resolution.port, 443);
+  EXPECT_EQ(resolution.addresses, nullptr);
 }
 
-TEST(TunnelResolverTest, ResolvesHostNamesAndNotifies) {
+TEST(HostResolverTest, ResolvesHostNamesAndNotifies) {
   EventFd wakeupFd;
-  TunnelResolver resolver(wakeupFd);
+  HostResolver resolver(wakeupFd);
   EXPECT_FALSE(resolver.hasResolved());
   EXPECT_FALSE(IsSignaled(wakeupFd));
 
-  resolver.resolve(std::make_shared<PendingTunnel>("localhost", 80, NativeHandle{1}, 0U, 0U, kNoDeadline));
+  resolver.resolve(MakeResolution("localhost", 1));
   // On POSIX, the getaddrinfo override fails it without querying the DNS (stalled over 10 s on a macOS CI runner).
-  resolver.resolve(
-      std::make_shared<PendingTunnel>("no-such-host.example.invalid", 80, NativeHandle{2}, 0U, 0U, kNoDeadline));
+  resolver.resolve(MakeResolution("no-such-host.example.invalid", 2));
 
   const auto resolved = WaitForResolved(resolver, 2);
   ASSERT_EQ(resolved.size(), 2U);
   EXPECT_TRUE(IsSignaled(wakeupFd));
   EXPECT_FALSE(resolver.hasResolved());
-  for (const auto& pending : resolved) {
-    if (pending->clientFd == NativeHandle{1}) {
-      EXPECT_NE(pending->addresses, nullptr);
+  for (const auto& resolution : resolved) {
+    if (TagOf(resolution) == 1) {
+      EXPECT_NE(resolution->addresses, nullptr);
     } else {
       // A failed resolution is reported too, without addresses.
-      EXPECT_EQ(pending->addresses, nullptr);
+      EXPECT_EQ(resolution->addresses, nullptr);
     }
   }
 }
 
 #ifdef AERONET_POSIX
 // The names the getaddrinfo override fails without querying the DNS.
-TEST(TunnelResolverTest, GetAddrInfoOverrideRecognizesInvalidTldHosts) {
+TEST(HostResolverTest, GetAddrInfoOverrideRecognizesInvalidTldHosts) {
   EXPECT_TRUE(test::IsInvalidTldHost("invalid"));
   EXPECT_TRUE(test::IsInvalidTldHost("invalid."));
   EXPECT_TRUE(test::IsInvalidTldHost("no-such-host.example.invalid"));
@@ -113,51 +119,49 @@ TEST(TunnelResolverTest, GetAddrInfoOverrideRecognizesInvalidTldHosts) {
   EXPECT_FALSE(test::IsInvalidTldHost("host.invalid.."));
 }
 
-TEST(TunnelResolverTest, MoreResolutionsThanThreads) {
+TEST(HostResolverTest, MoreResolutionsThanThreads) {
   EventFd wakeupFd;
-  TunnelResolver resolver(wakeupFd);
-  static constexpr uint32_t kNbResolutions = (3U * TunnelResolver::kMaxThreads) + 1U;
+  HostResolver resolver(wakeupFd);
+  static constexpr uint32_t kNbResolutions = (3U * HostResolver::kMaxThreads) + 1U;
   test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(20);
   for (uint32_t idx = 0; idx < kNbResolutions; ++idx) {
-    resolver.resolve(
-        std::make_shared<PendingTunnel>("localhost", 80, static_cast<NativeHandle>(idx), 0U, 0U, kNoDeadline));
+    resolver.resolve(MakeResolution("localhost", idx));
   }
   const auto resolved = WaitForResolved(resolver, kNbResolutions);
   EXPECT_EQ(resolved.size(), kNbResolutions);
 }
 
-TEST(TunnelResolverTest, CancelDropsQueuedResolutions) {
+TEST(HostResolverTest, CancelDropsQueuedResolutions) {
   EventFd wakeupFd;
-  TunnelResolver resolver(wakeupFd);
+  HostResolver resolver(wakeupFd);
   test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(200);
-  vector<std::shared_ptr<PendingTunnel>> pendings;
-  for (uint32_t idx = 0; idx < TunnelResolver::kMaxThreads + 2U; ++idx) {
-    pendings.push_back(
-        std::make_shared<PendingTunnel>("localhost", 80, static_cast<NativeHandle>(idx), 0U, 0U, kNoDeadline));
+  vector<std::shared_ptr<HostResolution>> pendings;
+  for (uint32_t idx = 0; idx < HostResolver::kMaxThreads + 2U; ++idx) {
+    pendings.push_back(MakeResolution("localhost", idx));
     resolver.resolve(pendings.back());
   }
   std::this_thread::sleep_for(50ms);  // the first ones are being resolved: the last two wait in the queue
-  resolver.cancel(pendings[TunnelResolver::kMaxThreads]);
-  resolver.cancel(pendings[TunnelResolver::kMaxThreads + 1U]);
+  resolver.cancel(*pendings[HostResolver::kMaxThreads]);
+  resolver.cancel(*pendings[HostResolver::kMaxThreads + 1U]);
   // A resolution in progress is not interrupted.
-  resolver.cancel(pendings.front());
+  resolver.cancel(*pendings.front());
 
   const auto resolved = WaitForResolved(resolver, pendings.size(), 1500ms);
-  EXPECT_EQ(resolved.size(), static_cast<std::size_t>(TunnelResolver::kMaxThreads));
-  for (const auto& pending : resolved) {
-    EXPECT_LT(pending->clientFd, static_cast<NativeHandle>(TunnelResolver::kMaxThreads));
+  EXPECT_EQ(resolved.size(), static_cast<std::size_t>(HostResolver::kMaxThreads));
+  for (const auto& resolution : resolved) {
+    EXPECT_LT(TagOf(resolution), HostResolver::kMaxThreads);
   }
 }
 
-TEST(TunnelResolverTest, DestructionDoesNotWaitForResolutionsInProgress) {
+TEST(HostResolverTest, DestructionDoesNotWaitForResolutionsInProgress) {
   EventFd wakeupFd;
   test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(1000);
   const auto start = std::chrono::steady_clock::now();
   {
-    TunnelResolver resolver(wakeupFd);
-    resolver.resolve(std::make_shared<PendingTunnel>("localhost", 80, NativeHandle{1}, 0U, 0U, kNoDeadline));
+    HostResolver resolver(wakeupFd);
+    resolver.resolve(MakeResolution("localhost", 1));
     // Queued behind the first one if a single thread was started, or resolving too: dropped either way.
-    resolver.resolve(std::make_shared<PendingTunnel>("localhost", 80, NativeHandle{2}, 0U, 0U, kNoDeadline));
+    resolver.resolve(MakeResolution("localhost", 2));
     std::this_thread::sleep_for(50ms);
   }
   EXPECT_LT(std::chrono::steady_clock::now() - start, 700ms);

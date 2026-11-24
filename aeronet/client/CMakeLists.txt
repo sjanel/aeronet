@@ -97,6 +97,15 @@ if(AERONET_ENABLE_HTTP_SERVER)
     )
 endif()
 
+# The opening handshake of HttpClient::upgrade() and WebSocketClient, against scripted servers and proxies.
+AeronetAddUnitTest(
+    upgrade-handshake_test
+    test/upgrade-handshake_test.cpp
+    LIBRARIES
+    aeronet_client
+    aeronet_test_support
+)
+
 AeronetAddUnitTest(
     http-client-exception_test
     test/http-client-exception_test.cpp

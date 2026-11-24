@@ -9,7 +9,6 @@
 #endif
 
 #include <algorithm>
-#include <cassert>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -114,29 +113,23 @@ ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family, int co
   return ConnectTCP(*addresses, connectTimeoutMs, minAddressSpace);
 }
 
-ConnectResult ConnectTCP(const addrinfo& addresses, int connectTimeoutMs, AddressSpace minAddressSpace) {
+ConnectResult StartConnectTCP(const addrinfo*& pAddress, AddressSpace minAddressSpace) {
   ConnectResult connectResult;
   bool tried = false;
-
-  // When connectTimeoutMs > 0 the caller wants a fully-established socket: each pending connect is driven
-  // to completion here so a failed candidate (e.g. localhost's ::1 against an IPv4-only server) falls back
-  // to the next one. The budget is shared across all candidates.
-  const bool blockingFallback = connectTimeoutMs > 0;
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(connectTimeoutMs);
-
-  for (const addrinfo* rp = &addresses; rp != nullptr; rp = rp->ai_next) {
-    connectResult.addressSpace = AddressSpaceOf(*rp->ai_addr);
+  for (; pAddress != nullptr; pAddress = pAddress->ai_next) {
+    const addrinfo& address = *pAddress;
+    connectResult.addressSpace = AddressSpaceOf(*address.ai_addr);
     if (connectResult.addressSpace < minAddressSpace) {
-      log::debug("ConnectTCP: address of family {} skipped: less public than allowed", rp->ai_family);
+      log::debug("ConnectTCP: address of family {} skipped: less public than allowed", address.ai_family);
       continue;
     }
     tried = true;
 #ifdef AERONET_LINUX
     // NOLINTNEXTLINE(bugprone-signed-bitwise)
-    const auto socktype = rp->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC;
-    connectResult.cnx = Connection(BaseFd(::socket(rp->ai_family, socktype, rp->ai_protocol)));
+    const auto socktype = address.ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC;
+    connectResult.cnx = Connection(BaseFd(::socket(address.ai_family, socktype, address.ai_protocol)));
 #else
-    connectResult.cnx = Connection(BaseFd(::socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol)));
+    connectResult.cnx = Connection(BaseFd(::socket(address.ai_family, address.ai_socktype, address.ai_protocol)));
     if (connectResult.cnx) {
       SetNonBlocking(connectResult.cnx.fd());
 #ifdef AERONET_POSIX
@@ -147,24 +140,23 @@ ConnectResult ConnectTCP(const addrinfo& addresses, int connectTimeoutMs, Addres
     if (!connectResult.cnx) [[unlikely]] {
       const int saved = LastSystemError();
       log::error("ConnectTCP: socket() failed for addrinfo entry (family={}, socktype={}, protocol={}): err={}, msg={}",
-                 rp->ai_family, rp->ai_socktype, rp->ai_protocol, saved, SystemErrorMessage(saved));
+                 address.ai_family, address.ai_socktype, address.ai_protocol, saved, SystemErrorMessage(saved));
       if (saved == error::kTooManyFiles || saved == ENFILE) {
-        break;  // no point in continuing
+        pAddress = nullptr;  // no point in continuing
+        break;
       }
       continue;
     }
 
 #ifdef AERONET_WINDOWS
-    if (::connect(connectResult.cnx.fd(), rp->ai_addr, static_cast<int>(rp->ai_addrlen)) == 0) {
+    if (::connect(connectResult.cnx.fd(), address.ai_addr, static_cast<int>(address.ai_addrlen)) == 0) {
 #else
-    if (::connect(connectResult.cnx.fd(), rp->ai_addr, rp->ai_addrlen) == 0) {
+    if (::connect(connectResult.cnx.fd(), address.ai_addr, address.ai_addrlen) == 0) {
 #endif
-      // connected immediately
-      return connectResult;
+      return connectResult;  // connected immediately
     }
 
     const int connectErr = LastSystemError();
-    // Non-blocking connect started -> completion will be signalled via poll/epoll/WSAPoll
     switch (connectErr) {
       case error::kWouldBlock:
         // Windows returns WSAEWOULDBLOCK (10035) from connect() on a non-blocking socket;
@@ -172,48 +164,65 @@ ConnectResult ConnectTCP(const addrinfo& addresses, int connectTimeoutMs, Addres
         [[fallthrough]];
       case error::kInProgress:
         [[fallthrough]];
-      case error::kAlready: {
+      case error::kAlready:
         // EALREADY: a previous non-blocking connect is already in progress on this socket
-        if (!blockingFallback) {
-          connectResult.connectPending = true;
-          return connectResult;  // caller drives completion via its own event loop
-        }
-        const auto connectWait = WaitForConnectCompletion(connectResult.cnx.fd(), deadline);
-        switch (connectWait) {
-          case ConnectWait::Connected:
-            return connectResult;  // connectPending stays false: socket is established
-          case ConnectWait::TimedOut:
-            log::error("ConnectTCP: connect() timed out for addrinfo entry (family={}, socktype={}, protocol={})",
-                       rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-            connectResult.cnx = {};
-            connectResult.failure = true;
-            return connectResult;
-          default:
-            assert(connectWait == ConnectWait::Failed);
-            continue;  // close this socket (reassigned next iteration) and
-                       // try the next candidate
-        }
-      }
+        connectResult.connectPending = true;
+        return connectResult;  // completion signalled via poll/epoll/WSAPoll
       case error::kInterrupted:
         // Interrupted system call; treat as transient and try next address
-        continue;
+        break;
       default:
         log::error(
             "ConnectTCP: connect() failed for addrinfo entry (family={}, socktype={}, protocol={}): err={}, msg={}",
-            rp->ai_family, rp->ai_socktype, rp->ai_protocol, connectErr, SystemErrorMessage(connectErr));
+            address.ai_family, address.ai_socktype, address.ai_protocol, connectErr, SystemErrorMessage(connectErr));
         break;
     }
   }
   // No candidate connected: never hand back a half-open / last-attempted socket on failure.
   connectResult.cnx = {};
   connectResult.failure = true;
-  if (!tried) {
-    log::debug("ConnectTCP: every address is less public than allowed");
-    connectResult.blocked = true;
-    return connectResult;
-  }
-  log::error("ConnectTCP: failed to connect to any addrinfo entry");
+  connectResult.blocked = !tried;
   return connectResult;
+}
+
+ConnectResult ConnectTCP(const addrinfo& addresses, int connectTimeoutMs, AddressSpace minAddressSpace) {
+  // When connectTimeoutMs > 0 the caller wants a fully-established socket: each pending connect is driven
+  // to completion here so a failed candidate (e.g. localhost's ::1 against an IPv4-only server) falls back
+  // to the next one. The budget is shared across all candidates.
+  const bool blockingFallback = connectTimeoutMs > 0;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(connectTimeoutMs);
+
+  bool tried = false;
+  for (const addrinfo* pAddress = &addresses;; pAddress = pAddress->ai_next) {
+    ConnectResult connectResult = StartConnectTCP(pAddress, minAddressSpace);
+    if (connectResult.failure) {
+      if (tried || !connectResult.blocked) {
+        connectResult.blocked = false;
+        log::error("ConnectTCP: failed to connect to any addrinfo entry");
+      } else {
+        log::debug("ConnectTCP: every address is less public than allowed");
+      }
+      return connectResult;
+    }
+    tried = true;
+    if (!connectResult.connectPending || !blockingFallback) {
+      return connectResult;  // connected, or pending for the caller to drive via its own event loop
+    }
+    switch (WaitForConnectCompletion(connectResult.cnx.fd(), deadline)) {
+      case ConnectWait::Connected:
+        connectResult.connectPending = false;  // the socket is established
+        return connectResult;
+      case ConnectWait::TimedOut:
+        log::error("ConnectTCP: connect() timed out for addrinfo entry (family={}, socktype={}, protocol={})",
+                   pAddress->ai_family, pAddress->ai_socktype, pAddress->ai_protocol);
+        connectResult.cnx = {};
+        connectResult.connectPending = false;
+        connectResult.failure = true;
+        return connectResult;
+      default:
+        break;  // close this socket and try the next candidate
+    }
+  }
 }
 
 }  // namespace aeronet

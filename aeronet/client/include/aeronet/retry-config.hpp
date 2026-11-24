@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <string_view>
 
 #include "aeronet/flat-set.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -35,6 +36,11 @@ struct RetryConfig {
   // a factor in [1 - jitter, 1 + jitter] driven by `rnd01` in [0, 1) -- `rnd01` is ignored when jitter==0,
   // keeping the result deterministic. The final value is clamped to [0, maxDelay].
   [[nodiscard]] Duration delayFor(uint32_t retryIndex, double rnd01 = 0.0) const noexcept;
+
+  // Delay before the retry following a response whose status is in retryStatuses: the delta-seconds of 'retryAfter',
+  // the value of its Retry-After header (empty when absent), capped at maxDelay, when honorRetryAfter is set and the
+  // value is one; 'computed' (the backoff delay, see delayFor()) otherwise. An HTTP-date form is not parsed.
+  [[nodiscard]] Duration statusRetryDelay(std::string_view retryAfter, Duration computed) const noexcept;
 
   void validate() const;
 

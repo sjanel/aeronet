@@ -1,9 +1,13 @@
 #include "aeronet/retry-config.hpp"
 
 #include <algorithm>
+#include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
+#include <string_view>
+#include <system_error>
 
 #include "aeronet/http-status-code.hpp"
 
@@ -25,6 +29,21 @@ RetryConfig::Duration RetryConfig::delayFor(uint32_t retryIndex, double rnd01) c
     delayMs = std::clamp(delayMs * factor, 0.0, capMs);
   }
   return Duration{static_cast<Duration::rep>(delayMs)};
+}
+
+RetryConfig::Duration RetryConfig::statusRetryDelay(std::string_view retryAfter, Duration computed) const noexcept {
+  if (!honorRetryAfter) {
+    return computed;
+  }
+  uint64_t seconds;
+  const char* end = retryAfter.data() + retryAfter.size();
+  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+  const auto [ptr, ec] = std::from_chars(retryAfter.data(), end, seconds);
+  if (ec != std::errc{} || ptr != end) {
+    return computed;  // absent, or not delta-seconds
+  }
+  const auto capSeconds = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(maxDelay).count());
+  return std::chrono::duration_cast<Duration>(std::chrono::seconds{std::min(seconds, capSeconds)});
 }
 
 void RetryConfig::validate() const {

@@ -7,6 +7,7 @@
 #include <span>
 #include <string_view>
 
+#include "aeronet/host-resolver.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/connection-io.hpp"
 #include "aeronet/internal/connection-storage.hpp"
@@ -16,7 +17,7 @@
 #include "aeronet/tcp-connector.hpp"
 #include "aeronet/tunnel-bridge.hpp"
 #include "aeronet/vector.hpp"
-#include "tunnel-resolver.hpp"
+#include "pending-tunnel.hpp"
 
 namespace aeronet::internal {
 
@@ -133,7 +134,7 @@ class TunnelManager {
 #endif
 
   ServerContext& _ctx;
-  TunnelResolver _resolver;
+  HostResolver _resolver;
   // CONNECT tunnels whose target host name is being resolved.
   vector<std::shared_ptr<PendingTunnel>> _pendingTunnels;
 };

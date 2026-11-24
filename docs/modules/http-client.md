@@ -322,7 +322,7 @@ HttpClient client(config);
 
 ## Protocol upgrades
 
-`upgrade()` switches a connection to another protocol (RFC 9110 §7.8), such as WebSocket, which [WebSocketClient](../protocols/websocket-client.md) builds on. `makeUpgradeRequest(url, protocol)` builds a `GET` request with the `Upgrade` and `Connection` headers, to complete with the headers of the protocol; the `ws` and `wss` schemes are accepted, as `http` and `https`. An invalid URL, or a `protocol` that is empty or not a valid header value (a CR or LF would inject header lines), throws `std::invalid_argument`. `upgrade()` sends it on a new connection, never pooled, speaking HTTP/1.1 (over TLS, ALPN only offers `http/1.1`), through a `CONNECT` tunnel with a forward proxy, cleartext origins included. On `101 Switching Protocols`, the connection is handed over:
+`upgrade()` switches a connection to another protocol (RFC 9110 §7.8), such as WebSocket, which [WebSocketClient](../protocols/websocket-client.md) builds on. `makeUpgradeRequest(url, protocol)` builds a `GET` request with the `Upgrade` and `Connection` headers, to complete with the headers of the protocol; the `ws` and `wss` schemes are accepted, as `http` and `https`. An invalid URL, or a `protocol` that is empty or not a valid header value (a CR or LF would inject header lines), throws `std::invalid_argument`, as does `upgrade()` for a request with a file body or trailers. `upgrade()` sends it on a new connection, never pooled, speaking HTTP/1.1 (over TLS, ALPN only offers `http/1.1`), through a `CONNECT` tunnel with a forward proxy, cleartext origins included. On `101 Switching Protocols`, the connection is handed over:
 
 ```cpp
 #include <aeronet/http-client.hpp>
@@ -338,7 +338,7 @@ if (result && result->connection.valid()) {
 }
 ```
 
-Any other response is read whole and returned as `result->response`, its connection closed. Redirects are not followed, nothing is retried, and the cookies of the jar are sent and stored as for `request()`. A `101` is the final response of an upgrade request only: `request()` keeps treating it as an interim response.
+Any other response is read whole and returned as `result->response`, its connection closed. Redirects are not followed, nothing is retried, and the cookies of the jar are sent and stored as for `request()`. A `101` is the final response of an upgrade request only: `request()` keeps treating it as an interim response. `connectTimeout` bounds the name resolution, the TCP connect (the next address of the host is tried when one fails), the proxy tunnel and the TLS handshake each, then `requestTimeout` the request and its response from the end of the TLS handshake (`HttpClientTlsRawServerTest.SlowTlsHandshakeOfAnUpgradeLeavesTheRequestTimeoutToTheExchange` in [http-client-tls-e2e_test.cpp](../../aeronet/client/test/http-client-tls-e2e_test.cpp)), with `inactivityTimeout` between their reads and writes. The response is read while the request is written: a refusal sent before the server read all of the request (a `413`) is returned at once, and a `101` sent before its end fails the upgrade with `malformedResponse`, the rest of the request being taken for bytes of the new protocol (`AnswerBeforeTheEndOfTheRequest`). The same handshake runs without blocking in the [non-blocking handshakes](../protocols/websocket-client.md#non-blocking-handshakes) of `WebSocketClient` ([upgrade-handshake_test.cpp](../../aeronet/client/test/upgrade-handshake_test.cpp)).
 
 ## Threads and servers
 
