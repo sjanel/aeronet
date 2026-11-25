@@ -23,13 +23,14 @@
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
-#include <cstdio>
-#include <cstdlib>
 #include <system_error>
 #include <thread>
 
 #ifdef AERONET_LINUX
+#include <pthread.h>
 #include <sys/resource.h>
+
+#include <cerrno>
 #endif
 
 #include "aeronet/async-await-state.hpp"
@@ -621,6 +622,77 @@ void RaisePostedFlagThenThrow(const AsyncResumePoster& poster, std::coroutine_ha
   throw std::runtime_error("connection closed while background work was running");
 }
 
+// Raises its flag when destroyed. As a thread_local of a work function, at the exit of the detached thread of a
+// deferred work, after all its other accesses: waiting for the flag synchronizes with all of them (a sleep does not,
+// for ThreadSanitizer), so that the test ends, and the process exits, without racing with the thread (its logging).
+class ThreadExitFlag {
+ public:
+  explicit ThreadExitFlag(std::atomic<bool>& flag) noexcept : _pFlag(&flag) {}
+
+  ThreadExitFlag(const ThreadExitFlag&) = delete;
+  ThreadExitFlag(ThreadExitFlag&&) = delete;
+  ThreadExitFlag& operator=(const ThreadExitFlag&) = delete;
+  ThreadExitFlag& operator=(ThreadExitFlag&&) = delete;
+
+  ~ThreadExitFlag() { _pFlag->store(true, std::memory_order_release); }
+
+ private:
+  std::atomic<bool>* _pFlag;
+};
+
+// Whether the flag of a ThreadExitFlag is raised within 5 seconds.
+bool WaitForThreadExit(const std::atomic<bool>& threadExited) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!threadExited.load(std::memory_order_acquire)) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return true;
+}
+
+#ifdef AERONET_LINUX
+// While alive, this process cannot start any new thread (unless privileged): its soft RLIMIT_NPROC is 0. The hard limit
+// is kept, so the soft one can be restored - lowering the hard limit is irreversible.
+class NoNewThreadScope {
+ public:
+  NoNewThreadScope() {
+    if (::getrlimit(RLIMIT_NPROC, &_saved) == 0) {
+      const rlimit noNewThread{0, _saved.rlim_max};
+      _active = ::setrlimit(RLIMIT_NPROC, &noNewThread) == 0;
+    }
+  }
+
+  NoNewThreadScope(const NoNewThreadScope&) = delete;
+  NoNewThreadScope(NoNewThreadScope&&) = delete;
+  NoNewThreadScope& operator=(const NoNewThreadScope&) = delete;
+  NoNewThreadScope& operator=(NoNewThreadScope&&) = delete;
+
+  ~NoNewThreadScope() {
+    if (_active && ::setrlimit(RLIMIT_NPROC, &_saved) != 0) {
+      ADD_FAILURE() << "cannot restore RLIMIT_NPROC: " << std::strerror(errno);
+    }
+  }
+
+  [[nodiscard]] bool active() const noexcept { return _active; }
+
+ private:
+  rlimit _saved{};
+  bool _active{false};
+};
+
+// Whether a thread can be started right now, without the exception of std::thread.
+bool CanStartThread() {
+  pthread_t thread{};
+  if (::pthread_create(&thread, nullptr, [](void*) -> void* { return nullptr; }, nullptr) != 0) {
+    return false;
+  }
+  ::pthread_join(thread, nullptr);
+  return true;
+}
+#endif
+
 }  // namespace
 
 TEST_F(HttpRequestViewTest, AwaitablesUpdateTheAsyncAwaitState) {
@@ -654,23 +726,22 @@ TEST_F(HttpRequestViewTest, AwaitablesUpdateTheAsyncAwaitState) {
 TEST_F(HttpRequestViewTest, DeferredWork_PostCallbackThrows_AbsorbedAndLogged) {
   // The poster will throw, simulating a broken event-loop channel.
   std::atomic<bool> postCallbackInvoked{false};
+  std::atomic<bool> threadExited{false};
   AsyncAwaitState asyncAwait;
   asyncAwait.resumePoster = {.pPost = &RaisePostedFlagThenThrow, .pContext = &postCallbackInvoked};
   setAsyncAwait(&asyncAwait);
 
   // Manually drive await_suspend; it spawns a detached background thread.
-  auto awaitable = req.deferWork([] { return 42; });
+  auto awaitable = req.deferWork([&threadExited] {
+    thread_local const ThreadExitFlag exitFlag(threadExited);
+    return 42;
+  });
   awaitable.await_suspend(std::coroutine_handle<>{});
 
-  // Wait for the background thread to reach postCallback (generous 5-second timeout).
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (!postCallbackInvoked.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
-  EXPECT_TRUE(postCallbackInvoked.load()) << "Background thread should have called postCallback";
-
-  // Allow the catch block (log::error call) to finish before locals are destroyed.
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  // The thread exits once the exception of the poster is caught and logged.
+  ASSERT_TRUE(WaitForThreadExit(threadExited));
+  EXPECT_TRUE(postCallbackInvoked.load(std::memory_order_acquire))
+      << "Background thread should have called postCallback";
 
   // If we reach here without a crash, the throwing path is handled correctly.
   EXPECT_EQ(asyncAwait.reason, AsyncAwaitState::Reason::WaitingForCallback);
@@ -680,12 +751,14 @@ TEST_F(HttpRequestViewTest, DeferredWorkCompletionOutlivesAwaitableStorage) {
   std::atomic<bool> workStarted{false};
   std::atomic<bool> finishWork{false};
   std::atomic<bool> postCallbackInvoked{false};
+  std::atomic<bool> threadExited{false};
   AsyncAwaitState asyncAwait;
   asyncAwait.resumePoster = {.pPost = &RaisePostedFlag, .pContext = &postCallbackInvoked};
   setAsyncAwait(&asyncAwait);
 
   {
     auto awaitable = req.deferWork([&] {
+      thread_local const ThreadExitFlag exitFlag(threadExited);
       workStarted.store(true, std::memory_order_release);
       while (!finishWork.load(std::memory_order_acquire)) {
         std::this_thread::yield();
@@ -702,10 +775,8 @@ TEST_F(HttpRequestViewTest, DeferredWorkCompletionOutlivesAwaitableStorage) {
   }
 
   finishWork.store(true, std::memory_order_release);
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (!postCallbackInvoked.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::yield();
-  }
+  // Not only until the completion is posted: the thread would outlive the test.
+  ASSERT_TRUE(WaitForThreadExit(threadExited));
   EXPECT_TRUE(postCallbackInvoked.load(std::memory_order_acquire));
   EXPECT_EQ(asyncAwait.reason, AsyncAwaitState::Reason::WaitingForCallback);
 }
@@ -716,32 +787,23 @@ TEST_F(HttpRequestViewTest, DeferredWorkThreadCreationFailureIsRethrownByAwaitRe
   asyncAwait.resumePoster = {.pPost = [](const AsyncResumePoster&, std::coroutine_handle<>) {}};
   setAsyncAwait(&asyncAwait);
 
-  // Run in a forked child: once its user is not allowed any new thread, none can be started (a privileged user ignores
-  // the limit, the test is then skipped).
-  const auto deferWorkWithoutThreads = [this, &asyncAwait] {
-    const rlimit noNewThread{0, 0};
-    if (::setrlimit(RLIMIT_NPROC, &noNewThread) != 0) {
-      std::fputs("skipped\n", stderr);
-      std::_Exit(0);
-    }
-    auto awaitable = req.deferWork([] { return 42; });
-    if (awaitable.await_suspend(std::coroutine_handle<>{})) {
-      std::fputs("skipped\n", stderr);
-      std::_Exit(0);
-    }
-    // Not suspended: the coroutine continues right away, without waiting for a completion.
-    if (asyncAwait.reason != AsyncAwaitState::Reason::None) {
-      std::_Exit(2);
-    }
-    try {
-      (void)awaitable.await_resume();
-    } catch (const std::system_error&) {
-      std::fputs("rethrown\n", stderr);
-      std::_Exit(0);
-    }
-    std::_Exit(1);
-  };
-  EXPECT_EXIT(deferWorkWithoutThreads(), ::testing::ExitedWithCode(0), "rethrown|skipped");
+  // ThreadSanitizer starts its background thread along with the first thread of the process: not under the limit below.
+  std::thread([] {}).join();
+
+  // In this process, not in a forked child: ThreadSanitizer cannot start a thread in a child forked while another
+  // thread was alive (a detached thread of a previous test still finishing for instance) - it aborts instead of
+  // failing.
+  const NoNewThreadScope noNewThread;
+  ASSERT_TRUE(noNewThread.active()) << std::strerror(errno);
+  if (CanStartThread()) {
+    GTEST_SKIP() << "privileged user: RLIMIT_NPROC does not apply";
+  }
+
+  auto awaitable = req.deferWork([] { return 42; });
+  ASSERT_FALSE(awaitable.await_suspend(std::coroutine_handle<>{}));
+  // Not suspended: the coroutine continues right away, without waiting for a completion.
+  EXPECT_EQ(asyncAwait.reason, AsyncAwaitState::Reason::None);
+  EXPECT_THROW((void)awaitable.await_resume(), std::system_error);
 }
 #endif
 
