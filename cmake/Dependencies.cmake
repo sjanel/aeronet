@@ -265,8 +265,8 @@ if(AERONET_ENABLE_ZSTD)
     CONFIG
     TARGETS zstd::libzstd
     DECLARE
-      URL https://github.com/meta/zstd/archive/refs/tags/v1.5.7.tar.gz
-      URL_HASH SHA256=37d7284556b20954e56e1ca85b80226768902e2edabd3b649e9e72c0c9012ee3
+      URL https://github.com/meta/zstd/archive/refs/tags/v1.6.0.tar.gz
+      URL_HASH SHA256=289bb207935e5b4f241239f9832e665fa6b9636c3f87f479e125371e13842b8e
       SOURCE_SUBDIR build/cmake
       DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
