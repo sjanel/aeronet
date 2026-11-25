@@ -1,9 +1,16 @@
 #include "html-parse.hpp"
 
 #include <lexbor/core/array.h>
+#include <lexbor/core/base.h>
+#include <lexbor/core/mraw.h>
+#include <lexbor/core/str.h>
+#include <lexbor/core/types.h>
+#include <lexbor/dom/interfaces/character_data.h>
+#include <lexbor/dom/interfaces/document_fragment.h>
 #include <lexbor/dom/interfaces/node.h>
 #include <lexbor/html/interface.h>
 #include <lexbor/html/interfaces/document.h>
+#include <lexbor/html/interfaces/template_element.h>
 #include <lexbor/html/parser.h>
 #include <lexbor/html/token.h>
 #include <lexbor/html/tokenizer.h>
@@ -17,6 +24,7 @@
 #include <limits>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 #include "lexbor-utils.hpp"
 
@@ -24,11 +32,20 @@ namespace aeronet::internal {
 
 namespace {
 
+// A text node seen before an insertion place after a token, with the address of its data then. The node is compared,
+// never dereferenced: it may have been destroyed since.
+struct SeenText {
+  const lxb_dom_node_t* pNode;
+  const lxb_char_t* pData;
+};
+
 // Placed between the tokenizer and the tree builder of a document during its parsing.
 struct TreeLimiter {
   lxb_html_tree_t* pTree;
   lxb_html_tokenizer_token_f treeCallback;  // the tree builder, called for each token
   void* pTreeCallbackCtx;
+  SeenText inCurrentNode;   // the last child of the current node
+  SeenText fosterParented;  // before the table of the current node, where its characters that are not whitespace go
 };
 
 lxb_html_token_t* LimitTree(lxb_html_tokenizer_t* pTokenizer, lxb_html_token_t* pToken, void* pCtx);
@@ -39,7 +56,7 @@ class TreeLimiterScope {
  public:
   explicit TreeLimiterScope(lxb_html_parser_t* pParser) noexcept
       : _pTokenizer(pParser->tkz),
-        _limiter{pParser->tree, _pTokenizer->callback_token_done, _pTokenizer->callback_token_ctx} {
+        _limiter{pParser->tree, _pTokenizer->callback_token_done, _pTokenizer->callback_token_ctx, {}, {}} {
     lxb_html_tokenizer_callback_token_done_set(_pTokenizer, &LimitTree, &_limiter);
   }
 
@@ -97,8 +114,86 @@ void TrimActiveFormattingElements(lexbor_array_t& list) noexcept {
   }
 }
 
+// Gives the data of pNode, if a text node, twice its length in capacity when it moved since 'seen' was recorded, then
+// records it. Returns false on memory exhaustion.
+// The tree builder appends the characters of a token to the text node before their insertion place, growing its data
+// to the exact size needed in the text memory of the document: in place when that data ends the memory, else in a new
+// block, the old one being reusable only by smaller allocations. Markup that allocates text memory without inserting a
+// node at that place (attribute values of ignored tags, comments in a table...) made each append copy the whole text
+// to a new block, in quadratic memory: 400 KB of '<tr><td class="c">12.5</td><td>BTC</td></tr>' outside of a table
+// took 154 MB. With capacity doubled after each move, the moves, and the memory they leave, become linear.
+[[nodiscard]] bool ReserveMovedText(lexbor_mraw_t* pTextMemory, lxb_dom_node_t* pNode, SeenText& seen) noexcept {
+  if (pNode == nullptr || pNode->local_name != LXB_TAG__TEXT) {
+    return true;
+  }
+  lexbor_str_t& data = reinterpret_cast<lxb_dom_character_data_t*>(pNode)->data;
+  if (pNode == seen.pNode && data.data != seen.pData) {
+    const std::size_t capacity = 2 * (data.length + 1);  // lexbor ends the data with a null character
+    if (capacity > lexbor_mraw_data_size(data.data)) {
+      auto* pData = static_cast<lxb_char_t*>(lexbor_mraw_realloc(pTextMemory, data.data, capacity));
+      if (pData == nullptr) {
+        return false;
+      }
+      data.data = pData;
+    }
+  }
+  seen = {pNode, data.data};
+  return true;
+}
+
+// Whether the characters of a table that are not whitespace are inserted before it (foster parenting) when 'node' is
+// the current node.
+bool FosterParentsCharacters(const lxb_dom_node_t& node) noexcept {
+  return node.ns == LXB_NS_HTML &&
+         (node.local_name == LXB_TAG_TABLE || node.local_name == LXB_TAG_TBODY || node.local_name == LXB_TAG_TFOOT ||
+          node.local_name == LXB_TAG_THEAD || node.local_name == LXB_TAG_TR);
+}
+
+// The last child of the place where the tree builder inserts characters without foster parenting, the current node or
+// the contents of a template (as lxb_html_tree_appropriate_place_inserting_node(), not called on this hot path): the
+// text node they are appended to, if it is one.
+lxb_dom_node_t* LastChildOfInsertionPlace(lxb_dom_node_t& currentNode) noexcept {
+  if (currentNode.local_name == LXB_TAG_TEMPLATE && currentNode.ns == LXB_NS_HTML) {
+    return reinterpret_cast<lxb_html_template_element_t&>(currentNode).content->node.last_child;
+  }
+  return currentNode.last_child;
+}
+
+// The node before the place where the tree builder inserts the characters of a table that are not whitespace (foster
+// parenting): the text node they are appended to, if it is one.
+lxb_dom_node_t* NodeBeforeFosterParentedCharacters(lxb_html_tree_t& tree) noexcept {
+  const bool fosterParentingBefore = std::exchange(tree.foster_parenting, true);
+  lxb_html_tree_insertion_position_t position{};
+  lxb_dom_node_t* pPlace = lxb_html_tree_appropriate_place_inserting_node(&tree, nullptr, &position);
+  tree.foster_parenting = fosterParentingBefore;
+  assert(pPlace != nullptr);  // the current node is part of a table
+  return position == LXB_HTML_TREE_INSERTION_POSITION_BEFORE ? pPlace->prev : pPlace->last_child;
+}
+
+// Whether the tree builder can append characters to a text node while processing 'token': a character token, or any
+// token after the characters of a table, kept until then (they may be foster parented).
+bool AppendsCharacters(const lxb_html_tree_t& tree, const lxb_html_token_t& token) noexcept {
+  return token.tag_id == LXB_TAG__TEXT || tree.pending_table.text_list->length != 0;
+}
+
+// Calls ReserveMovedText() for the text nodes that characters were appended to, if any. Returns false on memory
+// exhaustion.
+[[nodiscard]] bool ReserveMovedTexts(TreeLimiter& limiter) noexcept {
+  lxb_html_tree_t& tree = *limiter.pTree;
+  lxb_dom_node_t* pCurrentNode = lxb_html_tree_current_node(&tree);
+  if (pCurrentNode == nullptr) {
+    return true;  // characters before <html> are not inserted
+  }
+  lexbor_mraw_t* pTextMemory = tree.document->dom_document.text;
+  if (!ReserveMovedText(pTextMemory, LastChildOfInsertionPlace(*pCurrentNode), limiter.inCurrentNode)) {
+    return false;
+  }
+  return !FosterParentsCharacters(*pCurrentNode) ||
+         ReserveMovedText(pTextMemory, NodeBeforeFosterParentedCharacters(tree), limiter.fosterParented);
+}
+
 lxb_html_token_t* LimitTree(lxb_html_tokenizer_t* pTokenizer, lxb_html_token_t* pToken, void* pCtx) {
-  const TreeLimiter& limiter = *static_cast<const TreeLimiter*>(pCtx);
+  TreeLimiter& limiter = *static_cast<TreeLimiter*>(pCtx);
   lxb_html_tree_t& tree = *limiter.pTree;
   if (IsStartTag(*pToken)) {
     // The end tag of a formatting element can leave the current node open, removing instead from the list a later
@@ -109,8 +204,13 @@ lxb_html_token_t* LimitTree(lxb_html_tokenizer_t* pTokenizer, lxb_html_token_t* 
       ProcessEndTagOfCurrentNode(limiter, pTokenizer);
     }
   }
+  const bool appendsCharacters = AppendsCharacters(tree, *pToken);
   pToken = limiter.treeCallback(pTokenizer, pToken, limiter.pTreeCallbackCtx);
   TrimActiveFormattingElements(*tree.active_formatting);
+  if (appendsCharacters && pToken != nullptr && !ReserveMovedTexts(limiter)) {
+    pTokenizer->status = LXB_STATUS_ERROR_MEMORY_ALLOCATION;
+    return nullptr;
+  }
   return pToken;
 }
 

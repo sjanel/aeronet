@@ -218,7 +218,7 @@ Measured by [html-document_bench.cpp](../../benchmarks/internal/html-document_be
 | `textContent()` | About 25 ns for a row of 2 cells, 18 ns with a reused buffer. For a cell whose text is a single node (31 bytes): 17 ns, 5 ns with a buffer (not copied) |
 | `innerHtml()` | About 150 ns for a row of 2 cells, 125 ns appended to a reused buffer |
 | `assignedJson()` | About 4 GB/s over the scripts: about 1 ms for a 4 MB embedded state |
-| Parsing hostile markup | About 7 MiB/s (see [Parsing limits](#parsing-limits)): 70 ms for 100000 nested `<div>` (500 KB), 130 ms for 50000 `<p><b id=N>x</p>` (900 KB, 800000 recreated elements) |
+| Parsing hostile markup | About 7 MiB/s for the shapes bounded by the [parsing limits](#parsing-limits): 70 ms for 100000 nested `<div>` (500 KB), 130 ms for 50000 `<p><b id=N>x</p>` (900 KB, 800000 recreated elements). 15 ms for 50000 table rows outside of a table (2.2 MB), whose text goes to a single text node |
 
 ## Parsing limits
 
@@ -228,6 +228,10 @@ The tree construction of HTML is quadratic on some markup, which a page fetched 
 - **Misnested formatting elements**: at most the 16 most recent ones are recreated (per table cell, template...). HTML already forgets the earliest of 4 identical ones (the Noah's Ark clause); beyond 16 of any kind, the earliest are forgotten the same way.
 
 Ordinary pages stay far below both limits. Hostile pages still parse slower than ordinary ones (see [Performance](#performance)), but in proportion to their size.
+
+The memory of a text node is linear too. Text separated by markup that inserts no node at its place is appended to a single text node: tags ignored outside of a table (`<tr><td class="c">12.5</td><td>BTC</td></tr>`), comments in a table (its text goes before it), or comments after `</body>`. lexbor grows the text node to the exact size of each append, and when markup has allocated memory since (an attribute value, a comment), it copies the whole text to a new block, the old one being reusable only by smaller allocations: 1 MB of such rows took about 1 GB. aeronet doubles the capacity of a text node whose text moved: the same 2.2 MB page parses in 15 ms with 20 MB of memory, instead of 0.8 s with 2.7 GB.
+
+One shape remains quadratic in time: an element with many attributes, as lexbor searches the attributes already added for each new one. 400 KB of attributes in a single tag take about 3 s to parse.
 
 The fragments parsed by `setInnerHtml()` and `insertAdjacentHtml()` get the same limits, their depth counted from the element where they are inserted: a tree built by successive insertions can be deeper than 512 levels.
 
@@ -240,13 +244,13 @@ An `HtmlDocument` and its elements must not be used from several threads at the 
 - Only elements have handles: text and comment nodes are read through `textContent()` and the serializations, written through `setTextContent()`, `insertAdjacentText()` and the HTML methods. The contents of a `<template>` are reached through `innerHtml()` and `setInnerHtml()` only, as they are not children in the DOM.
 - No node is freed before its document (see [Modifying the tree](#modifying-the-tree)).
 - With lexbor 3.0.1, an allocation failure inside lexbor can crash the process at a later allocation: the fixes are on its master branch, not released yet (see the [roadmap](../ROADMAP.md#html-parsing-and-javascript-pages-aeronet_enable_html-aeronet_enable_js)).
-- Elements are nested at most 512 levels deep, and at most 16 misnested formatting elements are recreated: see [Parsing limits](#parsing-limits).
+- Elements are nested at most 512 levels deep, and at most 16 misnested formatting elements are recreated: see [Parsing limits](#parsing-limits). An element with many attributes is parsed in quadratic time (about 3 s for 400 KB of attributes in one tag).
 - No JavaScript (see [JavaScript pages](web.md), whose documents are parsed with scripting enabled) and no CSS cascade: `<noscript>` contents are parsed as markup, as by a browser with scripting disabled, and the style of an element is not computed.
 - `assignedJson()` finds literal assignments only, not data passed to function calls (`self.__next_f.push(...)`).
 
 ## Tests
 
-- [html-document_test.cpp](../../aeronet/html/test/html-document_test.cpp): parsing, document accessors (frameset documents), moves, limits of the tree construction, encodings, `assignedJson()`, memory exhaustion.
+- [html-document_test.cpp](../../aeronet/html/test/html-document_test.cpp): parsing, document accessors (frameset documents), moves, limits of the tree construction (depth, misnested formatting elements, memory of text nodes), encodings, `assignedJson()`, memory exhaustion.
 - [html-element_test.cpp](../../aeronet/html/test/html-element_test.cpp): element accessors (tag names of SVG and MathML elements), text without copy or in a reused buffer (no allocation), serialization appended to a buffer, navigation, queries, nested queries, callbacks stopping the search or throwing.
 - [html-mutation_test.cpp](../../aeronet/html/test/html-mutation_test.cpp): attributes (names, escaping, `id` and `class` seen by selectors, foreign elements), text, `setInnerHtml()` and `insertAdjacentHtml()` in their parsing contexts and with the parsing limits, `<template>` contents, element creation and moves, children removed or moved by a `children()` loop, removed root, head and body elements, memory exhaustion.
 - [css-selector_test.cpp](../../aeronet/html/test/css-selector_test.cpp): compilation, invalid selectors, reuse across documents.

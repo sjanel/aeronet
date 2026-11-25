@@ -3,14 +3,17 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <format>
+#include <memory>
 #include <new>
 #include <string>
 #include <string_view>
 #include <utility>
 
 #include "../src/html-parse.hpp"
+#include "aeronet/heap-usage.hpp"
 #include "aeronet/html-element.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "html-test-util.hpp"
@@ -149,9 +152,15 @@ TEST(HtmlDocumentLimits, ContentAfterElementsBeyondTheDepthLimit) {
 }
 
 TEST(HtmlDocumentLimits, DepthLimitInTablesAndForeignContent) {
-  for (const std::string& html : {Repeat("<table><td>", 1000), "<svg>" + Repeat("<g>", 2000),
-                                  "<math>" + Repeat("<mrow>", 2000), Repeat("<template>", 1000),
-                                  Repeat("<b><i>", 1000) + "x", Repeat("<ul><li>", 1000), Repeat("<x-custom>", 1000)}) {
+  for (const std::string& html : {
+           Repeat("<table><td>", 1000),
+           "<svg>" + Repeat("<g>", 2000),
+           "<math>" + Repeat("<mrow>", 2000),
+           Repeat("<template>", 1000),
+           Repeat("<b><i>", 1000) + "x",
+           Repeat("<ul><li>", 1000),
+           Repeat("<x-custom>", 1000),
+       }) {
     const HtmlDocument doc(html);
     EXPECT_LE(MaxDepth(doc), kMaxOpenElements + 2) << html.substr(0, 20);
   }
@@ -214,6 +223,41 @@ TEST(HtmlDocumentLimits, FormattingElementsLimitIsPerTableCell) {
   EXPECT_EQ(afterTable.attribute("id"), "b0");
   EXPECT_EQ(afterTable.querySelectorAll("b").size(), kOutside - 1);
   EXPECT_EQ(afterTable.textContent(), "y");
+}
+
+TEST(HtmlDocumentLimits, TextAppendedBetweenMarkupTakesLinearMemory) {
+  // The text of these documents is appended to a single text node, between markup allocating memory without inserting
+  // a node there: each append copied the whole text to a new block, in quadratic memory (1 MB of the first one took
+  // about 1 GB).
+  struct Case {
+    std::string_view start;
+    std::string_view repeated;
+    std::string_view text;  // the text of the document for each repetition
+  };
+  static constexpr std::array kCases{
+      Case{"", R"(<tr><td class="c">12.5</td><td>BTC</td></tr>)", "12.5BTC"},  // start tags ignored outside of tables
+      Case{"", "x</span class=c>", "x"},                                       // ignored end tags with attributes
+      Case{"<body></body>", " <!--c-->", " "},   // the comments go to <html>, the spaces to <body>
+      Case{"<table>", "x<!--c-->", "x"},         // the characters go before the table, the comments into it
+      Case{"<table>", " <input class=c>", " "},  // the elements go before the table, the spaces into it
+      Case{"<template><tr>", "x<!--c-->", ""},   // the characters go to the template contents, not the document text
+  };
+  if (!test::AllocatedHeapBytes()) {
+    GTEST_SKIP() << "no allocator statistics on this platform";
+  }
+  for (const Case& testCase : kCases) {
+    const auto parsedHeapBytes = [&testCase](std::size_t htmlSize) {
+      const std::size_t count = htmlSize / testCase.repeated.size();
+      const std::string html = std::string(testCase.start) + Repeat(testCase.repeated, count);
+      const std::size_t before = test::AllocatedHeapBytes().value();
+      const HtmlDocument doc(html);
+      const std::size_t heapBytes = test::AllocatedHeapBytes().value() - before;
+      EXPECT_TRUE(doc.documentElement().textContent() == Repeat(testCase.text, count)) << testCase.repeated;
+      return heapBytes;
+    };
+    // 4 times the markup takes about 4 times the memory, 16 times if quadratic.
+    EXPECT_LT(parsedHeapBytes(1UL << 20U), 8 * parsedHeapBytes(1UL << 18U)) << testCase.repeated;
+  }
 }
 
 // --- Encoding ---
@@ -386,6 +430,17 @@ TEST(HtmlDocument, MemoryExhaustionOfTheMetaPrescan) {
   ExpectBadAllocOnAllocation(0, "<meta charset=koi8-r><p>\xF0\xD2\xC9</p>", "");
   // The prescan state has two arrays: the first one is freed when the second one cannot be allocated.
   ExpectBadAllocOnAllocation(1, "<meta charset=koi8-r><p>\xF0\xD2\xC9</p>", "");
+}
+
+TEST(HtmlDocument, MemoryExhaustionOfTheCapacityOfAMovedTextNode) {
+  // The attribute value of the ignored <td> is allocated after the 1 MiB text node: appending the 'y' moves it, then
+  // doubling its capacity reallocates its memory, the only reallocation of more than 1.5 MiB.
+  static constexpr std::size_t kTextSize = 1UL << 20U;
+  const std::string html = "<body>" + std::string(kTextSize, 'x') + "<td class=c>" + std::string(16, 'y');
+  test::FailReallocsOfAtLeast(kTextSize * 3 / 2);
+  EXPECT_THROW(HtmlDocument(html, "text/html; charset=utf-8"), std::bad_alloc);
+  test::ResetToSysRealloc();
+  EXPECT_EQ(BodyText(HtmlDocument(html, "text/html; charset=utf-8")).size(), kTextSize + 16);
 }
 #endif
 
