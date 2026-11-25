@@ -16,13 +16,15 @@
 #include "aeronet/base-fd.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/connection.hpp"
+#include "aeronet/file-payload.hpp"
+#include "aeronet/file.hpp"
+#include "aeronet/protocol-handler.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/async-await-state.hpp"
 #include "aeronet/async-handler-state.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "aeronet/protocol-handler.hpp"
 #include "aeronet/request-task.hpp"
 #endif
 
@@ -44,6 +46,22 @@ void RecycleConnection(ConnectionStorage& storage, uint32_t maxCached, Connectio
   storage.recycleOrRelease(it, maxCached);
 #endif
 }
+
+// Protocol handler owning a token: the weak pointers to it expire once the handler is destroyed.
+class ReleaseTrackingProtocolHandler final : public IProtocolHandler {
+ public:
+  [[nodiscard]] ProtocolType type() const noexcept override { return ProtocolType::WebSocket; }
+
+  [[nodiscard]] ProtocolProcessResult processInput(std::span<const std::byte> /*data*/) override { return {}; }
+
+  [[nodiscard]] std::span<const std::byte> getPendingOutput() const noexcept override { return {}; }
+
+  void onOutputWritten(std::size_t /*bytesWritten*/) override {}
+
+  void onTransportClosing() override {}
+
+  std::shared_ptr<int> token{std::make_shared<int>()};
+};
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 // The coroutine of an async handler, created suspended (never started by the tests).
@@ -79,6 +97,7 @@ TEST(ConnectionStorage, ShrinkToFitOnEmptyStorageIsNoOp) {
   EXPECT_EQ(storage.size(), 0U);
 }
 
+// The states are cached for an hour from the close of their connection, whatever their last activity.
 TEST(ConnectionStorage, SweepCachedConnectionsRemovesExpired) {
   ConnectionStorage storage;
 
@@ -90,20 +109,21 @@ TEST(ConnectionStorage, SweepCachedConnectionsRemovesExpired) {
   auto it3 = storage.emplace(Connection(BaseFd(102)));
   ASSERT_TRUE(it3 != storage.end());
 
-  // Set different last activity times
-  storage.now = std::chrono::steady_clock::now();
-  storage.connectionState(it1).lastActivity = storage.now - std::chrono::hours{2};    // old, should be swept
-  storage.connectionState(it2).lastActivity = storage.now - std::chrono::hours{2};    // old, should be swept
-  storage.connectionState(it3).lastActivity = storage.now - std::chrono::minutes{5};  // recent, should stay
+  const auto now = std::chrono::steady_clock::now();
+  // A connection idle for long, closed recently.
+  storage.connectionState(it3).lastActivity = now - std::chrono::hours{3};
 
   // Recycle all connections (adds them to cache)
-  RecycleConnection(storage, 10, it1);
-  RecycleConnection(storage, 10, it2);
-  RecycleConnection(storage, 10, it3);
+  storage.now = now - std::chrono::hours{2};
+  RecycleConnection(storage, 10, it1);  // old, should be swept
+  RecycleConnection(storage, 10, it2);  // old, should be swept
+  storage.now = now - std::chrono::minutes{5};
+  RecycleConnection(storage, 10, it3);  // recent, should stay
 
   EXPECT_EQ(storage.nbCachedConnections(), 3U);
 
   // Sweep with 1 hour timeout - should remove first two
+  storage.now = now;
   storage.sweepCachedConnections(std::chrono::hours{1});
 
   EXPECT_EQ(storage.nbCachedConnections(), 1U);
@@ -115,16 +135,51 @@ TEST(ConnectionStorage, SweepCachedConnectionsRemovesAll) {
   auto it1 = storage.emplace(Connection(BaseFd(200)));
   ASSERT_TRUE(it1 != storage.end());
 
-  storage.now = std::chrono::steady_clock::now();
-  storage.connectionState(it1).lastActivity = storage.now - std::chrono::hours{3};
-
+  const auto now = std::chrono::steady_clock::now();
+  storage.now = now - std::chrono::hours{3};
   RecycleConnection(storage, 10, it1);
 
   EXPECT_EQ(storage.nbCachedConnections(), 1U);
 
   // Sweep with 1 hour timeout
+  storage.now = now;
   storage.sweepCachedConnections(std::chrono::hours{1});
 
+  EXPECT_EQ(storage.nbCachedConnections(), 0U);
+}
+
+// A closed connection releases what it used once its state is cached, not when the state is reused by another
+// connection, possibly an hour later: the file it was sending (a deleted file would keep its disk space), its protocol
+// handler. Its large buffers are halved.
+TEST(ConnectionStorage, CachedStateReleasesWhatItsConnectionUsed) {
+  ConnectionStorage storage;
+
+  auto it = storage.emplace(Connection(BaseFd(250)));
+  ConnectionState* pState = storage.pConnectionState(it);
+  // Closed in the middle of a file transfer.
+  ASSERT_TRUE(pState->attachFilePayload(FilePayload{File{}, 0, 4}));
+  auto handler = std::make_unique<ReleaseTrackingProtocolHandler>();
+  const std::weak_ptr<int> handlerToken = handler->token;
+  pState->protocolHandler = std::move(handler);
+  pState->inBuffer.reserve(4U * ConnectionState::kMaxIdleBufferCapacity);
+  pState->inBuffer.append("POST / HTTP/1.1\r\n");
+
+  storage.now = std::chrono::steady_clock::now();
+  RecycleConnection(storage, 10, it);
+  ASSERT_EQ(storage.nbCachedConnections(), 1U);
+
+  // The state, cached, stays allocated.
+  EXPECT_FALSE(pState->isSendingFile());
+  EXPECT_EQ(pState->fileSend.filePayload.length, 0U);
+  EXPECT_EQ(pState->protocolHandler, nullptr);
+  EXPECT_TRUE(handlerToken.expired());
+  EXPECT_TRUE(pState->inBuffer.empty());
+  EXPECT_EQ(pState->inBuffer.capacity(), 2U * ConnectionState::kMaxIdleBufferCapacity);
+  EXPECT_EQ(pState->lastActivity, storage.now);
+
+  // Reused as is.
+  it = storage.emplace(Connection(BaseFd(251)));
+  EXPECT_EQ(storage.pConnectionState(it), pState);
   EXPECT_EQ(storage.nbCachedConnections(), 0U);
 }
 

@@ -428,18 +428,21 @@ TEST(ConnectionStateSendfileTest, EndOfFileBeforeLengthCloses) {
   }
 }
 
-TEST(ConnectionStateBufferTest, ShrinkToFitReducesNonEmptyBuffers) {
+// The state of a closed connection, reset once cached, keeps its small buffers as is for the next connection, and
+// halves the large ones: it may stay in the cache for up to an hour.
+TEST(ConnectionStateBufferTest, ResetHalvesOnlyTheLargeBuffers) {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   AsyncHandlerStatePool asyncStatePool;
 #endif
   ConnectionState state;
 
-  // Grow buffers to have extra capacity
-  state.inBuffer.reserve(2048);
-  state.inBuffer.append("hello world");
-
+  // The partial request of a connection closed in the middle of a large upload.
+  state.inBuffer.reserve(2U * ConnectionState::kMaxIdleBufferCapacity);
+  state.inBuffer.append("POST / HTTP/1.1\r\n");
   state.bodyAndTrailersBuffer.reserve(1025);
   state.bodyAndTrailersBuffer.append("chunked body");
+  state.tunnelOrFileBuffer.reserve(ConnectionState::kMaxIdleBufferCapacity);
+  state.tunnelOrFileBuffer.append("file part");
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   (void)state.ensureAsyncState(asyncStatePool);
@@ -447,27 +450,16 @@ TEST(ConnectionStateBufferTest, ShrinkToFitReducesNonEmptyBuffers) {
   state.asyncState->headBuffer.append("GET / HTTP/1.1\r\nHost: a\r\n\r\n");
 #endif
 
-  // Sanity: capacities should be larger than sizes prior to shrink
-  EXPECT_GT(state.inBuffer.capacity(), state.inBuffer.size());
-  EXPECT_GT(state.bodyAndTrailersBuffer.capacity(), state.bodyAndTrailersBuffer.size());
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  EXPECT_GT(state.asyncState->headBuffer.capacity(), state.asyncState->headBuffer.size());
-#endif
-
-  const auto oldCapacityInBuffer = state.inBuffer.capacity();
-  const auto oldCapacityBodyBuffer = state.bodyAndTrailersBuffer.capacity();
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  const auto oldCapacityHeadBuffer = state.asyncState->headBuffer.capacity();
-#endif
-
   state.reset();
 
-  // After shrink and clear, capacities should be bounded by sizes
-  EXPECT_LT(state.inBuffer.capacity(), oldCapacityInBuffer);
-  EXPECT_LT(state.bodyAndTrailersBuffer.capacity(), oldCapacityBodyBuffer);
+  EXPECT_TRUE(state.inBuffer.empty());
+  EXPECT_EQ(state.inBuffer.capacity(), ConnectionState::kMaxIdleBufferCapacity);
+  EXPECT_TRUE(state.bodyAndTrailersBuffer.empty());
+  EXPECT_EQ(state.bodyAndTrailersBuffer.capacity(), 1025U);
+  EXPECT_TRUE(state.tunnelOrFileBuffer.empty());
+  EXPECT_EQ(state.tunnelOrFileBuffer.capacity(), ConnectionState::kMaxIdleBufferCapacity);
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   EXPECT_FALSE(static_cast<bool>(state.asyncState));
-  EXPECT_GT(oldCapacityHeadBuffer, 0U);
 #endif
 }
 
@@ -1276,8 +1268,9 @@ TEST(ConnectionStateSendfileTest, TlsPreadErrorTriggersCloseAndClearsActive) {
   EXPECT_TRUE(state.isAnyCloseRequested());
 }
 
-// A connection closed in the middle of a file transfer is cached, then reset for a new connection, which must not
-// inherit the transfer: its requests would never be processed while a file send looks in progress.
+// A connection closed in the middle of a file transfer is reset once cached: its file is closed, and the next
+// connection reusing the state must not inherit the transfer (its requests would never be processed while a file send
+// looks in progress).
 TEST(ConnectionStateTest, ResetEndsAnInterruptedFileTransfer) {
   ConnectionState state;
   EXPECT_TRUE(state.attachFilePayload(FilePayload{File{}, 0, 4}));

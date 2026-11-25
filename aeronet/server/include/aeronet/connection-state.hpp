@@ -150,7 +150,9 @@ struct ConnectionState : public ConnectionInfo {
   bool finalizeAndEmitTlsHandshakeIfNeeded(NativeHandle fd, const TlsHandshakeCallback& cb, TlsMetricsInternal& metrics,
                                            const TLSConfig& cfg);
 #endif
-  // Reset the connection state usable for a new connection without freeing allocated buffers.
+  // Resets the state of a closed connection for a new one. Called once it is cached for reuse (see
+  // internal::ConnectionStorage): what the closed connection used is released then (its file, transport, TLS context,
+  // protocol handler...), and its buffers above kMaxIdleBufferCapacity are halved. The smaller ones are kept as is.
   void reset();
 
   // Sets the file to send, before the HTTP/1 output not written yet (its response head being written). Returns true if
@@ -392,9 +394,15 @@ struct ConnectionState : public ConnectionInfo {
   uint32_t peerStreamId{0};
 #endif
 
+  /// Capacity above which a buffer whose content is not needed anymore is halved instead of kept as is for the next
+  /// requests: a large upload does not leave all its memory with an idle connection (see
+  /// internal::ConnectionIo::releaseServedInBuffer()), or with the cached state of a closed one (see reset()).
+  static constexpr std::size_t kMaxIdleBufferCapacity = 64UL * 1024UL;
+
   /// Sentinel value for bodyLastActivityMs / requestDeadlineMs indicating no active timestamp.
   static constexpr uint32_t kInactiveRelativeMs = static_cast<uint32_t>(-1);
   static constexpr uint32_t kNoKeepAliveDeadlineIndex = static_cast<uint32_t>(-1);
+
   /// Sentinel value for zerocopyStallCheckQueuedBytes when no stall check was made.
   static constexpr uint32_t kNoZerocopyStallCheck = static_cast<uint32_t>(-1);
 

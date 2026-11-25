@@ -185,8 +185,9 @@ void Http1Pipeline::resumeAsyncHandler(ConnectionIt cnxIt) {
     // Its connection takes the buffer over: the bytes do not move, so the views of the handler stay valid, even if its
     // deferred work is already reading them. The shared buffer gets the previous capacity of the connection, grown
     // again by the next compressed request: as fast as copying the body out (DeferredGzipPost in
-    // http1-pipeline_bench.cpp), and a suspended handler holds its body either way. reclaimMemoryFromOversizedBuffers()
-    // shrinks it once released.
+    // http1-pipeline_bench.cpp), and a suspended handler holds its body either way. Once the input of the connection is
+    // served, a large one is halved (see ConnectionIo::releaseServedInBuffer()), the others are shrunk by
+    // reclaimMemoryFromOversizedBuffers().
     assert(state.pendingRequest.trailerLen == 0);  // the buffer of the connection holds nothing of this request
     sharedBody.swap(state.bodyAndTrailersBuffer);
   }
@@ -335,7 +336,7 @@ void SingleHttpServer::processAsyncCallbacks() {
     _ctx.updates.hasAsyncCallbacks.store(false, std::memory_order_release);
   }
 
-  for (auto& cb : callbacks) {
+  for (internal::PendingUpdates::AsyncCallback& cb : callbacks) {
     try {
       auto it = connections.findConnection(cb.connectionFd, cb.connectionGeneration);
       if (it == connections.end()) {

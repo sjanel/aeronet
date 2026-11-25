@@ -19,6 +19,7 @@
 #include <fstream>
 #include <functional>
 #include <initializer_list>
+#include <ios>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -66,6 +67,7 @@
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/stall-tolerant-test-helpers.hpp"
+#include "aeronet/static-file-config.hpp"
 #include "aeronet/static-file-handler.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/telemetry-config.hpp"
@@ -4980,8 +4982,10 @@ TEST(HttpStreaming, MalformedChunkedRequestsAreRejectedWith400) {
   };
   const Case kCases[]{
       // corrupt coded data
-      {std::format("content-encoding: {}\r\n", GetEncodingStr(test::SupportedEncodings().front())),
-       "3\r\nabc\r\n0\r\n\r\n"},
+      {
+          std::format("content-encoding: {}\r\n", GetEncodingStr(test::SupportedEncodings().front())),
+          "3\r\nabc\r\n0\r\n\r\n",
+      },
       {"", "3\r\nabc\n\n0\r\n\r\n"},  // malformed CRLF after the chunk data
   };
   for (const Case& tc : kCases) {
@@ -5914,15 +5918,12 @@ TEST(HttpRouteTimeout, LargestTimeoutDoesNotExpireWhileTheBodyIsReceived) {
   EXPECT_TRUE(resp.ends_with("got 012345")) << resp;
 }
 
-// ============================
-// HTTP/1.1 connection lifecycle review (reproductions)
-// ============================
-// Reproductions of findings not fixed yet, disabled until their fix enables them.
-
-// A closed connection whose state is cached for reuse keeps its resources until reused: reset() only runs then (or the
-// state is destroyed after an hour in the cache). A connection closed during a file response keeps the file open: a
-// deleted or rotated file keeps its disk space, and its descriptor counts against RLIMIT_NOFILE.
-TEST(HttpLifecycleReview, DISABLED_ClosedConnectionDoesNotKeepItsFileOpen) {
+// A closed connection releases what it used once its state is cached for reuse, not when another connection reuses it
+// (possibly an hour later): a connection closed during a file response does not keep the file open, which would keep
+// the disk space of a deleted or rotated file, and its descriptor would count against RLIMIT_NOFILE.
+// Linux only: the open files are listed by /proc/self/fd.
+#ifdef AERONET_LINUX
+TEST(HttpLargeFile, ClosedConnectionDoesNotKeepItsFileOpen) {
   HttpServerConfig cfg;
   cfg.withZerocopyMode(ZerocopyMode::Disabled);
   cfg.withSocketSendBufferBytes(4096);
@@ -5955,16 +5956,42 @@ TEST(HttpLifecycleReview, DISABLED_ClosedConnectionDoesNotKeepItsFileOpen) {
   ASSERT_TRUE(test::DrainEndsWithin(localTs.server, 2s));
   EXPECT_FALSE(isFileOpen()) << "the file of a closed connection is still open";
 }
+#endif
 
-// The decoded chunks of a chunked body are kept in ConnectionState::bodyAndTrailersBuffer, cleared when the next
-// chunked body starts. Its capacity is only reclaimed by reclaimMemoryFromOversizedBuffers(), called by the full
-// maintenance sweep, which a plain HTTP/1.1 server without header / body read timeouts never runs: the buffer stays
-// with the idle connection, then with its cached state once closed (up to an hour), then with the next connection
-// reusing that state (reset() halves it at most once).
-TEST(HttpLifecycleReview, DISABLED_LargeChunkedUploadMemoryIsReleasedOnceServed) {
-  static constexpr std::size_t kChunkSize = 1UL << 20U;
-  static constexpr std::size_t kNbChunks = 64;  // 64 MiB: more than the largest glibc mmap threshold (32 MiB)
-  static constexpr std::size_t kBodySize = kChunkSize * kNbChunks;
+namespace {
+
+// Heap memory in use by the process, on a platform with allocator statistics (see test::AllocatedHeapBytes()).
+std::size_t HeapBytes() { return test::AllocatedHeapBytes().value_or(0); }
+
+// Waits at most 'timeout' for the heap memory in use by the process to fall below 'limit'. Returns the last amount
+// read.
+std::size_t WaitForAllocatedHeapBelow(std::size_t limit, std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  std::size_t allocated = HeapBytes();
+  while (allocated >= limit && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(5ms);
+    allocated = HeapBytes();
+  }
+  return allocated;
+}
+
+// A chunked upload of kUploadNbChunks chunks of kUploadChunkSize bytes: its buffers in the server are large enough to
+// be freed rather than kept for the next requests.
+constexpr std::size_t kUploadChunkSize = 128UL << 10U;
+constexpr std::size_t kUploadNbChunks = 32;
+constexpr std::size_t kUploadBodySize = kUploadChunkSize * kUploadNbChunks;  // 4 MiB
+
+std::string UploadChunk() {
+  return std::format("{:x}\r\n{}\r\n", kUploadChunkSize, std::string(kUploadChunkSize, 'c'));
+}
+
+}  // namespace
+
+// The decoded chunks of a chunked body are kept in a buffer of the connection until the body is complete. A large one
+// is halved once the input of the connection is served: an idle keep-alive connection does not keep the memory of its
+// largest upload, whatever the timeouts of the server (its maintenance sweeps reclaim memory only with header or body
+// read timeouts).
+TEST(HttpChunkedUpload, LargeBodyBufferIsShrunkOnceServed) {
   test::TestServer localTs(HttpServerConfig{});
   localTs.router().setPath(http::Method::POST, "/upload", [](const HttpRequestView& req) {
     return req.makeResponse(std::format("got {}", req.body().size()));
@@ -5972,32 +5999,74 @@ TEST(HttpLifecycleReview, DISABLED_LargeChunkedUploadMemoryIsReleasedOnceServed)
 
   test::ClientConnection cnx(localTs.port());
   const NativeHandle fd = cnx.fd();
-  std::this_thread::sleep_for(100ms);
-  const std::optional<std::size_t> baselineOpt = test::AllocatedHeapBytes();
-  if (!baselineOpt) {
+  std::this_thread::sleep_for(100ms);  // accepted
+  const std::optional<std::size_t> baseline = test::AllocatedHeapBytes();
+  if (!baseline) {
     GTEST_SKIP() << "no allocator statistics on this platform";
   }
-  const std::size_t baseline = *baselineOpt;
 
   test::sendAll(fd, "POST /upload HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n");
-  const std::string chunk = std::format("{:x}\r\n{}\r\n", kChunkSize, std::string(kChunkSize, 'c'));
-  for (std::size_t chunkPos = 0; chunkPos < kNbChunks; ++chunkPos) {
+  const std::string chunk = UploadChunk();
+  for (std::size_t chunkPos = 0; chunkPos < kUploadNbChunks; ++chunkPos) {
     test::sendAll(fd, chunk, 5s);
   }
   test::sendAll(fd, "0\r\n\r\n");
-  ASSERT_TRUE(test::recvWithTimeout(fd, 5s).ends_with(std::format("got {}", kBodySize)));
+  ASSERT_TRUE(test::recvWithTimeout(fd, 5s).ends_with(std::format("got {}", kUploadBodySize)));
+  // A second idle period. The halving of a buffer by realloc() may keep its block (the macOS allocator keeps a block
+  // reallocated to half its size when it cannot shrink it in place, from 4 MiB to 2 MiB for instance): the next one,
+  // below half of the block, releases it.
+  test::sendAll(fd, "POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
+  ASSERT_TRUE(test::recvWithTimeout(fd, 5s).ends_with("got 0"));
 
-  // Hundreds of maintenance ticks (1 ms poll interval).
-  std::this_thread::sleep_for(500ms);
-  const std::size_t whileIdle = test::AllocatedHeapBytes().value();
-  EXPECT_LT(whileIdle, baseline + (kBodySize / 4))
-      << "idle keep-alive connection retains " << ((whileIdle - baseline) >> 20U) << " MiB";
+  // The body buffer, of kUploadBodySize bytes, is halved at each idle period. The input buffer of the event loop, that
+  // received the upload, is shrunk by its maintenance ticks.
+  const std::size_t whileIdle = WaitForAllocatedHeapBelow(*baseline + (kUploadBodySize * 3 / 4), 2s);
+  EXPECT_LT(whileIdle, *baseline + (kUploadBodySize * 3 / 4))
+      << "idle keep-alive connection retains " << ((whileIdle - *baseline) >> 10U) << " KiB";
+}
+
+// A connection closed in the middle of a large upload does not leave its buffers as is (the request received so far,
+// its decoded chunks) in its cached state: they are halved.
+TEST(HttpChunkedUpload, ConnectionClosedDuringLargeUploadHalvesItsBuffers) {
+  test::TestServer localTs(HttpServerConfig{});  // caches 1 closed connection state (see test::TestServer)
+  localTs.router().setPath(http::Method::POST, "/upload",
+                           [](const HttpRequestView& req) { return req.makeResponse("not expected"); });
+
+  test::ClientConnection cnx(localTs.port());
+  const NativeHandle fd = cnx.fd();
+  std::this_thread::sleep_for(100ms);  // accepted
+  const std::optional<std::size_t> baseline = test::AllocatedHeapBytes();
+  if (!baseline) {
+    GTEST_SKIP() << "no allocator statistics on this platform";
+  }
+
+  test::sendAll(fd, "POST /upload HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n");
+  const std::string chunk = UploadChunk();
+  for (std::size_t chunkPos = 0; chunkPos < kUploadNbChunks / 2; ++chunkPos) {
+    test::sendAll(fd, chunk, 5s);
+  }
+  // Received by the server: the request so far and its decoded chunks, of kUploadBodySize / 2 bytes each.
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (HeapBytes() < *baseline + kUploadBodySize && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(5ms);
+  }
+  const std::size_t beforeClose = HeapBytes();
+  ASSERT_GE(beforeClose, *baseline + kUploadBodySize);
 
   cnx.close();
-  std::this_thread::sleep_for(500ms);
-  const std::size_t afterClose = test::AllocatedHeapBytes().value();
-  EXPECT_LT(afterClose, baseline + (kBodySize / 4))
-      << "closed connection (cached state) retains " << ((afterClose - baseline) >> 20U) << " MiB";
+  // About half of it stays, its large buffers halved: at most three quarters. The halving of a buffer by realloc() may
+  // keep its block (the macOS allocator keeps a block reallocated to half its size when it cannot shrink it in place):
+  // a new connection reusing the cached state halves its buffers again at its close, below half of the block, which
+  // releases it. A few of them: one may get a new state, the previous close not being processed yet.
+  const std::size_t limit = *baseline + ((beforeClose - *baseline) * 3 / 4);
+  std::size_t afterClose = WaitForAllocatedHeapBelow(limit, 1s);
+  for (int nbReuses = 0; afterClose >= limit && nbReuses < 3; ++nbReuses) {
+    test::ClientConnection reusingCnx(localTs.port());
+    reusingCnx.close();
+    afterClose = WaitForAllocatedHeapBelow(limit, 1s);
+  }
+  EXPECT_LT(afterClose, limit) << "closed connection (cached state) retains " << ((afterClose - *baseline) >> 10U)
+                               << " KiB of " << ((beforeClose - *baseline) >> 10U) << " KiB";
 }
 
 // A file that shrinks after the size of its response was announced cannot complete it: the server closes the connection
@@ -6009,7 +6078,7 @@ TEST(HttpRangeStatic, FileTruncatedAfterItsSizeWasReadClosesTheConnection) {
   test::TestServer localTs(HttpServerConfig{}.withKeepAliveTimeout(std::chrono::seconds{20}));
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, std::string(kFileSize, 'f'));
-  const std::filesystem::path filePath = tmp.filePath();
+  const std::filesystem::path& filePath = tmp.filePath();
 
   StaticFileConfig staticConfig;
   staticConfig.contentTypeResolver = [filePath](std::string_view) {
