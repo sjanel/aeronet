@@ -238,9 +238,9 @@ class ConnectionStorage {
       statePtr = _connectionStatePool.allocateAndConstruct();
       statePtr->request._pConnectionInfo = statePtr;
     } else {
+      // Reset when cached (see cacheOrRelease()).
       statePtr = _cachedConnectionStates.back();
       _cachedConnectionStates.pop_back();
-      statePtr->reset();
     }
     statePtr->lastActivity = now;
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
@@ -250,7 +250,7 @@ class ConnectionStorage {
     return statePtr;
   }
 
-  // Moves a closed connection state to the cache for reuse, or releases it.
+  // Moves the state of a closed connection (its socket closed) to the cache for reuse, reset at once, or releases it.
   void cacheOrRelease(ConnectionState* pConnectionState, uint32_t maxCachedConnections);
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS

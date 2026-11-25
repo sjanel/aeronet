@@ -98,19 +98,28 @@ class ConnectionIo {
 
   // Once the input of a connection is entirely served, its input buffer is not needed until its next read: the larger
   // of it and the input buffer of the event loop becomes the latter, the other is freed. An idle connection holds no
-  // input buffer. A connection with pending input keeps its buffer.
+  // input buffer, and its large body buffer is halved. A connection with pending input keeps its buffers.
   void releaseServedInBuffer(ConnectionState& state) noexcept {
     // Pending input (a partial request or frame, a request held by an async handler or waiting for its CONNECT
     // target...) is kept where it is, along with the views pointing to it. Nothing points to an empty buffer.
     if (!state.inBuffer.empty()) {
       return;
     }
+
     // On a tie, the buffer just used, still in the CPU caches, is kept.
     if (_lentInBuffer.capacity() <= state.inBuffer.capacity()) {
       state.inBuffer.swap(_lentInBuffer);
     }
     if (state.inBuffer.capacity() != 0) {
       state.inBuffer = RawChars{};
+    }
+
+    // The body of the last request (its decoded chunks, or its decompressed body) is not needed anymore either: no
+    // request is pending. A large buffer is halved at each idle period, so that it does not keep the size of the
+    // largest upload of the connection. A small one is kept as is for the next requests.
+    if (state.bodyAndTrailersBuffer.capacity() > ConnectionState::kMaxIdleBufferCapacity) {
+      state.bodyAndTrailersBuffer.clear();
+      state.bodyAndTrailersBuffer.shrink_to_fit();
     }
   }
 

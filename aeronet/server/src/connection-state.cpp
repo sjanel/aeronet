@@ -254,19 +254,26 @@ AsyncHandlerState& ConnectionState::ensureAsyncState(AsyncHandlerStatePool& asyn
 #endif
 
 void ConnectionState::reset() {
-  // In order to avoid retaining large buffers in cached ConnectionState objects,
-  // we shrink (before clear, otherwise it would free all memory) and clear them before reuse.
+  // The state may stay cached for up to an hour: it keeps the small buffers of the closed connection as is for the next
+  // one, and halves the large ones (the partial request of a connection closed in the middle of a large upload, for
+  // instance).
+  const auto clearBuffer = [](RawChars& buffer) {
+    buffer.clear();
+    if (buffer.capacity() > kMaxIdleBufferCapacity) {
+      buffer.shrink_to_fit();
+    }
+  };
+  clearBuffer(inBuffer);
+  clearBuffer(bodyAndTrailersBuffer);
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  asyncState.reset();
+#endif
+  clearBuffer(tunnelOrFileBuffer);
 
   const auto shrinkAndClear = [](auto& buffer) {
     buffer.shrink_to_fit();
     buffer.clear();
   };
-  shrinkAndClear(inBuffer);
-  shrinkAndClear(bodyAndTrailersBuffer);
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  asyncState.reset();
-#endif
-  shrinkAndClear(tunnelOrFileBuffer);
 
   request.shrinkAndMaybeClear();
 
@@ -274,9 +281,9 @@ void ConnectionState::reset() {
   shrinkAndClear(outQueue);
 
 #ifdef AERONET_LINUX
-  // The socket is closed at this point, and the kernel no longer reads the zerocopy buffers: SingleHttpServer only
-  // closes a connection gracefully once its zerocopy sends completed, and takes them over when resetting it (see
-  // SingleHttpServer::releaseConnection()).
+  // The socket is closed at this point (see internal::ConnectionStorage::recycleOrRelease()), and the kernel no longer
+  // reads the zerocopy buffers: the server only closes a connection gracefully once its zerocopy sends completed, and
+  // takes them over when resetting it (see internal::ConnectionIo::releaseConnection()).
   shrinkAndClear(zerocopyBuffers);
 #endif
   zerocopyStallCheckQueuedBytes = kNoZerocopyStallCheck;

@@ -39,7 +39,7 @@ constexpr std::uint8_t ndigits(std::unsigned_integral auto n) noexcept {
 
     const uint8_t floorLog2 = kMaxNbBits - static_cast<uint8_t>(std::countl_zero(static_cast<U>(n)));
 
-    uint8_t estimate = static_cast<uint8_t>((1233U * floorLog2) >> 12U);
+    const uint8_t estimate = static_cast<uint8_t>((1233U * floorLog2) >> 12U);
 
     static_assert(((1233U * kMaxNbBits) >> 12U) <= std::numeric_limits<U>::digits10,
                   "ndigits approximation bound changed");

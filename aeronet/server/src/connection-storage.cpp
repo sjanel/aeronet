@@ -63,16 +63,7 @@ void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedC
   }
 #endif
 
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  if (keepForAsyncWork) {
-    _orphanedConnectionStates.push_back(pConnectionState);
-  } else {
-    cacheOrRelease(pConnectionState, maxCachedConnections);
-  }
-#else
-  cacheOrRelease(pConnectionState, maxCachedConnections);
-#endif
-
+  // The socket is closed before the state is released: its reset assumes it (zerocopy buffers).
 #ifdef AERONET_WINDOWS
   // Do NOT call cnxIt._it->first.close() here: Connection is the hash-map key,
   // and mutating the fd (which changes the hash) before erase corrupts the
@@ -86,11 +77,23 @@ void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedC
 
   --_nbActiveConnections;
 #endif
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  if (keepForAsyncWork) {
+    _orphanedConnectionStates.push_back(pConnectionState);
+    return;
+  }
+#endif
+  cacheOrRelease(pConnectionState, maxCachedConnections);
 }
 
 void ConnectionStorage::cacheOrRelease(ConnectionState* pConnectionState, uint32_t maxCachedConnections) {
-  // Move ConnectionState to cache for potential reuse
   if (_cachedConnectionStates.size() < maxCachedConnections) {
+    // Reset now rather than when reused: a cached state would otherwise keep what its closed connection used (the file
+    // it was sending, its TLS session, its large buffers as is...) until then, for up to an hour.
+    pConnectionState->reset();
+    // Kept in the cache in caching order (see sweepCachedConnections()).
+    pConnectionState->lastActivity = now;
     _cachedConnectionStates.push_back(pConnectionState);
   } else {
     _connectionStatePool.destroyAndRelease(pConnectionState);
@@ -118,8 +121,6 @@ void ConnectionStorage::releaseOrphanedAsyncTask(uint32_t generation, std::corou
   }
   pConnectionState->asyncState.reset();
   _orphanedConnectionStates.erase(it);
-  // Kept in the cache in last activity order (see sweepCachedConnections()).
-  pConnectionState->lastActivity = now;
   cacheOrRelease(pConnectionState, maxCachedConnections);
 }
 #endif
