@@ -9,6 +9,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <limits>
 #include <string_view>
 #include <utility>
@@ -272,6 +273,7 @@ JSValue MakeRequest(JSContext* pCtx, JSValueConst* argv, RequestUse use, JSValue
       static_cast<RequestCredentials>(credentials),
       crossOrigin,
       false,
+      false,
   };
 
   std::string_view contentType;
@@ -361,6 +363,7 @@ bool OnRedirect(void* pData, HttpRequest& req, const HttpResponse& redirect, Htt
     chain.error = "too many redirects";
     return false;
   }
+  request.redirected = true;
 
   if (request.mode == RequestMode::Cors && request.crossOrigin &&
       !CorsCheck(redirect, chain.requestOrigin(), request.credentials == RequestCredentials::Include)) {
@@ -424,39 +427,28 @@ bool Preflight(Page& page, const RequestQueue::Request& request, std::string_vie
                                     request.corsHeaders);
 }
 
-// The response of the scripts for 'response', the final response of 'request' sent by 'page' through 'chain': [status,
-// statusText, url, redirected, type, headers (names and values in turn), body (ArrayBuffer)], or JS_NULL for a network
-// error with its reason in 'error'. JS_EXCEPTION on memory exhaustion.
-JSValue ResponseRecord(Page& page, const RequestQueue::Request& request, const RedirectChain& chain,
-                       const HttpResponse& response, const char*& error) {
+// The response of the scripts for 'response', the final response of 'request' sent by 'page' (see Fetch()): [status,
+// statusText, url, redirected, type, headers (names and values in turn), body (ArrayBuffer)]. JS_EXCEPTION on memory
+// exhaustion.
+JSValue ResponseRecord(Page& page, const RequestQueue::Request& request, const HttpResponse& response) {
   JSContext* pCtx = page.context();
-  const bool credentials = request.credentials == RequestCredentials::Include;
-  const char* type = "basic";
-  if (request.crossOrigin) {
-    // The same-origin mode fails before a request to another origin (MakeRequest() and OnRedirect()).
-    assert(request.mode != RequestMode::SameOrigin);
-    if (request.mode == RequestMode::NoCors) {
-      // An opaque response: nothing of it is readable.
-      JsArray record(pCtx);
-      record.append({
-          JS_NewInt32(pCtx, 0),
-          NewString(pCtx, {}),
-          NewString(pCtx, {}),
-          JS_FALSE,
-          NewString(pCtx, "opaque"),
-          JS_NewArray(pCtx),
-          NewArrayBuffer(pCtx, {}),
-      });
-      return record.release();
-    }
-    if (!CorsCheck(response, chain.requestOrigin(), credentials)) {
-      error = "the response of another origin does not allow the document to read it (CORS)";
-      return JS_NULL;
-    }
-    type = "cors";
+  if (request.crossOrigin && request.mode == RequestMode::NoCors) {
+    // An opaque response: nothing of it is readable.
+    JsArray record(pCtx);
+    record.append({
+        JS_NewInt32(pCtx, 0),
+        NewString(pCtx, {}),
+        NewString(pCtx, {}),
+        JS_FALSE,
+        NewString(pCtx, "opaque"),
+        JS_NewArray(pCtx),
+        NewArrayBuffer(pCtx, {}),
+    });
+    return record.release();
   }
 
   // On memory exhaustion, the next values are still created, and freed: an error path, the record is small.
+  const bool credentials = request.credentials == RequestCredentials::Include;
   JsArray headers(pCtx);
   const std::string_view exposeHeaders = response.headerValueOrEmpty("access-control-expose-headers");
   for (const auto& [name, value] : response.headers()) {
@@ -472,72 +464,23 @@ JSValue ResponseRecord(Page& page, const RequestQueue::Request& request, const R
       JS_NewInt32(pCtx, response.status()),
       NewString(pCtx, response.reason()),
       NewString(pCtx, RequestUrl(page.urlResolver(), request.http, {})),
-      JS_NewBool(pCtx, chain.redirects != 0),
-      NewString(pCtx, type),
+      JS_NewBool(pCtx, request.redirected),
+      NewString(pCtx, request.crossOrigin ? "cors" : "basic"),
       headers.release(),
       NewArrayBuffer(pCtx, response.bodyInMemory()),
   });
   return record.release();
 }
 
-// Sends 'request' of 'page', with the preflights it needs, at its URL and after a redirect to another origin.
-// Returns its response record (see ResponseRecord()), JS_NULL for a network error with its reason in 'error'.
+// Sends 'request' of 'page' (see Fetch()). Returns its response record (see ResponseRecord()), JS_NULL for a network
+// error with its reason in 'error'.
 JSValue Send(Page& page, RequestQueue::Request& request, const char*& error) {
-  WebSession& session = page.session();
-  RedirectChain chain{
-      .pPage = &page,
-      .pRequest = &request,
-      .serverAddressSpace = page.addressSpace(),
-      .crossOriginUrl = request.crossOrigin,
-  };
-  for (;;) {
-    // A chain continued after a preflight keeps the rule of the redirects, for that preflight too (see
-    // RedirectChain::serverAddressSpace). The HTTP client only reached servers at least as public as the document.
-    assert(chain.serverAddressSpace >= page.addressSpace());
-    const AddressSpace addressSpace =
-        session.config.allowLessPublicRedirects ? page.addressSpace() : chain.serverAddressSpace;
-    if (request.preflight) {
-      if (!Preflight(page, request, chain.requestOrigin(), addressSpace)) {
-        error = "the CORS preflight of the request to another origin failed";
-        return JS_NULL;
-      }
-      request.preflight = false;
-    }
-    const PageRequestContext context{
-        .documentUrl = page.url(),
-        .pAddressSpace = &chain.serverAddressSpace,
-        .onRedirect = &OnRedirect,
-        .pRedirectData = &chain,
-        .credentials = request.credentials,
-        .addressSpace = addressSpace,
-        .allowLessPublicRedirects = session.config.allowLessPublicRedirects,
-        .crossSiteChain = chain.crossSite,
-        .crossOriginChain = request.crossOrigin,
-    };
-    const HttpClientResult result = session.http.requestUpdating(request.http, context);
-    if (!result) {
-      log::debug("[js {}] request {}{} failed: {}", page.url(), request.http.originKey(), request.http.target(),
-                 ErrcToStr(result.error()));
-      error = "Failed to fetch";
-      return JS_NULL;
-    }
-    if (chain.error != nullptr) {
-      error = chain.error;
-      return JS_NULL;
-    }
-    if (!request.preflight) {
-      log::debug("[js {}] request {} {}{}: {}", page.url(), http::MethodToStr(request.http.method()),
-                 request.http.originKey(), request.http.target(), result->status());
-      // A redirect that the HTTP client did not follow: beyond its maxRedirects, or from https to http.
-      if (session.config.http.followRedirects && IsRedirectStatus(result->status()) &&
-          !result->headerValueOrEmpty(http::Location).empty()) {
-        error = "the redirect was not followed (too many redirects, or from https to http)";
-        return JS_NULL;
-      }
-      return ResponseRecord(page, request, chain, *result, error);
-    }
-    // Stopped by OnRedirect() before a URL that needs a preflight: continued after it.
+  const FetchResult result = Fetch(page, request);
+  if (!result) {
+    error = result.error();
+    return JS_NULL;
   }
+  return ResponseRecord(page, request, *result);
 }
 
 JSValue Queue(Page& page, RequestQueue::Request&& request, JSValueConst callback) {
@@ -610,6 +553,17 @@ JSValue DecodeUtf8Bytes(JSContext* pCtx, JSValueConst /*self*/, [[maybe_unused]]
   return NewString(pCtx, text);
 }
 
+// parseJson(text): JSON.parse(text), without a reviver, for Response.json() and the json responses of XMLHttpRequest.
+// JSON.parse() keeps the string it parses when its UTF-8 cannot be allocated, up to QuickJS-ng 0.18 (see
+// StringToUtf8()): the string would outlive the page.
+JSValue ParseJson(JSContext* pCtx, JSValueConst /*self*/, int argc, JSValueConst* argv) {
+  const JsArgument text(pCtx, argc, argv, 0);
+  if (text.failed()) {
+    return JS_EXCEPTION;
+  }
+  return JS_ParseJSON(pCtx, text.view().data(), text.view().size(), "<input>");
+}
+
 // encodeUtf8(text): a Uint8Array of the UTF-8 of 'text', lone surrogates replaced by U+FFFD.
 JSValue EncodeUtf8(JSContext* pCtx, JSValueConst /*self*/, int argc, JSValueConst* argv) {
   const JsArgument text(pCtx, argc, argv, 0);
@@ -652,6 +606,7 @@ const JSCFunctionListEntry kNetworkNatives[]{
     JS_CFUNC_DEF("decode", 2, &JsMethod<Decode>),
     JS_CFUNC_DEF("decodeUtf8", 2, &JsMethod<DecodeUtf8Bytes>),
     JS_CFUNC_DEF("encodeUtf8", 1, &JsMethod<EncodeUtf8>),
+    JS_CFUNC_DEF("parseJson", 1, &JsMethod<ParseJson>),
     JS_CFUNC_DEF("parseUrl", 2, &JsMethod<ParseUrl>),
 };
 
@@ -659,6 +614,88 @@ const JSCFunctionListEntry kNetworkNatives[]{
 
 bool InstallNetwork(JSContext* pCtx, JSValueConst natives) noexcept {
   return SetFunctions(pCtx, natives, kNetworkNatives);
+}
+
+RequestQueue::Request ScriptRequest(Page& page, std::string_view url, RequestMode mode, RequestCredentials credentials,
+                                    std::string_view referrerUrl) {
+  const std::string_view origin = page.origin();
+  const std::string_view referrer = ReferrerOf(referrerUrl, OriginOf(referrerUrl), url);
+  const bool crossOrigin = !IsOfOrigin(url, origin);
+  // With room for its headers: no reallocation.
+  RequestQueue::Request request{
+      page.session().http.makeRequest(referrer.size() + origin.size() + kExtraHeadersSize, http::Method::GET, url),
+      {},
+      JS_UNDEFINED,
+      0,
+      mode,
+      credentials,
+      crossOrigin,
+      false,
+      false,
+  };
+  request.http.header(http::Accept, "*/*");
+  AddOriginAndReferer(request.http, SendsOrigin(mode, crossOrigin, http::Method::GET), origin, referrer);
+  return request;
+}
+
+FetchResult Fetch(Page& page, RequestQueue::Request& request) {
+  WebSession& session = page.session();
+  RedirectChain chain{
+      .pPage = &page,
+      .pRequest = &request,
+      .serverAddressSpace = page.addressSpace(),
+      .crossOriginUrl = request.crossOrigin,
+  };
+  for (;;) {
+    // A chain continued after a preflight keeps the rule of the redirects, for that preflight too (see
+    // RedirectChain::serverAddressSpace). The HTTP client only reached servers at least as public as the document.
+    assert(chain.serverAddressSpace >= page.addressSpace());
+    const AddressSpace addressSpace =
+        session.config.allowLessPublicRedirects ? page.addressSpace() : chain.serverAddressSpace;
+    if (request.preflight) {
+      if (!Preflight(page, request, chain.requestOrigin(), addressSpace)) {
+        return std::unexpected("the CORS preflight of the request to another origin failed");
+      }
+      request.preflight = false;
+    }
+    const PageRequestContext context{
+        .documentUrl = page.url(),
+        .pAddressSpace = &chain.serverAddressSpace,
+        .onRedirect = &OnRedirect,
+        .pRedirectData = &chain,
+        .credentials = request.credentials,
+        .addressSpace = addressSpace,
+        .allowLessPublicRedirects = session.config.allowLessPublicRedirects,
+        .crossSiteChain = chain.crossSite,
+        .crossOriginChain = request.crossOrigin,
+    };
+    HttpClientResult result = session.http.requestUpdating(request.http, context);
+    if (!result) {
+      log::debug("[js {}] request {}{} failed: {}", page.url(), request.http.originKey(), request.http.target(),
+                 ErrcToStr(result.error()));
+      return std::unexpected("Failed to fetch");
+    }
+    if (chain.error != nullptr) {
+      return std::unexpected(chain.error);
+    }
+    if (!request.preflight) {
+      log::debug("[js {}] request {} {}{}: {}", page.url(), http::MethodToStr(request.http.method()),
+                 request.http.originKey(), request.http.target(), result->status());
+      // A redirect that the HTTP client did not follow: beyond its maxRedirects, or from https to http.
+      if (session.config.http.followRedirects && IsRedirectStatus(result->status()) &&
+          !result->headerValueOrEmpty(http::Location).empty()) {
+        return std::unexpected("the redirect was not followed (too many redirects, or from https to http)");
+      }
+      // The same-origin mode fails before a request to another origin (MakeRequest() and OnRedirect()).
+      assert(!request.crossOrigin || request.mode != RequestMode::SameOrigin);
+      if (request.crossOrigin && request.mode == RequestMode::Cors &&
+          !CorsCheck(*result, chain.requestOrigin(), request.credentials == RequestCredentials::Include)) {
+        return std::unexpected("the response of another origin does not allow the document to read it (CORS)");
+      }
+      return std::move(*result);
+    }
+    // Stopped by OnRedirect() before a URL that needs a preflight: continued after it.
+  }
 }
 
 bool RunNextRequest(Page& page) {

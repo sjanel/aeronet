@@ -25,6 +25,12 @@ target_link_libraries(aeronet_web
         $<COMPILE_ONLY:${AERONET_LEXBOR_TARGET}>
 )
 
+# Whether its QuickJS-ng runs ES modules safely (see AERONET_QJS_MODULES in cmake/Dependencies.cmake): read by
+# ModulesEnabled() alone.
+if(AERONET_QJS_MODULES)
+    target_compile_definitions(aeronet_web PRIVATE AERONET_WEB_MODULES)
+endif()
+
 # --- Tests ---
 
 # The engine wrapper, compiled with its own QuickJS-ng: aeronet_web hides the one it links.
@@ -50,7 +56,7 @@ AeronetAddUnitTest(
 
 # Their targets are configured below: only with the tests.
 if(AERONET_ENABLE_HTTP_SERVER AND AERONET_BUILD_TESTS)
-    foreach(_web_test IN ITEMS web-address-space_test web-app_test web-client_test web-dom_test web-network_test web-runtime_test)
+    foreach(_web_test IN ITEMS web-address-space_test web-app_test web-client_test web-dom_test web-module_test web-network_test web-runtime_test)
         AeronetAddUnitTest(
             ${_web_test}
             test/${_web_test}.cpp

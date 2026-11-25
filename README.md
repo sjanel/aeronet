@@ -22,15 +22,16 @@
 
 ## Why aeronet?
 
-**aeronet** is a modern, fast, modular and ergonomic HTTP / WebSocket C++ **server & client** library for **Linux**, **macOS** and **Windows** focused on predictable performance, explicit control and minimal dependencies.
+**aeronet** is a modern, fast, modular and ergonomic HTTP / WebSocket C++ **client & server** library for **Linux**, **macOS** and **Windows** focused on predictable performance, explicit control and minimal dependencies.
 
 - **Fast & predictable**: edge‑triggered reactor model, zero/low‑allocation hot paths and minimal copies, horizontal scaling with port reuse. In CI benchmarks `aeronet` ranks among the [fastest tested implementations](#performance-at-a-glance) across multiple realistic scenarios.
-- **Modular & opt‑in**: enable only the features you need at compile time to minimize binary size and dependencies
-- **Ergonomic**: easy API, automatic features (encoding, telemetry), RAII listener setup with sync / async server lifetime control, developer friendly with no hidden global state, no macros
-- **Configurable**: extensive dynamic configuration with reasonable defaults, per path options and middleware helpers, run-time router / config updates
+- **Modular & opt‑in**: enable only the features you need at compile time to minimize binary size and dependencies.
+- **Ergonomic**: easy API, automatic features (encoding, telemetry), RAII listener setup with sync / async server lifetime control, developer friendly with no hidden global state, no macros.
+- **Configurable**: extensive dynamic configuration with reasonable defaults, per path options and middleware helpers, run-time router / config updates.
 - **Standards compliant**: HTTP/1.1, HTTP/2, WebSocket, Compression, Streaming, Trailers, TLS, CORS, Range & Conditional Requests, Static files, URL Decoding, multipart/form-data, etc.
 - **Batteries included**: beyond the server, a matching HTTP **client** and a **JWT** (JWS) module for signing/verifying tokens - same opt‑in, zero‑extra‑dependency design (both reuse the server's own transport / TLS / crypto bricks).
-- **Cloud native**: Built-in Kubernetes-style health probes, opentelemetry support (metrics, tracing) with built-in spans and metrics, dogstatsd support, perfect for micro-services
+- **Reads JavaScript pages, no browser needed**: `WebClient` runs page scripts (QuickJS-ng) over a DOM (lexbor), with cookies, `fetch`, ES modules and timers, so waiting rooms and React apps read like any page (experimental, fully optional).
+- **Cloud native**: Built-in Kubernetes-style health probes, opentelemetry support (metrics, tracing) with built-in spans and metrics, dogstatsd support, perfect for micro-services.
 - **Cross‑platform**: primary platform is **Linux** (epoll); macOS (kqueue) and Windows (WSAPoll) are supported with a portable abstraction layer. Some Linux‑specific optimizations (kTLS, `MSG_ZEROCOPY`, `sendfile`) are automatically disabled on other platforms.
 
 ### Performance at a glance
@@ -69,7 +70,7 @@ using namespace aeronet;
 int main() {
   Router router;
   router.setPath(http::Method::GET, "/hello", [](const HttpRequestView& req) {
-    return HttpResponse(200).header("x-req-body", req.body()).body("hello from aeronet\n");
+    return req.makeResponse().header("x-req-body", req.body()).body("hello from aeronet\n");
   });
   HttpServer server(HttpServerConfig{}, std::move(router)); // default port is ephemeral, OS will pick an available one
   server.run(); // blocking. Use start() for non-blocking
@@ -82,7 +83,7 @@ Streaming responses, coroutine (async) handlers, routing, middleware and the res
 
 ## Quick Start with provided examples
 
-Minimal server examples for typical use cases (multi-threaded server, TLS, HTTP/2, WebSocket server and client, static files, sendfile, HTTP client, ...) are provided in the [examples](examples) directory.
+Minimal server examples for typical use cases (multi-threaded server, TLS, HTTP/2, WebSocket server and client, static files, sendfile, HTTP client, JavaScript pages, ...) are provided in the [examples](examples) directory.
 
 ```bash
 cmake -S . -B build -D CMAKE_BUILD_TYPE=Release
@@ -122,7 +123,7 @@ Hello from aeronet minimal server! You requested /hello
 | JWT (flag) | RFC 7519 JWS sign / verify, JWK / JWKS, rejects `alg:none` | [JWT](docs/modules/jwt.md) |
 | Protocol Buffers (flag) | Binary and ProtoJSON bodies (RFC 9996) for the server and the client, compressed like any body | [Protocol Buffers](docs/modules/protobuf.md) |
 | HTML parsing (flag) | WHATWG HTML parser (lexbor), CSS selector queries, encoding sniffing, JSON state embedded by scripts | [HTML parsing](docs/modules/html.md) |
-| JavaScript pages (flag) | `WebClient`: pages loaded with their scripts (QuickJS-ng), DOM bindings, virtual-clock timers, script navigations, `document.cookie` | [JavaScript pages](docs/modules/web.md) |
+| JavaScript pages (flag) | `WebClient` (experimental): pages loaded with their scripts (QuickJS-ng), DOM bindings, `fetch` / XHR with CORS, ES modules, virtual-clock timers, script navigations, cookies and storage | [JavaScript pages](docs/modules/web.md) |
 | Observability | OpenTelemetry (experimental), DogStatsD, logging, metrics callback | [Observability](docs/operations/observability.md) |
 | Operations | Kubernetes-style probes, graceful drain, signal handling, runtime config / router updates, JSON / YAML configuration | [Health probes](docs/operations/health-probes.md), [Kubernetes examples](docs/operations/kubernetes.md), [JSON and config files](docs/modules/json-and-config-files.md) |
 | Performance | Edge-triggered reactor, `SO_REUSEPORT` scaling, `writev`, `MSG_ZEROCOPY` | [Performance and tuning](docs/operations/performance.md) |
@@ -151,7 +152,7 @@ The full documentation, with search and navigation, is at [sjanel.github.io/aero
 
 ## Acknowledgements
 
-Compression libraries (zlib, zlib-ng, zstd, brotli), OpenSSL, Opentelemetry and spdlog provide the optional feature foundation; thanks to their maintainers & contributors.
+Compression libraries (zlib, zlib-ng, zstd, brotli), OpenSSL, Opentelemetry, spdlog, lexbor and QuickJS-ng provide the optional feature foundation; thanks to their maintainers & contributors.
 
 This project also includes code from the following open source projects:
 

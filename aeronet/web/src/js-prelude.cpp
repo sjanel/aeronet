@@ -79,15 +79,17 @@ constexpr std::string_view kPrelude =
 
   const captureOf = options => typeof options === 'boolean' ? options : !!options?.capture;
 
+  // A call without receiver (addEventListener('load', f) in a script) is one of the window (WebIDL "this value").
   class EventTarget {
     addEventListener(type, callback, options) {
       if (callback == null) return;
+      const target = this ?? globalThis;
       type = String(type);
       const capture = captureOf(options);
-      let listeners = this[kListeners];
+      let listeners = target[kListeners];
       if (listeners === undefined) {
         listeners = new Map();
-        Object.defineProperty(this, kListeners, { value: listeners });
+        Object.defineProperty(target, kListeners, { value: listeners });
       }
       let list = listeners.get(type);
       if (list === undefined) listeners.set(type, list = []);
@@ -96,14 +98,14 @@ constexpr std::string_view kPrelude =
       }
     }
     removeEventListener(type, callback, options) {
-      const list = this[kListeners]?.get(String(type));
+      const list = (this ?? globalThis)[kListeners]?.get(String(type));
       const capture = captureOf(options);
       const index = list === undefined ? -1 : list.findIndex(l => l.callback === callback && l.capture === capture);
       if (index >= 0) list.splice(index, 1)[0].removed = true;
     }
     dispatchEvent(event) {
       if (!(event instanceof Event)) throw new TypeError("dispatchEvent: parameter 1 is not of type 'Event'");
-      return dispatch(this, event);
+      return dispatch(this ?? globalThis, event);
     }
   }
 
@@ -604,7 +606,7 @@ constexpr std::string_view kNetworkPrelude =
       return typeof source === 'string' ? source : utf8Decode(new Uint8Array(source.buffer ?? source,
         source.byteOffset ?? 0, source.byteLength));
     }
-    async json() { return JSON.parse(await this.text()); }
+    async json() { return native.parseJson(await this.text()); }
     async arrayBuffer() {
       const source = takeSource(this);
       if (source === null) return new ArrayBuffer(0);
@@ -897,7 +899,7 @@ constexpr std::string_view kNetworkPrelude =
       if (this.#responseType === 'arraybuffer') return this.#response[6];
       if (this.#responseType !== 'json') return null;
       try {
-        return JSON.parse(utf8Decode(new Uint8Array(this.#response[6])));
+        return native.parseJson(utf8Decode(new Uint8Array(this.#response[6])));
       } catch {
         return null;
       }
@@ -1047,7 +1049,8 @@ constexpr std::string_view kNetworkPrelude =
   // --- TextEncoder, TextDecoder, URLSearchParams, URL ---
   // native.decode(bytes, contentType) decodes a non-empty Uint8Array (byte order mark, charset of contentType, else
   // UTF-8), native.decodeUtf8(bytes, fatal) as UTF-8 only, native.encodeUtf8(text) returns a Uint8Array,
-  // native.parseUrl(input, base) a serialized URL or ''.
+  // native.parseUrl(input, base) a serialized URL or '', native.parseJson(text) is JSON.parse(text) without its leak
+  // when memory runs out.
   const utf8Size = code => code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
   class TextEncoder {
     get encoding() { return 'utf-8'; }
@@ -1298,7 +1301,8 @@ constexpr std::string_view kNetworkPrelude =
 })
 )js";
 
-// The view part: the geometry, the observers and the media queries of a page without layout. About 7 KB.
+// The view part: the geometry, the observers and the media queries of a page without layout, and the interfaces of
+// the collections. About 12 KB.
 constexpr std::string_view kViewPrelude =
     R"js((function (native, shared) {
   'use strict';
@@ -1433,6 +1437,42 @@ constexpr std::string_view kViewPrelude =
     }
   }
 
+  // The mutations are not reported: the scripts that observe the DOM run on, without callbacks. The options are
+  // checked as by the browsers.
+  class MutationObserver {
+    constructor(callback) { checkCallback(callback, 'MutationObserver'); }
+    observe(target, options) {
+      if (!(target instanceof Node)) throw new TypeError("MutationObserver.observe: parameter 1 is not of type 'Node'");
+      const { childList, attributes, characterData, attributeOldValue, attributeFilter, characterDataOldValue } =
+        options ?? {};
+      const watchesAttributes = attributes === undefined ?
+        attributeOldValue !== undefined || attributeFilter !== undefined : Boolean(attributes);
+      const watchesData = characterData === undefined ? characterDataOldValue !== undefined : Boolean(characterData);
+      if (!childList && !watchesAttributes && !watchesData) {
+        throw new TypeError("MutationObserver.observe: 'childList', 'attributes' or 'characterData' must be true");
+      }
+      if (!watchesAttributes && (attributeOldValue || attributeFilter !== undefined)) {
+        throw new TypeError("MutationObserver.observe: 'attributeOldValue' and 'attributeFilter' need 'attributes'");
+      }
+      if (!watchesData && characterDataOldValue) {
+        throw new TypeError("MutationObserver.observe: 'characterDataOldValue' needs 'characterData'");
+      }
+    }
+    disconnect() {}
+    takeRecords() { return []; }
+  }
+
+  // The queries and the child lists are arrays, not live collections: for 'instanceof', an array of nodes is a
+  // NodeList, an array of elements an HTMLCollection (empty ones are both).
+  class NodeList {
+    constructor() { throw new TypeError('Illegal constructor'); }
+    static [Symbol.hasInstance](value) { return Array.isArray(value) && value.every(item => item instanceof Node); }
+  }
+  class HTMLCollection {
+    constructor() { throw new TypeError('Illegal constructor'); }
+    static [Symbol.hasInstance](value) { return Array.isArray(value) && value.every(item => item instanceof Element); }
+  }
+
   // Media queries, evaluated against the viewport of the window: a screen, in landscape, light, with a fine pointer
   // that hovers, without reduced motion. An unknown feature does not match.
   const length = value => {
@@ -1526,8 +1566,8 @@ constexpr std::string_view kViewPrelude =
     return style;
   };
 
-  return { DOMRect, DOMRectReadOnly, IntersectionObserver, IntersectionObserverEntry, MediaQueryList, ResizeObserver,
-    ResizeObserverEntry, getComputedStyle, matchMedia };
+  return { DOMRect, DOMRectReadOnly, HTMLCollection, IntersectionObserver, IntersectionObserverEntry, MediaQueryList,
+    MutationObserver, NodeList, ResizeObserver, ResizeObserverEntry, getComputedStyle, matchMedia };
 })
 )js";
 

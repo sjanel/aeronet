@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 
 #include "aeronet/html-element.hpp"
@@ -16,6 +17,7 @@
 #include "aeronet/string-trim.hpp"
 #include "html-node-access.hpp"
 #include "html-tree-walk.hpp"
+#include "js-module.hpp"
 
 namespace aeronet::internal {
 
@@ -38,20 +40,41 @@ bool IsJavaScriptLanguage(std::string_view language) noexcept {
   });
 }
 
-// Whether a <script> is a classic script, the only kind that runs (HTML "prepare the script element"): modules are not
-// supported, the nomodule scripts are their fallback for such browsers.
-bool IsClassicScript(const HtmlElement& script) noexcept {
+// The type of the script of a <script> (HTML "prepare the script element").
+enum class ScriptType : uint8_t {
+  None,     // a data block (application/json...), an import map, a classic script with nomodule: it does not run
+  Classic,  // a classic script
+  Module,   // a module script
+};
+
+ScriptType DeclaredType(const HtmlElement& script) noexcept {
   if (script.hasAttribute("type")) {
     const std::string_view type = TrimOws(script.attribute("type"));
-    return type.empty() || std::ranges::any_of(kJavaScriptTypes, [type](std::string_view javaScriptType) {
-             return CaseInsensitiveEqual(type, javaScriptType);
-           });
+    if (type.empty() || IsJavaScriptMimeType(type)) {
+      return ScriptType::Classic;
+    }
+    return CaseInsensitiveEqual(type, "module") ? ScriptType::Module : ScriptType::None;
   }
   if (script.hasAttribute("language")) {
     const std::string_view language = script.attribute("language");
-    return language.empty() || IsJavaScriptLanguage(language);
+    return language.empty() || IsJavaScriptLanguage(language) ? ScriptType::Classic : ScriptType::None;
   }
-  return true;
+  return ScriptType::Classic;
+}
+
+// The type of the script of 'script' that runs: the nomodule classic scripts are the fallback of the browsers without
+// modules, as the pages are without ModulesEnabled(). 'url', of the document, is for the logs.
+ScriptType TypeToRun(const HtmlElement& script, std::string_view url) {
+  const ScriptType type = DeclaredType(script);
+  if (type == ScriptType::Classic && script.hasAttribute("nomodule") && ModulesEnabled()) {
+    log::debug("[js {}] nomodule script not run", url);
+    return ScriptType::None;
+  }
+  if (type == ScriptType::None || (type == ScriptType::Module && !ModulesEnabled())) {
+    log::debug("[js {}] script of type '{}' not run", url, script.attribute("type"));
+    return ScriptType::None;
+  }
+  return type;
 }
 
 bool IsScript(const lxb_dom_node_t* pNode) noexcept {
@@ -70,6 +93,11 @@ bool HasChildText(const lxb_dom_node_t* pScript) noexcept {
 }
 
 }  // namespace
+
+bool IsJavaScriptMimeType(std::string_view type) noexcept {
+  return std::ranges::any_of(
+      kJavaScriptTypes, [type](std::string_view javaScriptType) { return CaseInsensitiveEqual(type, javaScriptType); });
+}
 
 void ScriptQueue::elementCreated(lxb_dom_node_t* pElement) {
   if (IsScript(pElement)) {
@@ -114,11 +142,14 @@ ScriptQueue::Start ScriptQueue::start(lxb_dom_node_t* pScript, std::string_view 
   if (!external && !HasChildText(pScript)) {
     return Start::No;
   }
-  if (!IsClassicScript(script)) {
-    log::debug("[js {}] inserted script of type '{}' not run", url, script.attribute("type"));
+  const ScriptType type = TypeToRun(script, url);
+  if (type == ScriptType::None) {
     return Start::No;
   }
   _created.erase(pos);
+  if (type == ScriptType::Module) {
+    return Start::Module;
+  }
   return external ? Start::External : Start::Inline;
 }
 
@@ -131,24 +162,30 @@ void ScriptQueue::queueInserted(const InsertedScript& script) {
     _insertedTextPos = 0;
   }
   // The capacity of the text first: the entry is the only step left that can throw.
-  _insertedText.ensureAvailableCapacityExponential(script.url.size() + script.charset.size());
-  _inserted.emplace_back(script.pScript, script.url.size(), script.charset.size(), script.credentials);
+  _insertedText.ensureAvailableCapacityExponential(script.url.size() + script.text.size());
+  _inserted.emplace_back(script.pScript, script.url.size(), script.text.size(), script.credentials, script.kind);
   _insertedText.unchecked_append(script.url);
-  _insertedText.unchecked_append(script.charset);
+  _insertedText.unchecked_append(script.text);
 }
 
 ScriptQueue::InsertedScript ScriptQueue::nextInserted() noexcept {
   if (_nextInserted == _inserted.size()) {
-    return {{}, {}, nullptr, RequestCredentials::Include};
+    return {{}, {}, nullptr, RequestCredentials::Include, Inserted::Classic};
   }
   const QueuedScript& queued = _inserted[_nextInserted++];
   const char* pText = _insertedText.data() + _insertedTextPos;
-  _insertedTextPos += queued.urlSize + queued.charsetSize;
-  return {{pText, queued.urlSize}, {pText + queued.urlSize, queued.charsetSize}, queued.pScript, queued.credentials};
+  _insertedTextPos += queued.urlSize + queued.textSize;
+  return {
+      {pText, queued.urlSize},
+      {pText + queued.urlSize, queued.textSize},
+      queued.pScript,
+      queued.credentials,
+      queued.kind,
+  };
 }
 
 void ScriptQueue::collect(lxb_dom_node_t* pFirst, lxb_dom_node_t* pEnd, std::string_view url) {
-  Scripts& blockingScripts = _scripts[static_cast<std::size_t>(Kind::Blocking)];
+  vector<ParserScript>& blockingScripts = _scripts[static_cast<std::size_t>(Kind::Blocking)];
   // The blocking scripts go after the current one, in document order.
   auto insertPos = static_cast<std::ptrdiff_t>(_next[static_cast<std::size_t>(Kind::Blocking)]);
   const auto visit = [&](lxb_dom_node_t* pNode) {
@@ -156,18 +193,24 @@ void ScriptQueue::collect(lxb_dom_node_t* pFirst, lxb_dom_node_t* pEnd, std::str
       return;
     }
     const HtmlElement script = HtmlNodeAccess::Element(pNode);
-    if (!IsClassicScript(script)) {
-      log::debug("[js {}] script of type '{}' not run", url, script.attribute("type"));
+    const ScriptType type = TypeToRun(script, url);
+    if (type == ScriptType::None) {
       return;
     }
-    // async and defer only apply to external scripts.
+    if (type == ScriptType::Module) {
+      // Deferred, inline or not, unless async.
+      _scripts[static_cast<std::size_t>(script.hasAttribute("async") ? Kind::Async : Kind::Defer)].emplace_back(pNode,
+                                                                                                                true);
+      return;
+    }
+    // async and defer only apply to external classic scripts.
     const bool external = script.hasAttribute("src");
     if (external && script.hasAttribute("async")) {
-      _scripts[static_cast<std::size_t>(Kind::Async)].push_back(pNode);
+      _scripts[static_cast<std::size_t>(Kind::Async)].emplace_back(pNode, false);
     } else if (external && script.hasAttribute("defer")) {
-      _scripts[static_cast<std::size_t>(Kind::Defer)].push_back(pNode);
+      _scripts[static_cast<std::size_t>(Kind::Defer)].emplace_back(pNode, false);
     } else {
-      blockingScripts.insert(blockingScripts.begin() + insertPos++, pNode);
+      blockingScripts.emplace(blockingScripts.begin() + insertPos++, pNode, false);
     }
   };
   for (lxb_dom_node_t* pNode = pFirst; pNode != pEnd; pNode = pNode->next) {

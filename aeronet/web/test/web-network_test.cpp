@@ -1414,6 +1414,21 @@ TEST(WebNetworkTest, ChangedUint8Array) {
             R"(["TypeError","TypeError","TypeError","abc"])");
 }
 
+// Response.json() parses what text() returns as JSON.parse() would, also a value other than a string from a page that
+// replaces text().
+TEST(WebNetworkTest, ChangedTextOfAResponse) {
+  WebClient client(Config());
+  EXPECT_EQ(Out(client, R"(const json = value => {
+      Response.prototype.text = async () => value;
+      return new Response('').json().catch(e => e.name + ': ' + e.message);
+    };
+    (async () => {
+      out = [await json(42), await json({ toString: () => '{"a":[1]}' }),
+        await json({ toString() { throw new RangeError('no text'); } }), (await json('{"a":')).split(':')[0]];
+    })();)"),
+            R"([42,{"a":[1]},"RangeError: no text","SyntaxError"])");
+}
+
 // The strings that the prelude passes through String() or a header getter of XMLHttpRequest.
 TEST(WebNetworkTest, ChangedStringConversions) {
   WebClient client(Config());

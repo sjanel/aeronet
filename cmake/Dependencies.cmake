@@ -469,7 +469,13 @@ endif()
 # there (policy CMP0077).
 # Without a version file, the version of a QuickJS-ng package is read from its header: an older one than
 # AERONET_QJS_MIN_VERSION lacks functions that aeronet_web calls (its target cannot be dropped for the download).
+# The ES modules of the pages need two fixes of QuickJS-ng that no release has yet (master a71d444b and c40c431f, of
+# 2026-11-16): up to 0.18.0, a page freed while a module awaits (top-level await) writes into the freed module. The
+# download is a commit of master with them; AERONET_QJS_MODULES tells aeronet_web whether its QuickJS-ng has them: the
+# download, or a package from 0.19.0 on, the first release expected after them (master still reports 0.18.0, and a
+# 0.18.x patch release could lack them). Without them, the module scripts are skipped, as by a browser without modules.
 set(AERONET_QJS_MIN_VERSION 0.16)
+set(AERONET_QJS_MODULES OFF)
 if(AERONET_ENABLE_JS)
   aeronet_system_packages_allowed(_qjs_allow_system)
   if(_qjs_allow_system)
@@ -487,22 +493,33 @@ if(AERONET_ENABLE_JS)
     if(NOT _qjs_version MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$" OR _qjs_version VERSION_LESS AERONET_QJS_MIN_VERSION)
       message(FATAL_ERROR "[aeronet] AERONET_ENABLE_JS needs QuickJS-ng >= ${AERONET_QJS_MIN_VERSION}, the qjs package "
                           "found in ${qjs_DIR} is '${_qjs_version}' (${_qjs_header}): upgrade it, or configure with "
-                          "-DCMAKE_DISABLE_FIND_PACKAGE_qjs=ON to build the downloaded v0.18.0")
+                          "-DCMAKE_DISABLE_FIND_PACKAGE_qjs=ON to build the downloaded one")
     endif()
-    message(STATUS "[aeronet] QuickJS-ng ${_qjs_version} (qjs package)")
+    if(_qjs_version VERSION_GREATER_EQUAL 0.19.0)
+      set(AERONET_QJS_MODULES ON)
+      message(STATUS "[aeronet] QuickJS-ng ${_qjs_version} (qjs package)")
+    else()
+      message(STATUS "[aeronet] QuickJS-ng ${_qjs_version} (qjs package): no ES modules in the pages, they need "
+                     "0.19.0 or later (or -DCMAKE_DISABLE_FIND_PACKAGE_qjs=ON to build the downloaded one)")
+    endif()
   else()
     set(QJS_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
     set(QJS_BUILD_LIBC OFF CACHE BOOL "" FORCE)
+    # Master of 2026-11-23 (d06a85c1), after 0.18.0, for the fixes of its modules (see AERONET_QJS_MODULES), with the
+    # commit of https://github.com/quickjs-ng/quickjs/pull/1949 (open): the parser that runs out of memory leaves
+    # truncated bytecode, read past its end (a crash, or garbage). To its merge commit once merged, back to a release
+    # once one has them all.
     FetchContent_Declare(
       quickjs_ng
-      URL https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.18.0.tar.gz
-      URL_HASH SHA256=28bcd89aa3683fd2a946537e5ce3f11cc46b5cbf3383c7561aaef3df5ff9f1dd
+      URL https://github.com/quickjs-ng/quickjs/archive/332a0b77afd06282a313a76f56ad0e9abbd68a9a.tar.gz
+      URL_HASH SHA256=0220c663ebeffffb0ac77c3e7f5ed0022c664a9d3ea372252208928675cd1efd
       DOWNLOAD_EXTRACT_TIMESTAMP TRUE
       EXCLUDE_FROM_ALL
       # Its header, included by the sources of aeronet_web, is not compiled with the warnings of aeronet.
       SYSTEM
     )
     list(APPEND AeronetFetchContentPackagesToMakeAvailable quickjs_ng)
+    set(AERONET_QJS_MODULES ON)
   endif()
 endif()
 

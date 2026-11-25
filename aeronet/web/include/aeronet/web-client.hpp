@@ -67,7 +67,7 @@ enum class WebErrc : uint8_t {
 
 // A client that loads web pages as a browser without rendering: it fetches a document, parses it, and runs its scripts
 // (QuickJS-ng) over a DOM of the document, with cookies, storage, timers on a virtual clock, location and history.
-// See docs/modules/web.md for what the scripts can use.
+// See docs/modules/web.md for what the scripts can use. Experimental: the API may change in a minor release.
 //
 //   WebClient web;
 //   auto page = web.navigate(url, {.untilSelector = "table.fees tr"});

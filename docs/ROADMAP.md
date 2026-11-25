@@ -492,8 +492,8 @@ the [performance optimization backlog](#performance-optimization-backlog)):
 
 Status: [HTML parsing and DOM mutation](modules/html.md) (phase 1), the
 [client cookies](modules/http-client.md#cookies) (phase 2) and the [JS core](modules/web.md) (phase 3, with `fetch`,
-XHR and CORS) delivered ([#738](https://github.com/sjanel/aeronet/issues/738)); phase 4 is in progress, its first part
-delivered. Goal: let the client read pages whose content is produced or completed by JavaScript, e.g.
+XHR and CORS) delivered ([#738](https://github.com/sjanel/aeronet/issues/738)); phase 4 is in progress, its first two
+parts delivered. Goal: let the client read pages whose content is produced or completed by JavaScript, e.g.
 `page.querySelectorAll("table tr")` after a `navigate()`.
 
 **The JS engine is the small part.** Embedding one is a few C files; the DOM, the script loading rules, the event
@@ -505,24 +505,26 @@ they embed their data as JSON that the page scripts turn into markup, which phas
 of #738 has no `<table>`: its 799 rows are in `window.__INITIAL_PROPS__`, behind 51 scripts).
 
 Worked example, a [Nintendo Store product page](https://store.nintendo.com/fr-fr/manette-pro-nintendo-switch2-edition-40e-anniversaire-de-the-legend-of-zelda-support-dexposition-000000000010019437)
-watched for its stock (steps 1-3 checked on 2026-11-07, step 4 from a headless Chromium dump of 2026-11-02). Its
-data needs no JS, but reaching it does: the store is behind a Queue-it waiting room that sends every new visitor
-through a script.
+watched for its stock (checked on 2026-11-24 with the [web-page example](../examples/web-page.cpp)). Its data needs
+no JS, but reaching it does: the store is behind a Queue-it waiting room that sends every new visitor through a
+script.
 
-1. A request without cookies is answered `307` to `nintendostoreuk.queue-it.net`.
+1. A request without cookies is answered `307` to `queue-noe.nintendo.com` (Queue-it under a name of Nintendo;
+   `nintendostoreuk.queue-it.net` until November 2026).
 2. That page (2.4 KB) has one inline script: it checks `navigator.cookieEnabled` and `document.cookie`, then sets
    `document.location.href` to a relative URL carrying a signed timestamp. Its `<noscript>` says "The site requires
    JavaScript".
 3. When no queue is running, that URL answers `302` back to the product page, with a signed `queueittoken` in the
    query and in a `Queue-it-token` cookie (3 minutes, `SameSite=None`).
-4. The product page (1.25 MB, Next.js) holds the stock state in `<script id="__NEXT_DATA__" type="application/json">`
-   (1 MB): `props.pageProps.product.inventory.orderable`, `c_availabilityModel.type` (`"OutOfStock"`), the price.
-   Its ~25 scripts (Next.js chunks, consent, account SDK, analytics) are not needed. Searching the HTML for
+4. The product page (Next.js) holds the stock state in `<script id="__NEXT_DATA__" type="application/json">`
+   (600 KB): `props.pageProps.product.inventory.orderable`, `c_availabilityModel.type` (`"OutOfStock"`), the price.
+   Its scripts (Next.js chunks, consent, account SDK, analytics) are not needed. Searching the HTML for
    "rupture de stock" finds it whatever the stock: the words are in the translations of `__NEXT_DATA__`.
 
-What it needs, in the phases below: a cookie jar across sites (phase 2, delivered: steps 1 to 3 already keep and send
-the cookies of both sites), script navigation, parsing in scripting mode, and a selector checked before the scripts
-of each document run (phase 3). When a queue is running, step 3 is
+What it needs, all delivered: a cookie jar across sites (phase 2), script navigation, parsing in scripting mode, and
+a selector checked before the scripts of each document run (phase 3). The example reads the product in about 500 ms,
+then in about 60 ms while the token cookie is valid (the next loads go straight to the product page). When a queue is
+running, step 3 is
 a real waiting room (it polls Queue-it, and may ask for a CAPTCHA or a proof of work): out of scope like the other
 anti-bot challenges, the client does not try to skip it, `navigate()` ends at its budget on the queue-it.net
 document.
@@ -563,11 +565,15 @@ Phases:
    - `redirect: 'manual'` and `'error'` (every redirect is followed, with the rules of the Fetch Standard at each
      hop), a preflight cache;
    - `Blob`, `FormData`, streams (`Response.body`), and the parallel requests of the coroutine client (below).
-   - a fix of QuickJS-ng to propose upstream (unfixed on its master on 2026-11-19): when an allocation fails in a
-     destructuring pattern, `js_parse_destructuring_element()` decrements the reference count of label -1 (a segfault,
-     or a heap write before the label array of the function), found by the memory-limit sweep of
-     `web-network_test.cpp` under UBSan. The prelude is compiled without the memory limit; a page script compiled
-     near `maxScriptMemory` can still hit it until a release has the fix (two lines: return when `new_label()` fails).
+   - a fix of QuickJS-ng proposed upstream in [quickjs-ng#1949](https://github.com/quickjs-ng/quickjs/pull/1949)
+     (2026-11-24, open): when an allocation fails in a destructuring pattern, `js_parse_destructuring_element()`
+     decrements the reference count of label -1 (a segfault, or a heap write before the label array of the function),
+     found by the memory-limit sweep of `web-network_test.cpp` under UBSan. The same PR fixes a `switch` starting with
+     `default:` (same bug), the leak of the relocations of a failed `resolve_labels()`, and the bytecode that the
+     parser truncates in the middle of an instruction when it runs out of memory, which `resolve_variables()` then
+     reads past its end (`MemoryExhaustionDuringResolutions` of `web-module_test.cpp` under ASAN, with the pinned
+     master). The prelude is compiled without the memory limit; a page script compiled near `maxScriptMemory` can
+     still hit them until the download is pinned to a commit with the fix.
    - a third fix of QuickJS-ng to propose upstream (unfixed on its master on 2026-11-21): the native methods of a
      function list (`JS_CFUNC_DEF`) are created on their first use (`JS_AutoInitProperty()`), which drops the property
      for good, leaving `undefined`, when that creation runs out of memory: in a page that ran out of memory there, the
@@ -578,8 +584,10 @@ Phases:
      UTF-8 fails, `JS_ToCStringLen2()` keeps the reference it took to the string it converts, which then outlives its
      runtime (a 10 MB leak of `BodyBeyondTheMemoryOfTheScripts` under LeakSanitizer). aeronet converts with
      `ToUtf8()` (`aeronet/web/src/js-engine.hpp`), which releases that reference up to QuickJS-ng 0.18
-     (`kToCStringLeaksOnFailure`): to bound to the versions without the fix once a release has it (one line:
-     `JS_FreeValue(ctx, val)` at its `fail` label).
+     (`kToCStringLeaksOnFailure`), and parses the JSON of `Response.json()` and `XMLHttpRequest` with it
+     (`native.parseJson()`: their `JSON.parse()` leaked a body in `MemoryLimitDuringRequests` under LeakSanitizer);
+     the `JSON.parse()` of the page scripts still leaks. To bound to the versions without the fix once a release has
+     it (one line: `JS_FreeValue(ctx, val)` at its `fail` label).
 
    The design points:
    - One QuickJS runtime per page over the lexbor document; the page owns every node and frees them together,
@@ -618,12 +626,35 @@ Phases:
       (created on first use) rather than prelude code (about 1 µs per property defined from JavaScript), and the HTML
       elements keep the prototype of `HTMLElement`, the interface of each tag recognizing its elements by
       `Symbol.hasInstance` (a prototype per tag costs 3 ns per property lookup on an element);
-   2. ES modules and `import()`: one synchronous module loader serves both (QuickJS-ng 0.16.2 of vcpkg has no
-      asynchronous import hook, 0.18 has `JS_SetDynamicImportFunc()`), module scripts fetched in the `cors` mode,
-      `import.meta.url`, the bytecode cache for modules;
-   3. `MutationObserver` (records from the bindings) and `WebPage::waitForSelector()`;
+   2. delivered: [ES modules](modules/web.md#modules) and `import()`, through one synchronous module loader (QuickJS-ng
+      0.16.2 of vcpkg has no asynchronous import hook, 0.18 has `JS_SetDynamicImportFunc()`): the hooks that QuickJS-ng
+      calls while it resolves the imports of a module fetch and compile each import, nested, in the `cors` mode;
+      `import.meta`, the bytecode cache for modules. Left for later: import maps (`<script type="importmap">`, which
+      the bare specifiers of unbundled sites need: Rails `importmap-rails`, esm.sh), JSON modules, and the
+      `crossorigin` of the calling module for the credentials of `import()`;
+   3. the records of `MutationObserver` (from the bindings; a `MutationObserver` that reports nothing, `NodeList`
+      and `HTMLCollection` are delivered, so that the scripts that only create them run on) and
+      `WebPage::waitForSelector()`;
    4. clicks and form input: default actions (links, checkboxes, form submission), which need navigations with a
       method and a body (POST), and the `value` of the form controls apart from their attribute.
+
+   **QuickJS-ng release to watch** (checked on 2026-11-24: 0.18.0, of 2026-11-01, is the latest). Two
+   use-after-free bugs of its modules, reproduced under ASAN with 0.18.0, are fixed on master (2026-11-16) but in no
+   release:
+   - c40c431f: a page freed while one of its modules awaits (top-level `await` on a promise held by a global or a
+     module variable, or a module loaded by `import()`) writes into the freed module, as the context frees its modules
+     before the reactions that hold them (`PagesFreedWhileModulesAwait` of `web-module_test.cpp`). No workaround
+     through the API: the download is pinned to master `d06a85c1` (2026-11-23, still reporting 0.18.0), and
+     `AERONET_QJS_MODULES` keeps the modules off with an installed QuickJS-ng up to 0.18.0 (the vcpkg port has 0.16.2);
+   - a71d444b: a failed resolution is not undone. `js_resolve_module()` marks a module resolved before it resolves its
+     imports, and when one fails, `__JS_EvalInternal()` frees the module being compiled while a module that imported
+     it through a cycle keeps a pointer to it: a later link of that module reads freed memory. The hooks of aeronet
+     (`aeronet/web/src/js-module.cpp`) never fail inside a resolution, whatever the version: a failed import resolves
+     to a module that throws, and the root of the graph fails instead, where nothing is freed.
+
+   `AERONET_QJS_MODULES` (`cmake/Dependencies.cmake`) assumes them in the packages from 0.19.0 on, the first release
+   expected after them. When a release has both: download it, move that gate to its version if it is not 0.19.0, and
+   check the version of the vcpkg port.
 
    lexbor bug to report, found with `cloneNode()` (3.0.1, and its master on 2026-11-21): `lxb_html_interface_clone()`
    copies a document fragment (and a CDATA section) with `lxb_dom_node_interface_clone()`, into a plain node smaller
@@ -632,8 +663,8 @@ Phases:
    an SVG name). `CloneNode()` of `aeronet/html/src/html-node-ops.cpp` creates its fragments itself, clears the user
    pointers and copies the qualified names.
 5. **Optional, independent**: a driver for full-fidelity browsers (Chrome, Lightpanda) over CDP (JSON over
-   WebSocket). Little aeronet code, on top of the [WebSocket client](protocols/websocket-client.md), which needs a
-   pull-style `receive(timeout)` for its request / response exchanges.
+   WebSocket). Little aeronet code, on top of the [WebSocket client](protocols/websocket-client.md), whose
+   `receive(timeout)` serves its request / response exchanges.
 
 ```cpp
 aeronet::WebClient web;  // its cookie jar outlives navigate()

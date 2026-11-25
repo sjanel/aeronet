@@ -61,9 +61,9 @@ class StorageAreas {
 
 // The bytecode of the scripts compiled by the pages of a WebClient, read back by the next pages that run the same
 // script: reading is 15 to 70 times faster than compiling. An entry is keyed by the URL of the script (that of its
-// document for an inline script) and by its content, through its size and a 64-bit hash: a changed script is compiled
-// again. The least recently used entries are dropped beyond a total size. The bytecode is written by the process
-// itself, so it is safe to read back (QuickJS-ng does not validate it).
+// document for an inline script), by its content, through its size and a 64-bit hash, and by its kind (a classic
+// script or a module): a changed script is compiled again. The least recently used entries are dropped beyond a total
+// size. The bytecode is written by the process itself, so it is safe to read back (QuickJS-ng does not validate it).
 class ScriptCache {
   struct Entry {
     using trivially_relocatable = std::bool_constant<amc::is_trivially_relocatable_v<RawBytes> &&
@@ -82,13 +82,35 @@ class ScriptCache {
   // The scripts smaller than this are compiled each time: their compilation is short, their entry not worth it.
   static constexpr std::size_t kMinScriptSize = 1024;
 
-  // A script to look up: its URL, its code, and the hash of its code, computed once for find() and store().
+  // A script to look up: its URL, its code, and the hash of its code and of its kind ('module' for the code of a
+  // module), computed once for find() and store(), which only read the size of the code: it can change in between.
   struct Script {
-    Script(std::string_view url, std::string_view code) noexcept;
+    Script(std::string_view url, std::string_view code, bool module = false) noexcept;
 
     std::string_view url;
     std::string_view code;
     uint64_t hash;
+  };
+
+  // Keeps every entry while a bytecode that find() returned is read: the read of a module resolves its imports, which
+  // compile and store their own bytecode. The entries beyond the size limit are dropped when the last read ends.
+  class Reading {
+   public:
+    explicit Reading(ScriptCache& cache) noexcept : _cache(cache) { ++cache._readings; }
+
+    Reading(const Reading&) = delete;
+    Reading& operator=(const Reading&) = delete;
+    Reading(Reading&&) = delete;
+    Reading& operator=(Reading&&) = delete;
+
+    ~Reading() {
+      if (--_cache._readings == 0) {
+        _cache.trim();
+      }
+    }
+
+   private:
+    ScriptCache& _cache;
   };
 
   // A cache of at most 'maxBytes' of bytecode, none for 0.
@@ -101,7 +123,8 @@ class ScriptCache {
   [[nodiscard]] std::span<const std::byte> find(const Script& script) noexcept;
 
   // Stores the bytecode 'bytecode' of 'script', replacing its entry, then drops the least recently used entries beyond
-  // the size limit. A bytecode larger than the limit is not stored.
+  // the size limit, unless a read is in progress (see Reading). A bytecode larger than the limit is not stored. Never
+  // the entry being read: a module is compiled once per page, and the read of a classic script stores nothing.
   void store(const Script& script, std::span<const std::byte> bytecode);
 
   // The total size of the bytecode of the entries.
@@ -114,10 +137,14 @@ class ScriptCache {
   // much less than the read of a bytecode.
   [[nodiscard]] Entry* entryOf(const Script& script) noexcept;
 
+  // Drops the least recently used entries beyond the size limit.
+  void trim() noexcept;
+
   vector<Entry> _entries;
   std::size_t _bytes{};
   std::size_t _maxBytes;
   uint64_t _sequence{};
+  uint32_t _readings{};  // the reads in progress (see Reading)
 };
 
 // The state of a WebClient that its pages share. The pages point to it: the client cannot move while it has some.
