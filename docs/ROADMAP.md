@@ -742,7 +742,11 @@ With lexbor master (e609d94), every allocation of the DOM mutations, queries and
 under ASAN on 2026-11-19, lexbor instrumented with its pool poisoning (`LEXBOR_BUILD_WITH_ASAN`): no memory error and,
 once aeronet created the tokenizer of its CSS parsers itself (`MakeCssParser()`), no leak. `lxb_css_parser_init` leaks
 the tokenizer it creates when it fails after its creation, still on master: a fix with its test is ready in a fork,
-to propose upstream (the workaround stays while lexbor versions without it are accepted). The failures were
+to propose upstream (the workaround stays while lexbor versions without it are accepted). Two quadratic parsing
+costs to propose upstream too, bounded by aeronet in `aeronet/html/src/html-parse.cpp` (see the
+[parsing limits](modules/html.md#parsing-limits)): `lxb_html_tree_append_attributes()` looks each attribute of a tag up
+in the list of its element, and the tables interning the names of a document (`lexbor_hash_t`, 128 buckets) never grow
+(a `FIXME` of `lexbor/core/hash.h`). The failures were
 injected through `lexbor_memory_setup()`, which works under ASAN, unlike the `malloc` overrides of the tests
 (`sys-test-support.hpp` disables them with sanitizers): the ASAN CI legs never run the memory exhaustion tests. When a
 release contains all of them:

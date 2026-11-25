@@ -5,10 +5,15 @@
 #include "../src/html-node-ops.hpp"
 
 #include <gtest/gtest.h>
+#include <lexbor/core/dobject.h>
+#include <lexbor/core/hash.h>
+#include <lexbor/dom/interfaces/document.h>
 #include <lexbor/dom/interfaces/document_fragment.h>
 #include <lexbor/dom/interfaces/node.h>
 
 #include <cstddef>
+#include <format>
+#include <iterator>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -16,6 +21,7 @@
 
 #include "../src/html-encoding.hpp"
 #include "../src/html-node-access.hpp"
+#include "../src/html-parse.hpp"
 #include "../src/html-tree-walk.hpp"
 #include "aeronet/html-document.hpp"
 #include "aeronet/html-element.hpp"
@@ -464,6 +470,82 @@ TEST(HtmlResolveUrlTest, MemoryExhaustion) {
     }
     EXPECT_EQ(url, "") << successfulAllocs;
   }
+}
+#endif
+
+// --- Name tables of the documents (GrowNameTable() of html-parse.cpp) ---
+
+// The lexbor document of 'doc'.
+lxb_dom_document_t& LexborDocument(const HtmlDocument& doc) { return *HtmlNodeAccess::Node(doc)->owner_document; }
+
+// The number of names interned in the tables of tags and attributes of 'doc'.
+struct InternedNames {
+  explicit InternedNames(const HtmlDocument& doc)
+      : tags(lexbor_dobject_allocated(LexborDocument(doc).tags->entries)),
+        attributes(lexbor_dobject_allocated(LexborDocument(doc).attrs->entries)) {}
+
+  bool operator==(const InternedNames&) const = default;
+
+  std::size_t tags;
+  std::size_t attributes;
+};
+
+// Interns names of each variant of lexbor in 'parent', short and long ones (stored apart from their entry): in lower
+// case by the parsing, in upper case by the tag names of HTML elements, as given by the attributes of an SVG element.
+void InternNamesOfEachVariant(HtmlElement parent) {
+  parent.insertAdjacentHtml(HtmlInsertPosition::BeforeEnd,
+                            "<x-a an-attribute-with-a-long-name=1></x-a><x-a-custom-element-with-a-long-name>"
+                            "</x-a-custom-element-with-a-long-name><svg><g></g></svg>");
+  EXPECT_EQ(DomTagName(HtmlNodeAccess::Node(parent.querySelectorAll("x-a").back())), "X-A");
+  EXPECT_EQ(DomTagName(HtmlNodeAccess::Node(parent.querySelectorAll("x-a-custom-element-with-a-long-name").back())),
+            "X-A-CUSTOM-ELEMENT-WITH-A-LONG-NAME");
+  HtmlElement svgGroup = parent.querySelectorAll("g").back();
+  svgGroup.setAttribute("mixedCase", "1");
+  svgGroup.setAttribute("An-Attribute-With-A-Mixed-Case-Long-Name", "1");
+}
+
+TEST(HtmlNameTableTest, NamesOfEachVariantAreFoundAfterAGrowth) {
+  HtmlDocument doc("<p></p>");
+  const lxb_dom_document_t& document = LexborDocument(doc);
+  InternNamesOfEachVariant(doc.body());
+  const std::size_t tagBuckets = document.tags->table_size;
+  const std::size_t attributeBuckets = document.attrs->table_size;
+  // Distinct names, in a fragment too small to reserve buckets first: the tables grow while it is parsed.
+  std::string names;
+  for (std::size_t idx = 0; idx < 2 * kMaxNamesPerBucket * tagBuckets; ++idx) {
+    std::format_to(std::back_inserter(names), "<y-{} b{}>", idx, idx);
+  }
+  ASSERT_LT(names.size(), tagBuckets * kHtmlBytesPerNameBucket);
+  doc.body().insertAdjacentHtml(HtmlInsertPosition::BeforeEnd, names);
+  ASSERT_GT(document.tags->table_size, tagBuckets);
+  ASSERT_GT(document.attrs->table_size, attributeBuckets);
+  // The same names again are found: none is interned twice.
+  const InternedNames before(doc);
+  InternNamesOfEachVariant(doc.body());
+  doc.body().insertAdjacentHtml(HtmlInsertPosition::BeforeEnd, names);
+  EXPECT_EQ(InternedNames(doc), before);
+}
+
+TEST(HtmlNameTableTest, ParsingReservesBucketsForItsInput) {
+  const std::string html = "<p>" + std::string(1024 * kHtmlBytesPerNameBucket, 'x') + "</p>";
+  const HtmlDocument doc(html);
+  EXPECT_EQ(LexborDocument(doc).tags->table_size, html.size() / kHtmlBytesPerNameBucket);
+  EXPECT_EQ(LexborDocument(doc).attrs->table_size, html.size() / kHtmlBytesPerNameBucket);
+}
+
+#if AERONET_WANT_MALLOC_OVERRIDES
+TEST(HtmlNameTableTest, MemoryExhaustionKeepsTheTable) {
+  HtmlDocument doc("<p></p>");
+  InternNamesOfEachVariant(doc.body());
+  lexbor_hash_t& tags = *LexborDocument(doc).tags;
+  const std::size_t buckets = tags.table_size;
+  test::FailNextMalloc();
+  GrowNameTable(tags, 4 * buckets);
+  test::ResetToSysMalloc();
+  EXPECT_EQ(tags.table_size, buckets);
+  const InternedNames before(doc);
+  InternNamesOfEachVariant(doc.body());
+  EXPECT_EQ(InternedNames(doc), before);
 }
 #endif
 

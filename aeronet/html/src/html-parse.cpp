@@ -2,17 +2,24 @@
 
 #include <lexbor/core/array.h>
 #include <lexbor/core/base.h>
+#include <lexbor/core/dobject.h>
+#include <lexbor/core/hash.h>
+#include <lexbor/core/lexbor.h>
 #include <lexbor/core/mraw.h>
 #include <lexbor/core/str.h>
 #include <lexbor/core/types.h>
+#include <lexbor/dom/interfaces/attr.h>
 #include <lexbor/dom/interfaces/character_data.h>
+#include <lexbor/dom/interfaces/document.h>
 #include <lexbor/dom/interfaces/document_fragment.h>
+#include <lexbor/dom/interfaces/element.h>
 #include <lexbor/dom/interfaces/node.h>
 #include <lexbor/html/interface.h>
 #include <lexbor/html/interfaces/document.h>
 #include <lexbor/html/interfaces/template_element.h>
 #include <lexbor/html/parser.h>
 #include <lexbor/html/token.h>
+#include <lexbor/html/token_attr.h>
 #include <lexbor/html/tokenizer.h>
 #include <lexbor/html/tree.h>
 #include <lexbor/ns/const.h>
@@ -39,24 +46,60 @@ struct SeenText {
   const lxb_char_t* pData;
 };
 
-// Placed between the tokenizer and the tree builder of a document during its parsing.
+// A table of a document interning names (of tags or attributes), growing beyond kMaxNamesPerBucket names per bucket.
+class NameTableWatch {
+ public:
+  // First gives the table a bucket per kHtmlBytesPerNameBucket bytes of an input of 'htmlSize' bytes.
+  NameTableWatch(lexbor_hash_t& table, std::size_t htmlSize) noexcept
+      : _pTable(&table), _pNames(table.entries), _maxNames(Grow(table, htmlSize / kHtmlBytesPerNameBucket)) {}
+
+  // Grows the table to a bucket per name if it holds more than kMaxNamesPerBucket names per bucket: each growth moves
+  // all the names, 4 times more than the previous one.
+  void growIfLoaded() noexcept {
+    const std::size_t nbNames = lexbor_dobject_allocated(_pNames);
+    if (nbNames > _maxNames) [[unlikely]] {
+      _maxNames = Grow(*_pTable, nbNames);
+    }
+  }
+
+ private:
+  // Gives 'table' 'bucketCount' buckets if it has fewer, and returns the number of names beyond which it grows.
+  static std::size_t Grow(lexbor_hash_t& table, std::size_t bucketCount) noexcept {
+    GrowNameTable(table, bucketCount);
+    return kMaxNamesPerBucket * table.table_size;
+  }
+
+  lexbor_hash_t* _pTable;
+  lexbor_dobject_t* _pNames;  // the entries of the table, counted by lexbor
+  std::size_t _maxNames;
+};
+
+// Placed between the tokenizer and the tree builder of a document during its parsing, of an input of 'htmlSize' bytes.
 struct TreeLimiter {
+  TreeLimiter(const lxb_html_parser_t& parser, std::size_t htmlSize) noexcept
+      : pTree(parser.tree),
+        treeCallback(parser.tkz->callback_token_done),
+        pTreeCallbackCtx(parser.tkz->callback_token_ctx),
+        tagNames(*parser.tree->document->dom_document.tags, htmlSize),
+        attributeNames(*parser.tree->document->dom_document.attrs, htmlSize) {}
+
   lxb_html_tree_t* pTree;
   lxb_html_tokenizer_token_f treeCallback;  // the tree builder, called for each token
   void* pTreeCallbackCtx;
-  SeenText inCurrentNode;   // the last child of the current node
-  SeenText fosterParented;  // before the table of the current node, where its characters that are not whitespace go
+  SeenText inCurrentNode{};   // the last child of the current node
+  SeenText fosterParented{};  // before the table of the current node, where its characters that are not whitespace go
+  NameTableWatch tagNames;
+  NameTableWatch attributeNames;
 };
 
 lxb_html_token_t* LimitTree(lxb_html_tokenizer_t* pTokenizer, lxb_html_token_t* pToken, void* pCtx);
 
-// Places a TreeLimiter between the tokenizer and the tree builder of pParser, for its lifetime: the parser stays with
-// the document, and parses its fragments.
+// Places a TreeLimiter between the tokenizer and the tree builder of pParser, for its lifetime, to parse an input of
+// 'htmlSize' bytes: the parser stays with the document, and parses its fragments.
 class TreeLimiterScope {
  public:
-  explicit TreeLimiterScope(lxb_html_parser_t* pParser) noexcept
-      : _pTokenizer(pParser->tkz),
-        _limiter{pParser->tree, _pTokenizer->callback_token_done, _pTokenizer->callback_token_ctx, {}, {}} {
+  TreeLimiterScope(lxb_html_parser_t* pParser, std::size_t htmlSize) noexcept
+      : _pTokenizer(pParser->tkz), _limiter(*pParser, htmlSize) {
     lxb_html_tokenizer_callback_token_done_set(_pTokenizer, &LimitTree, &_limiter);
   }
 
@@ -112,6 +155,65 @@ void TrimActiveFormattingElements(lexbor_array_t& list) noexcept {
   if (count > kMaxActiveFormattingElements) {
     lexbor_array_delete(&list, first, count - kMaxActiveFormattingElements);
   }
+}
+
+// The number of attributes of 'element', an <html> or <body> element that the parsing adds attributes to. It created
+// the element (a fragment has its own <html> root), and the scripts of a page run once the parsing ended: at most
+// kMaxAttributes.
+std::size_t AttributeCount(const lxb_dom_element_t& element) noexcept {
+  std::size_t count = 0;
+  for (const lxb_dom_attr_t* pAttr = element.first_attr; pAttr != nullptr; pAttr = pAttr->next) {
+    ++count;
+  }
+  assert(count <= kMaxAttributes);
+  return count;
+}
+
+// The existing element that 'token', an <html> or <body> start tag, adds its attributes to, if any, as the tree builder
+// finds it (which may also ignore the tag): the first open element for <html>, the second one, if a <body>, for <body>.
+const lxb_dom_element_t* ElementTakingAttributesOf(const lxb_html_tree_t& tree,
+                                                   const lxb_html_token_t& token) noexcept {
+  const lexbor_array_t& openElements = *tree.open_elements;
+  if (token.tag_id == LXB_TAG_HTML && openElements.length != 0) {
+    return static_cast<const lxb_dom_element_t*>(openElements.list[0]);
+  }
+  if (token.tag_id == LXB_TAG_BODY && openElements.length > 1 &&
+      static_cast<const lxb_dom_node_t*>(openElements.list[1])->local_name == LXB_TAG_BODY) {
+    return static_cast<const lxb_dom_element_t*>(openElements.list[1]);
+  }
+  return nullptr;
+}
+
+// Keeps the first attributes of 'token', a start tag, that its element can take (kMaxAttributes in all), and returns
+// the others, with their values, to the memory of the tokenizer: lexbor frees the attributes of tokens only once the
+// parsing ends.
+void LimitAttributes(lxb_html_tokenizer_t& tokenizer, const lxb_html_tree_t& tree, lxb_html_token_t& token) noexcept {
+  lxb_html_token_attr_t* pAttr = token.attr_first;
+  if (pAttr == nullptr) {
+    return;
+  }
+  const lxb_dom_element_t* pElement = ElementTakingAttributesOf(tree, token);
+  for (std::size_t room = kMaxAttributes - (pElement == nullptr ? 0 : AttributeCount(*pElement));
+       pAttr != nullptr && room != 0; --room) {
+    pAttr = pAttr->next;
+  }
+  if (pAttr == nullptr) {
+    return;
+  }
+  token.attr_last = pAttr->prev;
+  if (pAttr->prev == nullptr) {
+    token.attr_first = nullptr;
+  } else {
+    pAttr->prev->next = nullptr;
+  }
+  do {
+    lxb_html_token_attr_t* pNext = pAttr->next;
+    if (pAttr->value != nullptr) {
+      lexbor_mraw_free(tokenizer.attrs_mraw, pAttr->value);
+    }
+    lxb_html_token_attr_destroy(pAttr, tokenizer.dobj_token_attr);
+    pAttr = pNext;
+  } while (pAttr != nullptr);
 }
 
 // Gives the data of pNode, if a text node, twice its length in capacity when it moved since 'seen' was recorded, then
@@ -195,6 +297,13 @@ bool AppendsCharacters(const lxb_html_tree_t& tree, const lxb_html_token_t& toke
 lxb_html_token_t* LimitTree(lxb_html_tokenizer_t* pTokenizer, lxb_html_token_t* pToken, void* pCtx) {
   TreeLimiter& limiter = *static_cast<TreeLimiter*>(pCtx);
   lxb_html_tree_t& tree = *limiter.pTree;
+  // The tokenizer interned the names of the tag and of its attributes that HTML does not define.
+  if (pToken->tag_id >= LXB_TAG__LAST_ENTRY) {
+    limiter.tagNames.growIfLoaded();
+  }
+  if (pToken->attr_first != nullptr && pToken->tag_id >= LXB_TAG_A) {  // not the parts of a DOCTYPE
+    limiter.attributeNames.growIfLoaded();
+  }
   if (IsStartTag(*pToken)) {
     // The end tag of a formatting element can leave the current node open, removing instead from the list a later
     // entry of the same name that is no longer open (adoption agency algorithm): it is repeated as long as it does so.
@@ -203,6 +312,7 @@ lxb_html_token_t* LimitTree(lxb_html_tokenizer_t* pTokenizer, lxb_html_token_t* 
       formatting = tree.active_formatting->length;
       ProcessEndTagOfCurrentNode(limiter, pTokenizer);
     }
+    LimitAttributes(*pTokenizer, tree, *pToken);
   }
   const bool appendsCharacters = AppendsCharacters(tree, *pToken);
   pToken = limiter.treeCallback(pTokenizer, pToken, limiter.pTreeCallbackCtx);
@@ -216,9 +326,34 @@ lxb_html_token_t* LimitTree(lxb_html_tokenizer_t* pTokenizer, lxb_html_token_t* 
 
 }  // namespace
 
+void GrowNameTable(lexbor_hash_t& table, std::size_t bucketCount) noexcept {
+  if (bucketCount <= table.table_size) {
+    return;
+  }
+  auto** pBuckets = static_cast<lexbor_hash_entry_t**>(lexbor_calloc(bucketCount, sizeof(lexbor_hash_entry_t*)));
+  if (pBuckets == nullptr) {
+    return;
+  }
+  for (std::size_t idx = 0; idx < table.table_size; ++idx) {
+    for (lexbor_hash_entry_t* pEntry = table.table[idx]; pEntry != nullptr;) {
+      lexbor_hash_entry_t* pNext = pEntry->next;
+      // The hash id of a name is the one of the key it stores: the variants interning names in lower or upper case
+      // store them converted, and hash them converted.
+      lexbor_hash_entry_t*& pBucket =
+          pBuckets[lexbor_hash_make_id(lexbor_hash_entry_str(pEntry), pEntry->length) % bucketCount];
+      pEntry->next = pBucket;
+      pBucket = pEntry;
+      pEntry = pNext;
+    }
+  }
+  lexbor_free(static_cast<void*>(table.table));
+  table.table = pBuckets;
+  table.table_size = bucketCount;
+}
+
 void ParseHtml(lxb_html_document_t* pDocument, std::string_view html) {
   CheckStatus(lxb_html_document_parse_chunk_begin(pDocument));
-  const TreeLimiterScope limiter(Parser(pDocument));
+  const TreeLimiterScope limiter(Parser(pDocument), html.size());
   CheckStatus(lxb_html_document_parse_chunk(pDocument, Chars(html), html.size()));
   CheckStatus(lxb_html_document_parse_chunk_end(pDocument));
 }
@@ -232,7 +367,7 @@ lxb_dom_node_t* ParseHtmlFragment(lxb_html_document_t* pDocument, std::uintptr_t
                                   std::string_view html) {
   lxb_html_parser_t* pParser = Parser(pDocument);
   CheckStatus(lxb_html_parse_fragment_chunk_begin(pParser, pDocument, contextTag, contextNs));
-  const TreeLimiterScope limiter(pParser);
+  const TreeLimiterScope limiter(pParser, html.size());
   CheckStatus(lxb_html_parse_fragment_chunk_process(pParser, Chars(html), html.size()));
   return CheckCreated(lxb_html_parse_fragment_chunk_end(pParser));
 }

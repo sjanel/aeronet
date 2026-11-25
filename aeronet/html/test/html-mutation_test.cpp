@@ -19,7 +19,10 @@ namespace aeronet {
 namespace {
 
 using internal::kMaxActiveFormattingElements;
+using internal::kMaxAttributes;
 using internal::kMaxOpenElements;
+using test::AttributeCount;
+using test::Attributes;
 using test::ChildCount;
 using test::Depth;
 using test::Repeat;
@@ -298,6 +301,18 @@ TEST(HtmlMutationInnerHtml, MisnestedFormattingElementsLimit) {
   const HtmlElement recreated = div.lastChild();
   EXPECT_EQ(recreated.attribute("id"), "4");
   EXPECT_EQ(recreated.querySelectorAll("b").size(), kMaxActiveFormattingElements - 1);
+}
+
+TEST(HtmlMutationInnerHtml, AttributesLimit) {
+  HtmlDocument doc("<div></div>");
+  HtmlElement div = doc.querySelector("div");
+  div.setInnerHtml("<p" + Attributes("a", kMaxAttributes + 1) + ">x</p>");
+  HtmlElement para = div.querySelector("p");
+  EXPECT_EQ(AttributeCount(para), kMaxAttributes);
+  EXPECT_FALSE(para.hasAttribute(std::format("a{}", kMaxAttributes)));
+  // The limit is the one of the parsing only.
+  para.setAttribute("b", "1");
+  EXPECT_EQ(AttributeCount(para), kMaxAttributes + 1);
 }
 
 TEST(HtmlMutationInnerHtml, LimiterIsRemovedAfterEachParsing) {
