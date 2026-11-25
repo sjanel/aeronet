@@ -177,6 +177,7 @@ The most important changes. Upgrade especially if one of these applies to you:
 
 - **Bumped zlib from 1.3.2 to 1.4** (downloaded with `AERONET_ENABLE_ZLIBNG=OFF`; its security fixes concern functions aeronet does not use). The Conan recipe keeps `zlib/[~1.3]` until ConanCenter provides 1.4.
 - **Bumped amc from 2.7.0 to 2.8.1**: an allocation failure in `shrink_to_fit()` (periodic trimming, `HttpClient::releaseUnusedMemory()`) now throws `std::bad_alloc` instead of terminating the process.
+- **Bumped zstd from 1.5.7 to 1.6.0**: streaming decompression of malformed data no longer exposes uninitialized memory, and a failing custom allocator no longer crashes. The Conan recipe keeps zstd/[~1.5] until ConanCenter provides 1.6.
 
 ## [1.7.0] - 2026-10-26
 
