@@ -63,7 +63,7 @@ class HostResolver {
   /// Tell whether resolutions done are waiting to be collected.
   [[nodiscard]] bool hasResolved() const noexcept;
 
-  /// Move the resolutions done into 'out' (cleared first).
+  /// Move the resolutions done to the end of 'out'.
   void takeResolved(vector<std::shared_ptr<HostResolution>>& out);
 
  private:

@@ -8,7 +8,6 @@
 #include <memory>
 #include <string_view>
 #include <thread>
-#include <utility>
 
 #include "aeronet/adaptive-poll-timeout.hpp"
 #include "aeronet/event-fd.hpp"
@@ -47,14 +46,10 @@ uint32_t TagOf(const std::shared_ptr<HostResolution>& resolution) {
 vector<std::shared_ptr<HostResolution>> WaitForResolved(HostResolver& resolver, std::size_t expected,
                                                         std::chrono::milliseconds timeout = 10s) {
   vector<std::shared_ptr<HostResolution>> all;
-  vector<std::shared_ptr<HostResolution>> batch;
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (all.size() < expected && std::chrono::steady_clock::now() < deadline) {
     if (resolver.hasResolved()) {
-      resolver.takeResolved(batch);
-      for (auto& resolution : batch) {
-        all.push_back(std::move(resolution));
-      }
+      resolver.takeResolved(all);  // appended to the previous batches
     } else {
       std::this_thread::sleep_for(1ms);
     }
@@ -101,6 +96,24 @@ TEST(HostResolverTest, ResolvesHostNamesAndNotifies) {
       EXPECT_EQ(resolution->addresses, nullptr);
     }
   }
+}
+
+TEST(HostResolverTest, TakeResolvedKeepsTheResolutionsNotServedYet) {
+  EventFd wakeupFd;
+  HostResolver resolver(wakeupFd);
+  // Left from a previous batch (a requester stopped while serving it).
+  vector<std::shared_ptr<HostResolution>> resolved;
+  resolved.push_back(MakeResolution("localhost", 1));
+  resolver.resolve(MakeResolution("localhost", 2));
+  const auto deadline = std::chrono::steady_clock::now() + 10s;
+  while (!resolver.hasResolved() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(1ms);
+  }
+  resolver.takeResolved(resolved);
+  ASSERT_EQ(resolved.size(), 2U);
+  EXPECT_EQ(TagOf(resolved[0]), 1U);
+  EXPECT_EQ(TagOf(resolved[1]), 2U);
+  EXPECT_FALSE(resolver.hasResolved());
 }
 
 #ifdef AERONET_POSIX

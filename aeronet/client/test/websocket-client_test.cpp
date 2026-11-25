@@ -2203,6 +2203,32 @@ TEST(WebSocketClientScripted, AsyncResolutionFailureAndCancel) {
   }
 }
 
+TEST(WebSocketClientScripted, ThrowingCallbackKeepsTheResolutionsServedWithIt) {
+  // Without the fix, the other resolution was dropped: its handshake waited for this timeout.
+  HttpClientConfig httpConfig;
+  httpConfig.connectTimeout = 60s;
+  WebSocketClient client(PlainConfig(), httpConfig);
+  Events events;
+  WebSocketClientCallbacks callbacks = kRecording;
+  callbacks.onClose = [](WebSocketConnection& cnx, CloseCode code, std::string_view reason) {
+    kRecording.onClose(cnx, code, reason);
+    if (EventsOf(cnx).nbClose == 1) {
+      throw std::runtime_error("onClose");
+    }
+  };
+  // Failed by the getaddrinfo override, without query.
+  client.connectAsync("ws://first.invalid/", callbacks, &events);
+  client.connectAsync("ws://second.invalid/", callbacks, &events);
+  EXPECT_EQ(client.poll(0ms), 2U);    // their hosts are being resolved
+  std::this_thread::sleep_for(50ms);  // both resolved: served by the same poll()
+  ASSERT_TRUE(PollUntilACallbackThrows(client));
+  EXPECT_EQ(events.nbClose, 1);
+  EXPECT_EQ(client.nbConnections(), 1U);
+  ASSERT_TRUE(PollUntil(client, [&client] { return client.nbConnections() == 0; }, 5s));
+  EXPECT_EQ(events.nbClose, 2);
+  EXPECT_EQ(events.handshakeError, HttpClientErrc::connectFailed);
+}
+
 TEST(WebSocketClientScripted, EventLoopFailureWhenAKeptMessagePausesTheReads) {
   auto hold = std::make_shared<Hold>();
   test::RawServer server([hold](NativeHandle fd, int /*connIndex*/) {

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -90,9 +91,14 @@ void HostResolver::cancel(const HostResolution& resolution) {
 bool HostResolver::hasResolved() const noexcept { return _shared->hasResolved.load(std::memory_order_acquire); }
 
 void HostResolver::takeResolved(vector<std::shared_ptr<HostResolution>>& out) {
-  out.clear();
   std::scoped_lock lock(_shared->mutex);
-  out.swap(_shared->resolved);
+  if (out.empty()) {
+    out.swap(_shared->resolved);  // the capacities are exchanged, both reused
+  } else {
+    out.insert(out.end(), std::make_move_iterator(_shared->resolved.begin()),
+               std::make_move_iterator(_shared->resolved.end()));
+    _shared->resolved.clear();
+  }
   _shared->hasResolved.store(false, std::memory_order_release);
 }
 

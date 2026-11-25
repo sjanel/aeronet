@@ -953,20 +953,22 @@ void WebSocketClient::serveWakeup() {
   shared.wakeup.read();
 
   if (shared.resolver.hasResolved()) {
-    shared.resolver.takeResolved(shared.resolved);
-    for (const std::shared_ptr<internal::HostResolution>& resolution : shared.resolved) {
-      const auto it = std::ranges::find_if(_connections,
-                                           [&resolution](const auto& pCnx) { return pCnx->_resolution == resolution; });
-      if (it == _connections.end()) {
-        continue;  // its handshake ended meanwhile
-      }
-      WebSocketConnection& cnx = **it;
-      _pServed = &cnx;
-      cnx._resolution.reset();
-      cnx._handshake->onResolved(_http, std::move(resolution->addresses));
-      handshakeStepped(cnx);
+    shared.resolver.takeResolved(shared.resolved);  // after those left by a callback that threw
+  }
+  // Each one removed before it is served: should a callback throw, the next ones stay for the next poll().
+  while (!shared.resolved.empty()) {
+    const std::shared_ptr<internal::HostResolution> resolution = std::move(shared.resolved.back());
+    shared.resolved.pop_back();
+    const auto it =
+        std::ranges::find_if(_connections, [&resolution](const auto& pCnx) { return pCnx->_resolution == resolution; });
+    if (it == _connections.end()) {
+      continue;  // its handshake ended meanwhile
     }
-    shared.resolved.clear();
+    WebSocketConnection& cnx = **it;
+    _pServed = &cnx;
+    cnx._resolution.reset();
+    cnx._handshake->onResolved(_http, std::move(resolution->addresses));
+    handshakeStepped(cnx);
   }
 
   // Emptied before taking the posted frames rather than after sending them: should a send throw (ending its
@@ -1138,6 +1140,9 @@ std::size_t WebSocketClient::poll(std::chrono::milliseconds timeout) {
       _pServed->_state = State::Ended;
       _pServed->_reconnecting = false;
       _pServed->_endReported = true;
+    }
+    if (!_shared->resolved.empty()) {
+      _shared->wakeup.send();  // the resolutions taken with the one whose callback threw: served by the next poll()
     }
     removeEndedConnections();
     throw;
