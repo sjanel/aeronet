@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <format>
 #include <iterator>
 #include <new>
 #include <string>
@@ -34,6 +35,19 @@ inline std::size_t Depth(HtmlElement element) {
 
 inline std::size_t ChildCount(HtmlElement element) {
   return static_cast<std::size_t>(std::ranges::distance(element.children()));
+}
+
+inline std::size_t AttributeCount(HtmlElement element) {
+  return static_cast<std::size_t>(std::ranges::distance(element.attributes()));
+}
+
+// The attributes ' <prefix>0=0 <prefix>1=1 ...' of a start tag, 'count' of them.
+inline std::string Attributes(std::string_view prefix, std::size_t count) {
+  std::string ret;
+  for (std::size_t idx = 0; idx < count; ++idx) {
+    std::format_to(std::back_inserter(ret), " {}{}={}", prefix, idx, idx);
+  }
+  return ret;
 }
 
 #if AERONET_WANT_MALLOC_OVERRIDES

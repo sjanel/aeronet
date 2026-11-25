@@ -152,6 +152,35 @@ void BM_ParseTextBetweenIgnoredTags(benchmark::State& state) {
   state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(html.size()));
 }
 
+// One tag with 'range' attributes, beyond the limit of attributes per element (256).
+void BM_ParseManyAttributes(benchmark::State& state) {
+  std::string html = "<p";
+  for (int64_t idx = 0; idx < state.range(0); ++idx) {
+    html += " a" + std::to_string(idx);
+  }
+  html += ">";
+  for ([[maybe_unused]] auto _ : state) {
+    HtmlDocument doc(html, "text/html; charset=utf-8");
+    benchmark::DoNotOptimize(doc);
+  }
+  state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(html.size()));
+}
+
+// 'range' custom elements, each of a distinct name and with an attribute of a distinct name: the tables interning the
+// names of the document grow.
+void BM_ParseDistinctNames(benchmark::State& state) {
+  std::string html;
+  for (int64_t idx = 0; idx < state.range(0); ++idx) {
+    const std::string number = std::to_string(idx);
+    html += "<x-" + number + " a" + number + "></x-" + number + ">";
+  }
+  for ([[maybe_unused]] auto _ : state) {
+    HtmlDocument doc(html, "text/html; charset=utf-8");
+    benchmark::DoNotOptimize(doc);
+  }
+  state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(html.size()));
+}
+
 constexpr std::string_view kCellSelector = "table.fees tr.row > td.name";
 
 void BM_QueryAllText(benchmark::State& state) {
@@ -311,6 +340,8 @@ BENCHMARK(BM_ParseUndeclaredUtf8)->Arg(10)->Arg(1000)->Arg(10000);
 BENCHMARK(BM_ParseNestedElements)->Arg(1000)->Arg(100000);
 BENCHMARK(BM_ParseMisnestedFormatting)->Arg(1000)->Arg(50000);
 BENCHMARK(BM_ParseTextBetweenIgnoredTags)->Arg(1000)->Arg(50000);
+BENCHMARK(BM_ParseManyAttributes)->Arg(1000)->Arg(65536);
+BENCHMARK(BM_ParseDistinctNames)->Arg(1000)->Arg(100000);
 BENCHMARK(BM_QueryAllText)->Arg(10)->Arg(1000)->Arg(10000);
 BENCHMARK(BM_QueryAllCompiled)->Arg(10)->Arg(1000)->Arg(10000);
 BENCHMARK(BM_ForEachCompiled)->Arg(10)->Arg(1000)->Arg(10000);
