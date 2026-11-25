@@ -296,10 +296,12 @@ bool ConnectionIo::flushOutbound(ConnectionIt cnxIt) {
   }
   // The client reads its response: the connection is active, even if its writes are only retried by the maintenance
   // sweeps (a slow but steady reader may cause no writable event). Not the output of the protocol handler below: the
-  // WebSocket idle timeout watches the messages of the peer.
+  // WebSocket idle timeout watches the messages of the peer. The time of the iteration may be older than the last
+  // activity: a handler outliving keepAliveTimeout restarts its idle window from its end, before the sweep of the same
+  // iteration retries the writes.
   const bool http1OutputWritten = ctx.stats.totalBytesWrittenFlush.load() != bytesWrittenBefore;
   if (http1OutputWritten) {
-    state.lastActivity = ctx.connections.now;
+    state.lastActivity = std::max(state.lastActivity, ctx.connections.now);
   }
   if (state.protocolHandler != nullptr && state.outQueue.empty()) {
     // The output of the protocol handler follows the HTTP/1 one (its 101 Switching Protocols response).

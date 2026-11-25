@@ -1222,6 +1222,52 @@ TEST(ConnectionManagerErrors, SweepRetriesPendingOutboundData) {
   EXPECT_TRUE(resp.contains(largeBody.substr(0, 32))) << resp;
 }
 
+// The sweep can retry the output of a handler that outlived keepAliveTimeout in the iteration of that handler, after
+// its idle window restarted from the end of the handler (see SingleHttpServer::restartKeepAliveIdleWindows()): its
+// write must not take the connection back to the start of the iteration, or the next sweep closes it right after its
+// response. Seen on Windows, whose WSAPoll can miss the writability of a loopback socket, and whose maintenance runs in
+// any iteration (no timer event).
+TEST(ConnectionManagerErrors, SweepRetryAfterASlowHandlerKeepsTheConnection) {
+  test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
+
+  static constexpr auto kKeepAliveTimeout = 500ms;
+  HttpServerConfig cfg;
+  // Zerocopy sends are not driven by the injected writev actions.
+  cfg.withPollInterval(5ms).withKeepAliveTimeout(kKeepAliveTimeout).withZerocopyMode(ZerocopyMode::Disabled);
+  test::TestServer localTs(std::move(cfg));
+  test::EventLoopBlocker blocker;
+  const std::string body(64UL * 1024, 'S');
+  auto router = localTs.router();
+  router.setPath(http::Method::GET, "/block", blocker.handler());
+  router.setPath(http::Method::GET, "/slow", [body](const HttpRequestView&) {
+    std::this_thread::sleep_for(kKeepAliveTimeout + 100ms);
+    return HttpResponse(body);
+  });
+  router.setPath(http::Method::GET, "/fast", [](const HttpRequestView&) { return HttpResponse("fast"); });
+
+  test::ClientConnection slow(localTs.port());
+  test::sendAll(slow.fd(), SimpleGetRequest("/fast", http::keepalive));
+  ASSERT_TRUE(test::recvWithTimeout(slow.fd(), 2s).ends_with("fast"));
+  const int slowServerFd = test::g_last_accepted_fd.load(std::memory_order_acquire);
+
+  test::ClientConnection blocking(localTs.port());
+  test::sendAll(blocking.fd(), SimpleGetRequest("/block", http::keepalive));
+  // The slow request and the maintenance tick that fired meanwhile are polled together once the event loop is released:
+  // the writes of the response fail until the sweep of that iteration retries them (the response path tries 3 times).
+  blocker.runWhileBlocked([&] {
+    test::SetWritevActions(slowServerFd,
+                           {{-1, error::kWouldBlock}, {-1, error::kWouldBlock}, {-1, error::kWouldBlock}});
+    test::sendAll(slow.fd(), SimpleGetRequest("/slow", http::keepalive));
+  });
+  const std::string slowResp = test::recvWithTimeout(slow.fd(), 5s);
+  ASSERT_TRUE(slowResp.starts_with("HTTP/1.1 200")) << slowResp.substr(0, 100);
+  ASSERT_TRUE(slowResp.ends_with(body));
+  // Well within keepAliveTimeout, but after the next sweeps.
+  std::this_thread::sleep_for(50ms);
+  test::sendAll(slow.fd(), SimpleGetRequest("/fast", http::keepalive));
+  EXPECT_TRUE(test::recvWithTimeout(slow.fd(), 2s).ends_with("fast"));
+}
+
 // Test the sweepIdleConnections() file payload retry path (ConnectionMaintenance::sweepIdleConnections())
 // This exercises the case where a file send is pending and waitingWritable; the sweep timer
 // retries the file payload flush.
