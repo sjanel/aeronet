@@ -13,6 +13,8 @@ namespace aeronet::internal {
 // checks), and recreates the list of active formatting elements that are no longer open before most text and start
 // tags (misnested <b>, <font>...): unbounded, both make the parsing quadratic, in time for deeply nested elements, in
 // time and nodes for a list that keeps growing (150 KB of "<p><b id=N>x</p>" created 32 million elements).
+// The text nodes that the tree builder appends characters to are also given room to grow, as their memory was quadratic
+// too (see ReserveMovedText() in html-parse.cpp).
 
 // The maximum number of open elements, <html> included: the depth limit of browsers. A start tag at this depth first
 // closes the current element, as if its end tag preceded it: deeper elements become siblings instead of children.
