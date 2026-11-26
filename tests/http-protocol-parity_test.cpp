@@ -638,19 +638,7 @@ TEST_P(ProtocolParity, IdentityVariantVariesOnAcceptEncoding) {
 // quality 4) once per metablock, spanning many input blocks, zstd once per block. A streaming or directly compressed
 // body of a few MiB of incompressible data used to fail: brotli stopped reading its input after about 1.5 MiB of 64 KiB
 // writes, zstd after a block of a 1 MiB write.
-class ProtocolParityFastBrotli : public ProtocolParity {
- protected:
-  // The default brotli quality (11) is slow in Debug builds: quality 5 stalls the same way.
-  ProtocolParityFastBrotli() : ProtocolParity(MakeFastBrotliServerConfig()) {}
-
-  static HttpServerConfig MakeFastBrotliServerConfig() {
-    HttpServerConfig cfg = MakeServerConfig();
-    cfg.compression.brotli.quality = 5;
-    return cfg;
-  }
-};
-
-TEST_P(ProtocolParityFastBrotli, LargeIncompressibleBodiesAreCompressedWhole) {
+TEST_P(ProtocolParity, LargeIncompressibleBodiesAreCompressedWhole) {
   static constexpr std::size_t kPieceSize = 64UL << 10;
   static constexpr std::size_t kNbPieces = 32;
   static constexpr std::size_t kLargeSize = 1UL << 20;
@@ -959,10 +947,6 @@ INSTANTIATE_TEST_SUITE_P(Protocols, ProtocolParityTrailingSlashRedirect,
                          ::testing::Values(HttpVersionMode::Http1_1, HttpVersionMode::Http2), ProtocolName);
 INSTANTIATE_TEST_SUITE_P(Protocols, ProtocolParityHttpsRedirect,
                          ::testing::Values(HttpVersionMode::Http1_1, HttpVersionMode::Http2), ProtocolName);
-#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-INSTANTIATE_TEST_SUITE_P(Protocols, ProtocolParityFastBrotli,
-                         ::testing::Values(HttpVersionMode::Http1_1, HttpVersionMode::Http2), ProtocolName);
-#endif
 
 }  // namespace
 }  // namespace aeronet

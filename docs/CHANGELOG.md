@@ -13,7 +13,7 @@ The most important changes. Upgrade especially if one of these applies to you:
 - **Crashes and freezes**: route timeouts during deferred work or on a stalled HTTP/2 connection, an invalid `Origin`, a file shrinking while sent, a failing `epoll_wait()` and large chunked uploads.
 - **Corrupted response framing**: streamed bodies not matching `contentLength()`, bodies sent with `204`, `304` or a `HEAD` error, and large incompressible bodies truncated by br and zstd.
 - **HTTP/2**: several `Http2Config` settings were ignored, and many frame sequences desynchronized HPACK, failing the whole connection.
-- **Performance and memory**: no more 40 ms delayed acknowledgments over TLS, a third of the memory for idle TLS connections, bounded br encoder memory, HTTP/2 requests 8 to 23% cheaper.
+- **Performance and memory**: no more 40 ms delayed acknowledgments over TLS, a third of the memory for idle TLS connections, bounded br encoder memory, br compressing at quality 4 by default (11 was 100 to 400 times slower), HTTP/2 requests 8 to 23% cheaper.
 - **Packaging**: installed packages (CMake install, vcpkg, Conan) now work for their consumers.
 
 ### 1.8.0 Breaking changes
@@ -21,6 +21,7 @@ The most important changes. Upgrade especially if one of these applies to you:
 #### Behavior
 
 - **kTLS is off by default**: `TLSConfig::ktlsMode` defaults to `Disabled` (was `Opportunistic`). It served in-memory bodies of 64 KiB to 1 MiB 18 to 54% slower than OpenSSL in user space, only files sent with `sendfile()` gained: enable it for large files with `withTlsKtlsMode(TLSConfig::KtlsMode::Opportunistic)`. See [Kernel TLS](protocols/tls.md#kernel-tls-ktls).
+- **br compresses at quality 4 by default**: `CompressionConfig::brotli.quality` defaults to 4 (was 11, the default of the brotli library, meant for compressing files ahead of time). Responses and the request bodies compressed by `HttpClient` are compressed 100 to 400 times faster, 10 to 20% larger but at least as small as with gzip at its default level on JSON, HTML and JavaScript, and the encoder keeps 15 MiB after a 1 MiB body (was 60 MiB). Set `brotli.quality = 11` for the previous output. See [Response compression](guides/compression.md#response-compression).
 - **Stricter request validation (`400`)**: an encoded slash (`%2F`) in the path, a repeated singleton field (`Authorization`, `Content-Type`, `Range`, `Referer`...; a `PROTOCOL_ERROR` reset over HTTP/2), a fragment in the request target, an invalid `Host` or `:authority`, an invalid `CONNECT` host, an HTTP version other than `HTTP/` digit `.` digit, a `TRACE` request with content, and more forbidden fields in request trailers. See [Requests](guides/requests.md#query-parameters), [Header names](guides/requests.md#header-names) and [Host header field](guides/requests.md#host-header-field).
 - **New HTTP/2 limits, on by default**: `pingInterval` defaults to 30 s (was off), the new `streamIdleTimeout` (60 s) and `maxResetStreams` (1000) apply, and so do `settingsTimeout` and `maxStreamsPerConnection`, which were ignored. See [Connection lifetime](protocols/http2.md#connection-lifetime).
 - **At most 5 stacked content codings are decoded** (`415` beyond), for requests and `HttpClient` responses. See [Request body decompression](guides/compression.md#request-body-decompression).

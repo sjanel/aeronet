@@ -799,7 +799,7 @@ Real work, to reduce:
 - `TlsContextTest.EveryAllocationFailureDuringConstructionThrowsCleanly` (4.1 s, the slowest test): one context construction per allocation, with a smaller certificate set for example.
 - `HttpCodecCompression.TryCompressResponseStressWithDifferentScenarios` (1.7 s): seven nested dimensions, pairwise combinations would do.
 - `WebSocketUtf8.EveryLeadWithBoundaryContinuations`, `RandomMutations` and `EveryBytePair` (2.9 s together): exhaustive, a smaller sample in Debug.
-- Payload sizes of `ProtocolParityFastBrotli.LargeIncompressibleBodiesAreCompressedWhole` (0.8 s twice), `HttpClientSinkE2ETest.ContentCodedBodiesAreDecodedAsTheyArrive` (0.7 s) and `HttpClientCompressionE2E.LargeIncompressibleDirectlyCompressedRequestBody` (0.6 s).
+- Payload sizes of `ProtocolParity.LargeIncompressibleBodiesAreCompressedWhole` (0.8 s twice), `HttpClientSinkE2ETest.ContentCodedBodiesAreDecodedAsTheyArrive` (0.7 s) and `HttpClientCompressionE2E.LargeIncompressibleDirectlyCompressedRequestBody` (0.6 s).
 
 Tuned to real timing, to leave alone without deterministic hooks: `ZerocopyMode.*`, `HttpBackpressure.*`, `HttpKeepAlive.*` (most of the remaining time of `http-core_test`), `HttpConnectDefaultConfig.SlowResolutionDoesNotBlockTheEventLoop`, `WebSocketTimeouts.PongsKeepIdleConnectionOpen`, `HttpClientErrorE2ETest.InactivityTimeoutLetsASteadySlowResponseComplete`, `Http2Core.PingKeepAliveClosesTheConnectionOfADeadPeer`.
 

@@ -996,7 +996,6 @@ TEST_F(HttpRequestTest, LargeIncompressibleDirectlyCompressedBody) {
   static constexpr std::size_t kNbPieces = 32;
   CompressionConfig codecConfig;
   codecConfig.minBytes = 1;
-  codecConfig.brotli.quality = 5;  // the default one (11) is slow in Debug builds
   const RawChars payload = test::MakeRandomPayload((kNbPieces + 1) * kPieceSize);
   const std::string_view firstPart(payload.data(), (kNbPieces / 2) * kPieceSize);
   internal::HttpClientCodec clientCodec(codecConfig);

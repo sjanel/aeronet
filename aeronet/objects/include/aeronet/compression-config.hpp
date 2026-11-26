@@ -85,7 +85,9 @@ struct CompressionConfig {
 
   struct Brotli {
 #ifdef AERONET_ENABLE_BROTLI
-    static constexpr int8_t kDefaultQuality = BROTLI_DEFAULT_QUALITY;
+    // Not BROTLI_DEFAULT_QUALITY (11), meant for compressing static files ahead of time: 100 to 400 times slower than 4
+    // for an output 10 to 20% smaller. From quality 4, br compresses at least as well as gzip at its default level.
+    static constexpr int8_t kDefaultQuality = 4;
     static constexpr int8_t kDefaultWindow = BROTLI_DEFAULT_WINDOW;
     static constexpr int8_t kMinQuality = BROTLI_MIN_QUALITY;
     static constexpr int8_t kMaxQuality = BROTLI_MAX_QUALITY;

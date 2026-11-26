@@ -478,7 +478,7 @@ TEST(ConfigLoaderTest, CompressionConfig) {
         "contentTypeAllowList": ["text/html", "application/json"],
         "zlib": {"level": 6},
         "zstd": {"compressionLevel": 3, "windowLog": 22},
-        "brotli": {"quality": 4, "window": 20}
+        "brotli": {"quality": 6, "window": 20}
       }
     }
   })",
@@ -495,7 +495,7 @@ TEST(ConfigLoaderTest, CompressionConfig) {
   EXPECT_EQ(config.server.compression.zlib.level, 6);
   EXPECT_EQ(config.server.compression.zstd.compressionLevel, 3);
   EXPECT_EQ(config.server.compression.zstd.windowLog, 22);
-  EXPECT_EQ(config.server.compression.brotli.quality, 4);
+  EXPECT_EQ(config.server.compression.brotli.quality, 6);
   EXPECT_EQ(config.server.compression.brotli.window, 20);
 
   std::vector<std::string_view> allowList;

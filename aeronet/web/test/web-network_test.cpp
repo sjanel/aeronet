@@ -612,8 +612,8 @@ TEST(WebNetworkTest, ExceptionsOfTheCallbacksAreReported) {
 TEST(WebNetworkTest, ResponsesBeyondTheMemoryOfTheScripts) {
   WebClientConfig config = Config();
   config.maxScriptMemory = std::size_t{4} << 20U;
-  // Uncompressed responses: without zstd, the server picks brotli at its default quality (11), whose 6 MiB take seconds
-  // in a Debug build, beyond the time limit of the navigation under a parallel ctest.
+  // Uncompressed responses, which the test is not about: compressed, the 6 MiB of a single letter would exceed the
+  // decompression limits of the client.
   config.http.withDefaultAcceptEncoding(http::identity);
   WebClient client(config);
   EXPECT_EQ(Out(client, R"(out = [];
