@@ -162,15 +162,10 @@ test::TestServer MakeServer() {
   // Every method, the preflights too.
   router.setPath(http::Method::GET | http::Method::POST | http::Method::PUT | http::Method::OPTIONS, "/redirect",
                  [](const HttpRequestView& req) { return Redirect(req, "status", http::StatusCodeFound); });
-  // 'size' bytes of letters, which do not compress much: the client bounds the ratio of a decompression.
+  // 'size' bytes.
   router.setPath(http::Method::GET, "/large", [](const HttpRequestView& req) {
-    std::string body(std::stoul(std::string(req.queryParamValueOrEmpty("size"))), 'a');
-    uint32_t state = 1;
-    for (char& ch : body) {
-      state = (state * 1103515245U) + 12345U;
-      ch = static_cast<char>('a' + ((state >> 16U) % 26U));
-    }
-    return req.makeResponse(body, "text/plain");
+    return req.makeResponse(std::string(std::stoul(std::string(req.queryParamValueOrEmpty("size"))), 'a'),
+                            "text/plain");
   });
   return server;
 }
@@ -617,6 +612,9 @@ TEST(WebNetworkTest, ExceptionsOfTheCallbacksAreReported) {
 TEST(WebNetworkTest, ResponsesBeyondTheMemoryOfTheScripts) {
   WebClientConfig config = Config();
   config.maxScriptMemory = std::size_t{4} << 20U;
+  // Uncompressed responses: without zstd, the server picks brotli at its default quality (11), whose 6 MiB take seconds
+  // in a Debug build, beyond the time limit of the navigation under a parallel ctest.
+  config.http.withDefaultAcceptEncoding(http::identity);
   WebClient client(config);
   EXPECT_EQ(Out(client, R"(out = [];
     const controller = new AbortController();
