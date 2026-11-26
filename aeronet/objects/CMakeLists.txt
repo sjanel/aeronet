@@ -4,7 +4,7 @@ aux_source_directory(src AERONET_OBJECTS_SRC)
 if(AERONET_ENABLE_OPENTELEMETRY)
     list(REMOVE_ITEM AERONET_OBJECTS_SRC src/void-tracer.cpp)
 else()
-    list(REMOVE_ITEM AERONET_OBJECTS_SRC src/otel-tracer.cpp)
+    list(REMOVE_ITEM AERONET_OBJECTS_SRC src/otel-tracer.cpp src/otlp-span-export.cpp src/span-recorder.cpp)
 endif()
 
 if(NOT AERONET_ENABLE_ZLIB)
@@ -313,6 +313,20 @@ AeronetAddUnitTest(
 
 if(AERONET_BUILD_TESTS AND AERONET_ENABLE_OPENTELEMETRY)
     target_link_libraries(opentelemetry-integration_test PRIVATE ${AERONET_OPENTELEMETRY_METRICS_TARGET})
+endif()
+
+if(AERONET_ENABLE_OPENTELEMETRY)
+    AeronetAddUnitTest(
+        span-recorder_test
+        test/span-recorder_test.cpp
+        LIBRARIES
+        aeronet_objects
+    )
+    if(AERONET_BUILD_TESTS)
+        # The oracle of the encoding of the spans is the OTLP exporter of opentelemetry-cpp: its OtlpRecordable and the
+        # generated OTLP messages.
+        target_link_libraries(span-recorder_test PRIVATE ${AERONET_OPENTELEMETRY_TARGETS})
+    endif()
 endif()
 
 AeronetAddUnitTest(

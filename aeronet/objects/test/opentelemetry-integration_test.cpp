@@ -121,6 +121,8 @@ TEST(OpenTelemetryIntegration, MetricsOperations) {
     for (bool dogStatsDEnabled : {false, true}) {
       cfg.otelEnabled = otelEnabled;
       cfg.dogStatsDEnabled = dogStatsDEnabled;
+      // The span of the previous context is released before the context is replaced.
+      span.reset();
       telemetry = tracing::TelemetryContext(cfg);
 
       // Should work after initialization (or silently fail)
@@ -201,6 +203,8 @@ TEST(OpenTelemetryIntegration, SpanOperations) {
 
   cfg.otelEnabled = false;
   cfg.dogStatsDEnabled = true;
+  // The span is released before its context is replaced.
+  span2.reset();
   telemetry = tracing::TelemetryContext(cfg);
 
   auto span3 = telemetry.createSpan("test-span-3");

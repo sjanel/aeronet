@@ -257,7 +257,11 @@ class HttpRequestViewTest : public ::testing::Test {
     }
 
     void end() noexcept override { ended = true; }
+
+    void recycle() noexcept override { delete this; }
   };
+
+  static tracing::SpanPtr MakeFakeSpan() { return tracing::SpanPtr(new FakeSpan()); }
 
   static std::string_view bridgeReadChunk(HttpRequestView& /*req*/, void* /*ctx*/, std::size_t /*maxBytes*/) {
     return "chunk-data";
@@ -521,7 +525,7 @@ TEST_F(HttpRequestViewTest, TraceSpanNotSetWhenNoHostHeader) {
   // Reset FakeSpan marker
   FakeSpan::sawHttpHost = false;
 
-  auto span = std::make_unique<FakeSpan>();
+  auto span = MakeFakeSpan();
   auto status = reqSetWithSpan(std::move(raw), std::move(span));
   ASSERT_EQ(status, http::StatusCodeOK);
 
@@ -1058,20 +1062,19 @@ TEST_F(HttpRequestViewTest, ValidHostHeaderFieldIsKeptAsIs) {
 }
 
 TEST_F(HttpRequestViewTest, AbsoluteFormHostIsInTheTraceSpan) {
-  ASSERT_EQ(reqSetWithSpan(BuildRaw("GET", "http://example.com:81/p"), std::make_unique<FakeSpan>()),
-            http::StatusCodeOK);
+  ASSERT_EQ(reqSetWithSpan(BuildRaw("GET", "http://example.com:81/p"), MakeFakeSpan()), http::StatusCodeOK);
   EXPECT_EQ(FakeSpan::lastHttpHost, "example.com:81");
 }
 
 // The scheme in the trace span is the one of the connection, whatever the form of the request-target.
 TEST_F(HttpRequestViewTest, TraceSpanSchemeIsTheOneOfTheConnection) {
-  ASSERT_EQ(reqSetWithSpan(BuildRaw("GET", "/p"), std::make_unique<FakeSpan>()), http::StatusCodeOK);
+  ASSERT_EQ(reqSetWithSpan(BuildRaw("GET", "/p"), MakeFakeSpan()), http::StatusCodeOK);
   EXPECT_EQ(FakeSpan::lastHttpScheme, "http");
 #ifdef AERONET_ENABLE_OPENSSL
   connectionInfo.tlsInfo.parts.set(2, "TLSv1.3");  // the negotiated version
-  ASSERT_EQ(reqSetWithSpan(BuildRaw("GET", "/p"), std::make_unique<FakeSpan>()), http::StatusCodeOK);
+  ASSERT_EQ(reqSetWithSpan(BuildRaw("GET", "/p"), MakeFakeSpan()), http::StatusCodeOK);
   EXPECT_EQ(FakeSpan::lastHttpScheme, "https");
-  ASSERT_EQ(reqSetWithSpan(BuildRaw("GET", "http://example.com/p"), std::make_unique<FakeSpan>()), http::StatusCodeOK);
+  ASSERT_EQ(reqSetWithSpan(BuildRaw("GET", "http://example.com/p"), MakeFakeSpan()), http::StatusCodeOK);
   EXPECT_EQ(FakeSpan::lastHttpScheme, "https");
 #endif
 }
@@ -2244,7 +2247,7 @@ TEST_F(HttpRequestViewTest, EndSetsSpanAttributesAndEnds) {
   FakeSpan::nbIntAttributes = 0;
   FakeSpan::ended = false;
 
-  auto spanPtr = std::make_unique<FakeSpan>();
+  auto spanPtr = MakeFakeSpan();
   auto raw = BuildRaw("GET", "/p", "HTTP/1.1", "");
   auto st = reqSet(std::move(raw), true);
   ASSERT_EQ(st, http::StatusCodeOK);
@@ -3168,14 +3171,12 @@ TEST_F(HttpRequestViewTest, AuditRepeatedFieldsAreCombinedInOrder) {
     const std::string head = HeadWithRepeatedFields(rng, expected);
     ASSERT_EQ(reqSet(RawChars(head)), http::StatusCodeOK) << head;
     const HeadSnapshot parsed = snapshot();
-    if (parsed.headers != expected) {
-      if (++nbWrongHeads <= 3) {
-        std::string got;
-        for (const auto& [name, value] : parsed.headers) {
-          got.append(name).append("=[").append(value).append("] ");
-        }
-        ADD_FAILURE() << "seed " << seed << ", head:\n" << head << "parsed as: " << got;
+    if (parsed.headers != expected && ++nbWrongHeads <= 3) {
+      std::string got;
+      for (const auto& [name, value] : parsed.headers) {
+        got.append(name).append("=[").append(value).append("] ");
       }
+      ADD_FAILURE() << "seed " << seed << ", head:\n" << head << "parsed as: " << got;
     }
   }
   EXPECT_EQ(nbWrongHeads, 0U) << "heads whose fields are not the combination of their lines, out of 2000";
@@ -3238,12 +3239,10 @@ TEST_F(HttpRequestViewTest, AuditHeadParsingDoesNotDependOnReads) {
                         << " for the head:\n"
                         << head;
         }
-      } else if (whole.status != split.status) {
-        if (++nbStatusMismatches <= 5) {
-          ADD_FAILURE() << how << " (cut " << cut << "): rejected with " << split.status << " instead of "
-                        << whole.status << " for the head:\n"
-                        << head;
-        }
+      } else if (whole.status != split.status && ++nbStatusMismatches <= 5) {
+        ADD_FAILURE() << how << " (cut " << cut << "): rejected with " << split.status << " instead of " << whole.status
+                      << " for the head:\n"
+                      << head;
       }
     };
 

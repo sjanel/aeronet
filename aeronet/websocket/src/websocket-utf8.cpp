@@ -9,6 +9,7 @@
 #include <type_traits>
 
 #include "aeronet/compiler-config.hpp"
+#include "aeronet/utf8-scalar.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-frame.hpp"
 
@@ -25,53 +26,6 @@
 namespace aeronet::websocket {
 
 namespace {
-
-/// Validate a single multibyte UTF-8 sequence starting at *ptr.
-/// @param ptr  Points to 1 byte past the lead byte on entry; advanced past the full sequence on success.
-/// @param end  One-past-end of the buffer.
-/// @param lead The leading byte of the sequence (already consumed).
-/// @return true if the sequence is valid.
-constexpr bool ValidateMultibyteSequence(const uint8_t*& ptr, const uint8_t* end, uint8_t lead) {
-  uint32_t remaining;
-  uint32_t codepoint;
-  uint32_t minCodepoint;
-
-  if ((lead & 0xE0U) == 0xC0U) {
-    remaining = 1U;
-    codepoint = lead & 0x1FU;
-    minCodepoint = 0x80U;
-  } else if ((lead & 0xF0U) == 0xE0U) {
-    remaining = 2U;
-    codepoint = lead & 0x0FU;
-    minCodepoint = 0x800U;
-  } else if ((lead & 0xF8U) == 0xF0U) {
-    remaining = 3U;
-    codepoint = lead & 0x07U;
-    minCodepoint = 0x10000U;
-  } else {
-    return false;
-  }
-
-  if (end < ptr + remaining) {
-    return false;
-  }
-
-  for (decltype(remaining) idx = 0; idx < remaining; ++idx) {
-    const uint8_t byte = *ptr++;
-    if ((byte & 0xC0U) != 0x80U) {
-      return false;
-    }
-    codepoint = (codepoint << 6U) | (byte & 0x3FU);
-  }
-
-  if (codepoint < minCodepoint) {
-    return false;
-  }
-  if (codepoint >= 0xD800U && codepoint <= 0xDFFFU) {
-    return false;
-  }
-  return codepoint <= 0x10FFFFU;
-}
 
 #if defined(AERONET_UTF8_X86) || defined(AERONET_UTF8_NEON)
 
@@ -646,25 +600,8 @@ bool ValidateNeon(KernelBytes<kUnmask>* ptr, std::size_t size, [[maybe_unused]] 
 namespace detail {
 
 bool IsValidUtf8Scalar(std::span<const std::byte> data) noexcept {
-  static constexpr uint64_t kHighBits = 0x8080808080808080ULL;
-
   const auto* ptr = reinterpret_cast<const uint8_t*>(data.data());
-  const auto* end = ptr + data.size();
-  while (ptr != end) {
-    if (end - ptr >= static_cast<std::ptrdiff_t>(sizeof(uint64_t))) {
-      uint64_t word;
-      std::memcpy(&word, ptr, sizeof(word));
-      if ((word & kHighBits) == 0) {
-        ptr += sizeof(word);
-        continue;
-      }
-    }
-    const uint8_t byte = *ptr++;
-    if (byte >= 0x80 && !ValidateMultibyteSequence(ptr, end, byte)) {
-      return false;
-    }
-  }
-  return true;
+  return aeronet::IsValidUtf8Scalar(ptr, ptr + data.size());
 }
 
 #ifdef AERONET_UTF8_X86
