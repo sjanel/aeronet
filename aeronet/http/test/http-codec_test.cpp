@@ -767,7 +767,6 @@ TEST(HttpCodecCompression, TryCompressBodyStreamingBudgetBoundary) {
   for (Encoding enc : test::SupportedEncodings()) {
     CompressionConfig cfg;
     cfg.minBytes = 16U;
-    cfg.brotli.quality = 5;  // the budget logic does not depend on it, the default one is slow
     cfg.preferredFormats.assign(1U, enc);
 
     std::size_t compressedSz;

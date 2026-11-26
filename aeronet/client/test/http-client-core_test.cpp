@@ -2236,7 +2236,6 @@ TEST_F(HttpClientCompressionE2E, LargeIncompressibleDirectlyCompressedRequestBod
     SCOPED_TRACE(GetEncodingStr(enc));
     HttpClientConfig cfg;
     cfg.withRequestCompression(enc);
-    cfg.requestCompression.codec.brotli.quality = 5;  // the default one (11) is slow in Debug builds
     HttpClient client(cfg);
     auto req = client.makeRequest(http::Method::POST, Url("/echo"));
     for (std::size_t pos = 0; pos < payload.size(); pos += kPieceSize) {
