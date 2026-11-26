@@ -294,6 +294,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_target_properties(aeronet-bench-internal-telemetry PROPERTIES FOLDER "benchmarks/internal")
 endif()
 
+# Spans exported to an aeronet server; allocations counted by interposing glibc's malloc.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND AERONET_ENABLE_HTTP_SERVER AND AERONET_ENABLE_OPENTELEMETRY)
+  set(AERONET_BENCH_INTERNAL_TRACING_SPAN ${AERONET_BENCH_ROOT}/internal/tracing-span_bench.cpp)
+  AeronetAddProjectBenchmark(aeronet-bench-internal-tracing-span ${AERONET_BENCH_INTERNAL_TRACING_SPAN}
+                             LIBRARIES aeronet_server)
+  set_target_properties(aeronet-bench-internal-tracing-span PROPERTIES FOLDER "benchmarks/internal")
+endif()
+
 if(AERONET_ENABLE_HTTP_SERVER AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(AERONET_BENCH_INTERNAL_EVENT_LOOP_POLL_TIMEOUT ${AERONET_BENCH_ROOT}/internal/event-loop-poll-timeout_bench.cpp)
   AeronetAddProjectBenchmark(aeronet-bench-internal-event-loop-poll-timeout ${AERONET_BENCH_INTERNAL_EVENT_LOOP_POLL_TIMEOUT})

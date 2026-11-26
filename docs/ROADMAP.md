@@ -80,8 +80,16 @@ and `http.duration_us` (5 allocations) is no longer set. A sampled request still
 | `Span::End()` | 0 | the batch processor queues the span in a preallocated ring buffer |
 
 Each key or value of 16 characters or more costs 2 more allocations (the protobuf setter builds a temporary
-`std::string`, then copies it): 39 with a target of 26 characters and a host of 20. The exporter thread (serialization
-of the batch, HTTP request) was not measured.
+`std::string`, then copies it): 39 with a target of 26 characters and a host of 20.
+
+The exporter side, measured on 2026-11-26 with `aeronet-bench-internal-tracing-span` (Release, system protobuf 3.21.12,
+spans made in rounds of one export batch, 512, sent to an aeronet server): 26 more allocations per span (28 with the
+long target and host), and about 1 µs per span from the last span of a batch to its reception by the server. Making the
+span takes 1.65 µs on the event loop (2.5 ns unsampled). Nearly all of the 26 come from the copy of each `OtlpRecordable`
+span into the export request (`OtlpRecordableUtils::PopulateRequest()`): the exporter creates the request with
+`Arena::Create<T>()`, which in protobuf 3.21 constructs a message without its arena, so each `KeyValue`, `AnyValue`,
+string and the `Span` itself of the copy is a heap allocation. Newer protobuf releases were not checked. A thread making
+nothing but spans outpaces the exporter: the queue of 2048 spans fills up and spans are dropped.
 
 Plan, in order of leverage:
 
@@ -98,10 +106,12 @@ Plan, in order of leverage:
    attributes, so events, links and array attributes can stay unsupported (asserted). Tests: replay into an
    `sdk::trace::SpanData` and compare with the same calls made directly, and an end-to-end export through
    `OtlpTestCollector` checking ids, flags, times, status, resource and scope. Measure the exporter thread before and
-   after: its allocations move there, they must not grow.
-2. **Measure what is not yet**: the HTTP/2 path (`Http2ProtocolHandler` creates its own `http.request` span), the
-   `aeronet.middleware` spans (one span creation and its attributes per middleware call), and the exporter thread per
-   span, against a collector that accepts the exports.
+   after: replayed into `OtlpRecordable`s, the 31 allocations would move to a thread that already makes 26 per span
+   (with protobuf 3.21) and cannot keep up with a thread making only spans. Filling the export request directly from
+   these recordables, its messages on the arena, would avoid both the `OtlpRecordable` and the copy, but needs the
+   generated OTLP headers and messages of the installed opentelemetry-cpp (to check in the Conan and vcpkg packages).
+2. **Measure what is not yet**: the HTTP/2 path (`Http2ProtocolHandler` creates its own `http.request` span) and the
+   `aeronet.middleware` spans (one span creation and its attributes per middleware call), in the same benchmark.
 3. **Middleware spans as children of the request span.** Each `aeronet.middleware` span is a root span of its own
    trace today, sampled independently of its request. Starting it with the context of the `http.request` span as
    parent (`StartSpanOptions::parent`) groups them in one trace, and creating it only when the request span exists
@@ -113,7 +123,9 @@ Plan, in order of leverage:
    in a value type instead of a `std::unique_ptr<Span>` would remove it, but grow `HttpRequestView` (one per connection)
    by 24 bytes. Only worth it once the other allocations are gone.
 
-To measure again: build a probe against `build/` that defines `malloc`, `realloc` and `calloc` forwarding to
+To measure again: `aeronet-bench-internal-tracing-span` counts the allocations per span of the event loop and of the
+exporter threads ([tracing-span_bench.cpp](../benchmarks/internal/tracing-span_bench.cpp)).
+To find where they come from, build a probe against `build/` that defines `malloc`, `realloc` and `calloc` forwarding to
 `__libc_malloc` and co, records `backtrace()` into a static array for the allocations of the thread running
 `SingleHttpServer::runUntil()` (warm `backtrace()` up first: it allocates once), then symbolizes the frames
 (`dladdr()` offsets, `llvm-symbolizer --no-inlines`) and groups them by call site.
