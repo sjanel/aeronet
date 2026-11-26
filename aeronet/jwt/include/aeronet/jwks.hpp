@@ -25,6 +25,7 @@ class Jwks {
   [[nodiscard]] const JwtKey* find(std::string_view kid) const noexcept;
 
   [[nodiscard]] std::size_t size() const noexcept { return _keys.size(); }
+
   [[nodiscard]] bool empty() const noexcept { return _keys.empty(); }
 
   // Verify `token`, selecting the key by its "kid" header. When the token carries no "kid" and the
