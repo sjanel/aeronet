@@ -11,6 +11,7 @@
 #include <lexbor/dom/interfaces/document_fragment.h>
 #include <lexbor/dom/interfaces/node.h>
 
+#include <array>
 #include <cstddef>
 #include <format>
 #include <iterator>
@@ -18,11 +19,13 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "../src/html-encoding.hpp"
 #include "../src/html-node-access.hpp"
 #include "../src/html-parse.hpp"
 #include "../src/html-tree-walk.hpp"
+#include "../src/lexbor-utils.hpp"
 #include "aeronet/html-document.hpp"
 #include "aeronet/html-element.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -504,13 +507,20 @@ void InternNamesOfEachVariant(HtmlElement parent) {
   svgGroup.setAttribute("An-Attribute-With-A-Mixed-Case-Long-Name", "1");
 }
 
+// The number of names interned in each table of 'doc' is at most kMaxNamesPerBucket per bucket: the tables grew.
+void ExpectGrownTables(const HtmlDocument& doc) {
+  for (const lexbor_hash_t* pTable : {LexborDocument(doc).tags, LexborDocument(doc).attrs}) {
+    EXPECT_LE(lexbor_dobject_allocated(pTable->entries), kMaxNamesPerBucket * pTable->table_size);
+  }
+}
+
 TEST(HtmlNameTableTest, NamesOfEachVariantAreFoundAfterAGrowth) {
   HtmlDocument doc("<p></p>");
   const lxb_dom_document_t& document = LexborDocument(doc);
   InternNamesOfEachVariant(doc.body());
   const std::size_t tagBuckets = document.tags->table_size;
   const std::size_t attributeBuckets = document.attrs->table_size;
-  // Distinct names, in a fragment too small to reserve buckets first: the tables grow while it is parsed.
+  // Distinct names, in a fragment too small to reserve buckets first: the tables grow after its chunk.
   std::string names;
   for (std::size_t idx = 0; idx < 2 * kMaxNamesPerBucket * tagBuckets; ++idx) {
     std::format_to(std::back_inserter(names), "<y-{} b{}>", idx, idx);
@@ -533,6 +543,127 @@ TEST(HtmlNameTableTest, ParsingReservesBucketsForItsInput) {
   EXPECT_EQ(LexborDocument(doc).attrs->table_size, html.size() / kHtmlBytesPerNameBucket);
 }
 
+TEST(HtmlNameTableTest, ManyDistinctNamesParseInLinearTime) {
+  // Each distinct name of a tag or an attribute is interned in a table of the document, which would keep 128 buckets
+  // without its growth (2.7 MB of these attributes took 7 s, quadratic). The tables grow between the chunks of the
+  // input, inside a tag too: the tokenizer interns its attribute names as it reads them (more than a name per 64 bytes
+  // here, beyond the buckets reserved first).
+  static constexpr std::size_t kCount = 1UL << 16U;
+  std::string attributes;
+  std::string tags;
+  std::string oneTag = "<i";
+  for (std::size_t idx = 0; idx < kCount; ++idx) {
+    std::format_to(std::back_inserter(attributes), "<i a{}>", idx);
+    std::format_to(std::back_inserter(tags), "<x-{}></x-{}>", idx, idx);
+    std::format_to(std::back_inserter(oneTag), " a{}", idx);
+  }
+  oneTag += "><p id=after>";
+  ASSERT_GT(oneTag.size(), 16 * kParseChunkSize);
+  const HtmlDocument withAttributes(attributes);
+  ExpectGrownTables(withAttributes);
+  EXPECT_EQ(withAttributes.querySelectorAll("i").size(), kCount);
+  EXPECT_TRUE(withAttributes.querySelector(std::format("i[a{}]", kCount - 1)));
+  const HtmlDocument withTags(tags);
+  ExpectGrownTables(withTags);
+  EXPECT_EQ(test::ChildCount(withTags.body()), kCount);
+  EXPECT_TRUE(withTags.querySelector(std::format("x-{}", kCount - 1)));
+  const HtmlDocument withOneTag(oneTag);
+  ExpectGrownTables(withOneTag);
+  EXPECT_EQ(InternedNames(withOneTag).attributes, kCount);
+  EXPECT_TRUE(withOneTag.querySelector("#after"));
+}
+
+// 2^bits distinct names of 4 * bits lower case letters of the same hash id in lexbor (lexbor_hash_make_id(), Jenkins
+// one-at-a-time): each name takes one of the 2 blocks of each pair, which reach the same internal state of the hash
+// from the one that the previous pairs reach (multicollisions of Joux, each pair found by a birthday search).
+std::vector<std::string> CollidingNames(std::size_t bits) {
+  static constexpr auto kBlockPairs = std::to_array<std::array<std::string_view, 2>>({
+      {"puwa", "thae"},
+      {"iima", "efae"},
+      {"duoa", "hrae"},
+      {"fewa", "jbae"},
+      {"bkoa", "fhae"},
+      {"yowa", "ubae"},
+      {"nsta", "bnld"},
+      {"ckma", "ghae"},
+      {"xzoa", "tgae"},
+      {"xnma", "taae"},
+      {"ftoa", "jqae"},
+      {"keaa", "kuta"},
+      {"cpka", "gcae"},
+      {"nnea", "jaae"},
+  });
+  EXPECT_LE(bits, kBlockPairs.size());
+  std::vector<std::string> names(std::size_t{1} << bits);
+  for (std::size_t idx = 0; idx < names.size(); ++idx) {
+    for (std::size_t pair = 0; pair < bits; ++pair) {
+      names[idx] += kBlockPairs[pair][(idx >> pair) & 1U];
+    }
+  }
+  for (const std::string& name : names) {
+    EXPECT_EQ(lexbor_hash_make_id(Chars(name), name.size()), lexbor_hash_make_id(Chars(names[0]), names[0].size()));
+  }
+  return names;
+}
+
+// Parses 'html', whose names of the same hash take 'bytesPerName' bytes each from its start: the parsing stops after
+// its first chunk.
+void ExpectParsingStoppedAfterFirstChunk(const std::string& html, std::size_t bytesPerName) {
+  const HtmlDocument doc(html);
+  EXPECT_TRUE(doc.querySelector("#before"));
+  EXPECT_FALSE(doc.querySelector("#after"));
+  const InternedNames interned(doc);
+  EXPECT_GT(interned.tags + interned.attributes, kMaxCollidingNames);
+  EXPECT_LE(interned.tags + interned.attributes, kParseChunkSize / bytesPerName);
+}
+
+TEST(HtmlNameTableTest, CollidingNamesStopTheParsing) {
+  // Each name of the same hash is compared to all the previous ones, in the same bucket whatever the size of the table:
+  // 1.1 s for these 900 KB of attributes, 1 s for the tags (quadratic). The parsing stops after the chunk whose names
+  // fill a bucket beyond kMaxCollidingNames.
+  const std::vector<std::string> names = CollidingNames(14);
+  const std::size_t nameSize = names[0].size();
+  std::string attributes = "<p id=before>x</p><i";
+  std::string tags = "<p id=before>x</p>";
+  for (const std::string& name : names) {
+    std::format_to(std::back_inserter(attributes), " {}", name);
+    std::format_to(std::back_inserter(tags), "<{}></{}>", name, name);
+  }
+  attributes += "><p id=after>y</p>";
+  tags += "<p id=after>y</p>";
+  ExpectParsingStoppedAfterFirstChunk(attributes, nameSize + 1);
+  ExpectParsingStoppedAfterFirstChunk(tags, (2 * nameSize) + 5);
+}
+
+TEST(HtmlNameTableTest, BucketsHoldUpToTheLimitOfCollidingNames) {
+  const std::vector<std::string> names = CollidingNames(7);
+  for (const std::size_t count : {kMaxCollidingNames, kMaxCollidingNames + 1}) {
+    std::string html = "<i";
+    for (std::size_t idx = 0; idx < count; ++idx) {
+      std::format_to(std::back_inserter(html), " {}", names[idx]);
+    }
+    // The next chunks are only parsed if the first one leaves no bucket beyond the limit.
+    html += "></i>" + std::string(kParseChunkSize, 'x') + "<p id=after>";
+    const HtmlDocument doc(html);
+    EXPECT_EQ(test::AttributeCount(doc.querySelector("i")), count);
+    EXPECT_EQ(static_cast<bool>(doc.querySelector("#after")), count == kMaxCollidingNames) << count;
+  }
+}
+
+TEST(HtmlNameTableTest, CollidingNamesStopTheParsingOfAFragment) {
+  HtmlDocument doc("<div id=target></div><p id=last></p>");
+  std::string html = "<p id=before>x</p><i";
+  for (const std::string& name : CollidingNames(10)) {
+    std::format_to(std::back_inserter(html), " {}", name);
+  }
+  html += "><p id=after>y</p>";
+  doc.querySelector("#target").setInnerHtml(html);
+  EXPECT_TRUE(doc.querySelector("#target > #before"));
+  EXPECT_FALSE(doc.querySelector("#after"));
+  // Only the fragment stops.
+  EXPECT_TRUE(doc.querySelector("#last"));
+}
+
 #if AERONET_WANT_MALLOC_OVERRIDES
 TEST(HtmlNameTableTest, MemoryExhaustionKeepsTheTable) {
   HtmlDocument doc("<p></p>");
@@ -540,12 +671,30 @@ TEST(HtmlNameTableTest, MemoryExhaustionKeepsTheTable) {
   lexbor_hash_t& tags = *LexborDocument(doc).tags;
   const std::size_t buckets = tags.table_size;
   test::FailNextMalloc();
-  GrowNameTable(tags, 4 * buckets);
+  EXPECT_FALSE(GrowNameTable(tags, 4 * buckets));
   test::ResetToSysMalloc();
   EXPECT_EQ(tags.table_size, buckets);
   const InternedNames before(doc);
   InternNamesOfEachVariant(doc.body());
   EXPECT_EQ(InternedNames(doc), before);
+}
+
+TEST(HtmlNameTableTest, TableThatCouldNotGrowIsNotChecked) {
+  // 128 names per bucket on average once the tables cannot grow (their initial size): beyond kMaxCollidingNames,
+  // the parsing does not stop.
+  static constexpr std::size_t kInitialBuckets = 128;
+  static constexpr std::size_t kCount = 128 * kInitialBuckets;
+  std::string html;
+  for (std::size_t idx = 0; idx < kCount; ++idx) {
+    std::format_to(std::back_inserter(html), "<x-{} a{}></x-{}>", idx, idx, idx);
+  }
+  test::FailCallocsOfAtLeast(kMaxNamesPerBucket * kInitialBuckets * sizeof(lexbor_hash_entry_t*));  // the growths
+  const HtmlDocument doc(html);
+  test::ResetToSysMalloc();
+  EXPECT_EQ(LexborDocument(doc).tags->table_size, kInitialBuckets);
+  EXPECT_EQ(LexborDocument(doc).attrs->table_size, kInitialBuckets);
+  EXPECT_EQ(test::ChildCount(doc.body()), kCount);
+  EXPECT_TRUE(doc.querySelector(std::format("x-{}[a{}]", kCount - 1, kCount - 1)));
 }
 #endif
 

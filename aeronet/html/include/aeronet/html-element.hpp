@@ -246,8 +246,9 @@ class HtmlElement : public HtmlParentNode {
 
   // Inserts the nodes parsed from 'html' (UTF-8) at 'position' (DOM insertAdjacentHTML), parsed as a fragment in the
   // context of the element for AfterBegin and BeforeEnd, of its parent for BeforeBegin and AfterEnd (<body> instead
-  // of <html> or of the contents of a <template>). Throws std::invalid_argument for BeforeBegin and AfterEnd if the
-  // element is the root element or has no parent, std::bad_alloc on memory exhaustion (nothing inserted).
+  // of <html> or of the contents of a <template>), with the parsing limits of HtmlDocument. Throws
+  // std::invalid_argument for BeforeBegin and AfterEnd if the element is the root element or has no parent,
+  // std::bad_alloc on memory exhaustion (nothing inserted).
   void insertAdjacentHtml(HtmlInsertPosition position, std::string_view html);
 
   // Moves 'element' (valid), with its descendants, at 'position' (DOM insertAdjacentElement). Throws

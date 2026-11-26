@@ -26,9 +26,12 @@ class HtmlDocument : public HtmlParentNode {
   // the first 1024 bytes. Without any of them, the document is read as UTF-8 if it is valid UTF-8, else as
   // windows-1252. Invalid UTF-8 sequences of a document declared as UTF-8 are kept as they are; those of other
   // encodings are replaced by U+FFFD. Malformed markup never fails: it is repaired as browsers do. The parsing time
-  // and the number of nodes stay linear in the size of 'html': a start tag at a depth of 512 elements (the limit of
-  // browsers) first closes the current element, deeper elements becoming siblings, and at most 16 misnested formatting
-  // elements (<b>, <font>...) are recreated where they are still open. Throws std::bad_alloc on memory exhaustion.
+  // and the number of nodes stay linear in the size of 'html' (the parsing limits): a start tag at a depth of 512
+  // elements (the limit of browsers) first closes the current element, deeper elements becoming siblings, at most 16
+  // misnested formatting elements (<b>, <font>...) are recreated where they are still open, an element gets at most
+  // 256 attributes (the first ones of its tag, then of the <html> or <body> tags adding theirs), and names of tags or
+  // attributes crafted to collide in the hash tables of the document stop the parsing, the rest of 'html' being
+  // ignored. Throws std::bad_alloc on memory exhaustion.
   explicit HtmlDocument(std::string_view html, std::string_view contentType = {});
 
   HtmlDocument(const HtmlDocument&) = delete;

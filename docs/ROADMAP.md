@@ -746,7 +746,8 @@ to propose upstream (the workaround stays while lexbor versions without it are a
 costs to propose upstream too, bounded by aeronet in `aeronet/html/src/html-parse.cpp` (see the
 [parsing limits](modules/html.md#parsing-limits)): `lxb_html_tree_append_attributes()` looks each attribute of a tag up
 in the list of its element, and the tables interning the names of a document (`lexbor_hash_t`, 128 buckets) never grow
-(a `FIXME` of `lexbor/core/hash.h`). The failures were
+(a `FIXME` of `lexbor/core/hash.h`) and hash names without a seed (names of the same hash fill one bucket: aeronet stops
+the parsing). The failures were
 injected through `lexbor_memory_setup()`, which works under ASAN, unlike the `malloc` overrides of the tests
 (`sys-test-support.hpp` disables them with sanitizers): the ASAN CI legs never run the memory exhaustion tests. When a
 release contains all of them:

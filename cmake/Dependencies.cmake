@@ -430,7 +430,9 @@ endif()
 # AERONET_LEXBOR_TARGET is the target linked by aeronet_html, AERONET_LEXBOR_PACKAGE the package that the consumers of
 # aeronet look for (empty when lexbor is built and installed with aeronet).
 # A lexbor package must be 3.x (its version file requires the same major version): 2.x lacks functions that
-# aeronet_html calls, and such a package is skipped for the download.
+# aeronet_html calls, and such a package is skipped for the download. aeronet_html also relies on how 3.0.x stores the
+# tables of names of a document (bucket of a name, entries allocated in sequence: html-parse.cpp), which its assertions
+# check: run the html tests in Debug when bumping the downloaded version.
 set(AERONET_LEXBOR_MIN_VERSION 3.0)
 if(AERONET_ENABLE_HTML)
   aeronet_system_packages_allowed(_lexbor_allow_system)

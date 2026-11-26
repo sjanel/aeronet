@@ -123,6 +123,8 @@ inline int g_malloc_fail_after = 0;
 inline int g_realloc_fail_after = 0;
 // Optional: every realloc of at least this size fails until reset (0 disables it), the smaller ones succeeding.
 inline size_t g_realloc_fail_min_size = 0;
+// Same for calloc (nmemb * size bytes), reset by ResetToSysMalloc().
+inline size_t g_calloc_fail_min_size = 0;
 
 __attribute__((no_sanitize("address"))) inline void FailNextMalloc(int count = 1) {
   // Backwards compatible: request `count` immediate failing allocations.
@@ -145,10 +147,16 @@ __attribute__((no_sanitize("address"))) inline void FailAllMallocs() {
   __atomic_store_n(&g_malloc_failure_counter, std::numeric_limits<int>::max(), __ATOMIC_RELAXED);
 }
 
-// Reset malloc behavior to normal (no injected failures).
+// Fail every calloc of at least `minSize` bytes until reset, the smaller ones succeeding (see FailReallocsOfAtLeast).
+__attribute__((no_sanitize("address"))) inline void FailCallocsOfAtLeast(size_t minSize) {
+  __atomic_store_n(&g_calloc_fail_min_size, minSize, __ATOMIC_RELAXED);
+}
+
+// Reset malloc behavior to normal (no injected failures), calloc included.
 __attribute__((no_sanitize("address"))) inline void ResetToSysMalloc() {
   __atomic_store_n(&g_malloc_fail_after, 0, __ATOMIC_RELAXED);
   __atomic_store_n(&g_malloc_failure_counter, 0, __ATOMIC_RELAXED);
+  __atomic_store_n(&g_calloc_fail_min_size, 0, __ATOMIC_RELAXED);
 }
 
 __attribute__((no_sanitize("address"))) inline void FailNextRealloc(int count = 1) {
@@ -233,6 +241,12 @@ __attribute__((no_sanitize("address"))) inline void ResetToSysRealloc() {
   return minSize != 0 && size >= minSize;
 }
 
+[[nodiscard]] inline __attribute__((no_sanitize("address"))) bool ShouldFailCallocOfSize(size_t nmemb, size_t size) {
+  const size_t minSize = __atomic_load_n(&g_calloc_fail_min_size, __ATOMIC_RELAXED);
+  size_t total = 0;
+  return minSize != 0 && (__builtin_mul_overflow(nmemb, size, &total) || total >= minSize);
+}
+
 // Portable resolver for RTLD_NEXT symbols. This is inline to allow inclusion
 // in test translation units. It aborts if symbol resolution fails.
 template <typename Fn>
@@ -262,6 +276,7 @@ inline void FailNextMalloc([[maybe_unused]] int count = 1) {}
 inline void FailNextMalloc([[maybe_unused]] int expectedSuccessfulAllocs,
                            [[maybe_unused]] int expectedUnsuccessfulAllocs) {}
 inline void FailAllMallocs() {}
+inline void FailCallocsOfAtLeast([[maybe_unused]] std::size_t minSize) {}
 inline void ResetToSysMalloc() {}
 inline void FailNextRealloc([[maybe_unused]] int count = 1) {}
 inline void FailNextRealloc([[maybe_unused]] int expectedSuccessfulAllocs,
@@ -404,7 +419,7 @@ extern "C" void* malloc(size_t size) {
 }
 
 extern "C" void* calloc(size_t nmemb, size_t size) {
-  if (aeronet::test::ShouldFailMalloc()) {
+  if (aeronet::test::ShouldFailMalloc() || aeronet::test::ShouldFailCallocOfSize(nmemb, size)) {
     errno = ENOMEM;
     return nullptr;
   }
