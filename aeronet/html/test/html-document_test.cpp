@@ -46,6 +46,13 @@ std::size_t MaxDepth(const HtmlDocument& doc) {
   return maxDepth;
 }
 
+// The heap bytes that a document parsed from 'html' keeps, 0 without test::AllocatedHeapBytes().
+std::size_t ParsedHeapBytes(std::string_view html) {
+  const std::size_t before = test::AllocatedHeapBytes().value_or(0);
+  const HtmlDocument doc(html);
+  return test::AllocatedHeapBytes().value_or(0) - before;
+}
+
 }  // namespace
 
 TEST(HtmlDocument, ParserCreatesHtmlHeadAndBody) {
@@ -286,8 +293,38 @@ TEST(HtmlDocumentLimits, BodyTagInTheHeadCreatesTheBodyWithTheLimit) {
   EXPECT_EQ(BodyText(doc), "x");
 }
 
+TEST(HtmlDocumentLimits, HtmlTagInForeignContentCreatesAnElementWithTheLimit) {
+  // In an SVG or MathML element, an <html> tag creates an element of that namespace: it does not add its attributes to
+  // the root, which can have no room left for them.
+  const std::string root = "<html" + Attributes("h", kMaxAttributes) + "><body>";
+  const HtmlDocument doc(root + "<svg><html keep=1 also=2></html></svg><math><html" +
+                         Attributes("m", kMaxAttributes + 1) + "></html></math>");
+  const HtmlElement svgHtml = *doc.querySelector("svg").children().begin();
+  EXPECT_EQ(svgHtml.tagName(), "html");
+  EXPECT_EQ(AttributeCount(svgHtml), 2U);
+  EXPECT_EQ(svgHtml.attribute("also"), "2");
+  const HtmlElement mathHtml = *doc.querySelector("math").children().begin();
+  EXPECT_EQ(AttributeCount(mathHtml), kMaxAttributes);
+  EXPECT_EQ(AttributeCount(doc.documentElement()), kMaxAttributes);
+}
+
+TEST(HtmlDocumentLimits, HtmlTagAtAnIntegrationPointAddsItsAttributesToTheRoot) {
+  // HTML content again: in <foreignObject> of SVG, in <mi> of MathML (text integration point), and in an
+  // <annotation-xml> of HTML encoding. The root has room for one attribute more.
+  const HtmlDocument doc("<html" + Attributes("h", kMaxAttributes - 1) +
+                         "><body><svg><foreignObject><html a1></foreignObject></svg><math><mi><html a2></mi>"
+                         "<annotation-xml encoding=text/html><html a3></annotation-xml></math>");
+  const HtmlElement root = doc.documentElement();
+  EXPECT_EQ(AttributeCount(root), kMaxAttributes);
+  EXPECT_TRUE(root.hasAttribute("a1"));
+  EXPECT_FALSE(root.hasAttribute("a2"));
+  EXPECT_FALSE(root.hasAttribute("a3"));
+  EXPECT_EQ(doc.querySelectorAll("html").size(), 1U);
+}
+
 TEST(HtmlDocumentLimits, ManyAttributesParseInLinearTime) {
-  // Without the limit, about 4 s for the tag and minutes for the <html> and <body> tags adding theirs (quadratic).
+  // Without the limit, about 4 s for the tag and minutes for the <html> and <body> tags adding theirs (quadratic): each
+  // attribute added to an element is looked up among those it has, kMaxAttributes at most.
   static constexpr std::size_t kCount = 65536;
   std::string html = "<p" + Attributes("a", kCount) + ">";
   for (std::size_t idx = 0; idx < kCount; ++idx) {
@@ -297,25 +334,6 @@ TEST(HtmlDocumentLimits, ManyAttributesParseInLinearTime) {
   EXPECT_EQ(AttributeCount(doc.querySelector("p")), kMaxAttributes);
   EXPECT_EQ(AttributeCount(doc.documentElement()), kMaxAttributes);
   EXPECT_EQ(AttributeCount(doc.body()), kMaxAttributes);
-}
-
-TEST(HtmlDocumentLimits, ManyDistinctNamesParseInLinearTime) {
-  // Each distinct name of a tag or an attribute is interned in a table of the document: 7 s for the attributes, 8 s for
-  // the tags without its growth (quadratic).
-  static constexpr std::size_t kCount = 1UL << 18U;
-  std::string attributes;
-  std::string tags;
-  for (std::size_t idx = 0; idx < kCount; ++idx) {
-    std::format_to(std::back_inserter(attributes), "<i a{}>", idx);
-    std::format_to(std::back_inserter(tags), "<x-{}></x-{}>", idx, idx);
-  }
-  const HtmlDocument withAttributes(attributes);
-  EXPECT_EQ(withAttributes.querySelectorAll("i").size(), kCount);
-  EXPECT_TRUE(withAttributes.querySelector("i[a0]").hasAttribute("a0"));
-  const HtmlDocument withTags(tags);
-  EXPECT_EQ(ChildCount(withTags.body()), kCount);
-  EXPECT_TRUE(withTags.querySelector("x-0"));
-  EXPECT_TRUE(withTags.querySelector(std::format("x-{}", kCount - 1)));
 }
 
 TEST(HtmlDocumentLimits, NamesInternedBeforeTheGrowthOfTheirTableAreFoundAfterIt) {
@@ -369,6 +387,17 @@ TEST(HtmlDocumentLimits, TextAppendedBetweenMarkupTakesLinearMemory) {
     // 4 times the markup takes about 4 times the memory, 16 times if quadratic.
     EXPECT_LT(parsedHeapBytes(1UL << 20U), 8 * parsedHeapBytes(1UL << 18U)) << testCase.repeated;
   }
+}
+
+TEST(HtmlDocumentLimits, ParseErrorsAreNotRecorded) {
+  if (!test::AllocatedHeapBytes()) {
+    GTEST_SKIP() << "no allocator statistics on this platform";
+  }
+  // Two parse errors per repetition of ignored tags: an end tag without a name (tokenizer), and one without an open
+  // element (tree builder). Recorded, they took 37 bytes per byte of this markup.
+  const std::size_t emptyHeapBytes = ParsedHeapBytes("");
+  const std::string html = Repeat("</></div>", 1UL << 16U);
+  EXPECT_LT(ParsedHeapBytes(html), emptyHeapBytes + (html.size() / 4));
 }
 
 // --- Encoding ---

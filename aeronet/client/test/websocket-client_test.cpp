@@ -85,6 +85,14 @@ namespace {
 using namespace std::chrono_literals;
 using websocket::CloseCode;
 
+// How much earlier than its timeout a poll() can end on the steady clock: Windows ends a wait on a tick of its
+// interrupt time, which lags the steady clock by up to one tick (15.625 ms by default).
+#ifdef AERONET_WINDOWS
+constexpr std::chrono::microseconds kMaxEarlyWakeup{15625};
+#else
+constexpr std::chrono::microseconds kMaxEarlyWakeup{0};
+#endif
+
 test::TestServer ts;
 
 std::string_view AsText(std::span<const std::byte> payload) {
@@ -569,7 +577,7 @@ TEST_F(WebSocketClientTest, ClientWithoutConnectionWaitsTheTimeout) {
   WebSocketClient client;
   const auto before = std::chrono::steady_clock::now();
   EXPECT_EQ(client.poll(20ms), 0U);
-  EXPECT_GE(std::chrono::steady_clock::now() - before, 20ms);
+  EXPECT_GE(std::chrono::steady_clock::now() - before, 20ms - kMaxEarlyWakeup);
 }
 
 TEST_F(WebSocketClientTest, InvalidConfigurationThrows) {
@@ -1240,7 +1248,7 @@ TEST(WebSocketClientScripted, TlsReadWaitingForWritabilityIsRetried) {
   EXPECT_EQ(WebSocketConnectionTest::Interest(cnx), kReadEvents);
   const auto before = std::chrono::steady_clock::now();
   EXPECT_EQ(client.poll(30ms), 1U);  // no busy loop on a writable socket
-  EXPECT_GE(std::chrono::steady_clock::now() - before, 30ms);
+  EXPECT_GE(std::chrono::steady_clock::now() - before, 30ms - kMaxEarlyWakeup);
 
   // The second frame: TLS has to write first again, then the retried read returns the bytes held.
   sendSecond->release();
