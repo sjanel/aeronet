@@ -16,7 +16,7 @@
 #include "aeronet/cctype.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/internal/web-session.hpp"
-#include "aeronet/log-noexcept.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/toupperlower.hpp"
@@ -589,7 +589,7 @@ JSValue Log(JSContext* pCtx, JSValueConst /*self*/, int argc, JSValueConst* argv
   if (text.failed()) {
     return JS_EXCEPTION;
   }
-  log_noexcept::debug("[js {}] {}: {}", Page::Of(pCtx).url(), level.view(), text.view());
+  log::debug("[js {}] {}: {}", Page::Of(pCtx).url(), level.view(), text.view());
   return JS_UNDEFINED;
 }
 

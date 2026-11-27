@@ -26,7 +26,6 @@
 #include <string_view>
 #include <utility>
 
-#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "span-recorder.hpp"
@@ -119,8 +118,8 @@ class OtlpHttpSpanSink final : public SpanBatchSink {
           if (exportResult == ExportResult::kSuccess && pMessage != nullptr) {
             const auto& partialSuccess = static_cast<const ExportTraceServiceResponse*>(pMessage)->partial_success();
             if (partialSuccess.rejected_spans() != 0 || !partialSuccess.error_message().empty()) {
-              log_noexcept::error("OTLP trace export partial success: {} span(s) of {} rejected: '{}'",
-                                  partialSuccess.rejected_spans(), nbSpans, partialSuccess.error_message());
+              log::error("OTLP trace export partial success: {} span(s) of {} rejected: '{}'",
+                         partialSuccess.rejected_spans(), nbSpans, partialSuccess.error_message());
             }
           }
           return true;
@@ -130,7 +129,7 @@ class OtlpHttpSpanSink final : public SpanBatchSink {
     const ExportResult result = _client.Export(_request);
 #endif
     if (result != ExportResult::kSuccess) {
-      log_noexcept::error("OTLP trace export of {} span(s) failed: {}", nbSpans, static_cast<int>(result));
+      log::error("OTLP trace export of {} span(s) failed: {}", nbSpans, static_cast<int>(result));
     }
   }
 

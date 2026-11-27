@@ -4,7 +4,7 @@
 
 ## Logging
 
-aeronet logs through `<aeronet/log.hpp>`. With `AERONET_ENABLE_SPDLOG`, `aeronet::log` is spdlog, with its sinks and formatting. Without it, a small built-in logger with the same calls writes to standard output, with ISO 8601 UTC timestamps at millisecond precision, each line in a single write: the lines logged by concurrent threads do not interleave. Levels are `trace`, `debug`, `info`, `warn`, `error`, and `critical`:
+aeronet logs through `<aeronet/log.hpp>`, with the calls of spdlog: `log::trace()`, `debug()`, `info()`, `warn()`, `error()` and `critical()` take a `std::format` string, checked at compile time, and its arguments (without arguments, the text is written as is), `log::set_level()` and `log::get_level()` the level (`log::level::trace` to `critical`, and `off`):
 
 ```cpp
 #include <aeronet/log.hpp>
@@ -13,7 +13,11 @@ log::set_level(log::level::warn);  // runtime level, process-wide
 log::info("server listening on {}", 8080);
 ```
 
-The library logs failures with their context (connection, file, OpenSSL reason) at `error` or `warn`, lifecycle events at `info`, and per-request details at `debug` and below, which are compiled in but filtered by the level. Keep `info` or `warn` in production. Tests: [log_test.cpp](../../aeronet/tech/test/log_test.cpp).
+A call below the current level costs a load and a comparison (0.2 ns, against 2 ns through spdlog directly), and the calls never throw: a message that cannot be formatted or written (a throwing `std::formatter`, a failed allocation) is dropped, with a line on standard error.
+
+With `AERONET_ENABLE_SPDLOG`, the messages are written by the default logger of spdlog, with its sinks and pattern. `log::set_level()` also sets the level of the spdlog loggers, but a level set through spdlog only does not change which messages aeronet writes. spdlog is compiled into `aeronet_tech` only: `<aeronet/log.hpp>` does not include it. Without it, a small built-in logger writes to standard output, with ISO 8601 UTC timestamps at millisecond precision, each line in a single write: the lines logged by concurrent threads do not interleave.
+
+The library logs failures with their context (connection, file, OpenSSL reason) at `error` or `warn`, lifecycle events at `info`, and per-request details at `debug` and below, which are compiled in but filtered by the level. Keep `info` or `warn` in production. Tests: [log_test.cpp](../../aeronet/tech/test/log_test.cpp), benchmark: [log_bench.cpp](../../benchmarks/internal/log_bench.cpp).
 
 ### Access log
 

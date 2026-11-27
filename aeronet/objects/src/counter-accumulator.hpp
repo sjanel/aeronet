@@ -8,7 +8,7 @@
 
 #include "aeronet/city-hash.hpp"
 #include "aeronet/flat-hash-map.hpp"
-#include "aeronet/log-noexcept.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/metric-label.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/vector.hpp"
@@ -28,7 +28,7 @@ class CounterAccumulator {
       _labels.reserve(static_cast<decltype(_labels)::size_type>(labels.size()));
       _counters.emplace(BuildMetricKey(name, labels, _keyScratch), uint64_t{0}).first->second += delta;
     } catch (const std::exception& ex) {
-      log_noexcept::error("Unable to record counter '{}': {}", name, ex.what());
+      log::error("Unable to record counter '{}': {}", name, ex.what());
     }
   }
 

@@ -11,7 +11,7 @@
 #include <string_view>
 #include <utility>
 
-#include "aeronet/log-noexcept.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -319,8 +319,8 @@ bool SpanRecorder::tryHandoff() noexcept {
 
 void SpanRecorder::logDroppedSpans() noexcept {
   if (_nbDroppedSpans != 0) {
-    log_noexcept::warn("{} spans dropped: the trace exporter could not keep up with {} queued spans", _nbDroppedSpans,
-                       kMaxQueuedSpans);
+    log::warn("{} spans dropped: the trace exporter could not keep up with {} queued spans", _nbDroppedSpans,
+              kMaxQueuedSpans);
     _nbDroppedSpans = 0;
   }
 }

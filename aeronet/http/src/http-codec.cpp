@@ -667,8 +667,6 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
       if (result.hasError()) {
         return ConvertEncoderResultErrorToCompressResponseResult(result);
       }
-      // TODO: abort compression if compression ratio of first chunk is catastrophic?
-      // Pre-sizing based on historical compression ratio per route?
       totalCompSize += result.writtenIfNoError();
       assert(totalCompSize <= maxCompressedBytes);
       // The rest of a chunk not consumed for lack of output room starts the next one, with more room.
@@ -679,11 +677,11 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
     const auto endChunkSz = encoder->endChunkSize();
     while (true) {
       ensureEnoughCapacity(endChunkSz);
-      const auto result = encoder->end(totalCompCapa - totalCompSize, pCompBody + totalCompSize);
+      const EncoderResult result = encoder->end(totalCompCapa - totalCompSize, pCompBody + totalCompSize);
       if (result.hasError()) {
         return ConvertEncoderResultErrorToCompressResponseResult(result);
       }
-      const auto written = result.writtenIfNoError();
+      const std::size_t written = result.writtenIfNoError();
       if (written == 0) {
         // compression finished, we can proceed with this compressed body (meets compression ratio requirement)
         break;
