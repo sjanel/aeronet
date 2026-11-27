@@ -2181,15 +2181,17 @@ TEST(WebSocketClientScripted, AsyncResolutionFailureAndCancel) {
     EXPECT_EQ(events.handshakeError, HttpClientErrc::connectFailed);
   }
   {
-    const test::GetAddrInfoDelayGuard delay(200);
+    const test::GetAddrInfoHold hold;
     WebSocketClient client(PlainConfig());
     Events events;
     WebSocketConnection& cnx = client.connectAsync("ws://localhost:1/", kRecording, &events);
-    EXPECT_EQ(client.poll(0ms), 1U);    // its host is being resolved
-    std::this_thread::sleep_for(50ms);  // by the thread of the resolver: the resolution cannot be cancelled anymore
+    EXPECT_EQ(client.poll(0ms), 1U);  // its host is being resolved
+    // By the thread of the resolver: the resolution cannot be cancelled anymore.
+    ASSERT_TRUE(test::WaitForHeldGetAddrInfoCalls(1));
     EXPECT_TRUE(cnx.close());
     EXPECT_EQ(client.poll(0ms), 0U);
     // The resolution completes later, waking poll() up: ignored.
+    test::ReleaseGetAddrInfoCalls();
     const auto start = std::chrono::steady_clock::now();
     EXPECT_EQ(client.poll(10s), 0U);
     EXPECT_LT(std::chrono::steady_clock::now() - start, 5s);
@@ -2198,14 +2200,18 @@ TEST(WebSocketClientScripted, AsyncResolutionFailureAndCancel) {
   {
     // The handshake times out while its host is being resolved, a connect failure as for a regular request: the late
     // resolution is ignored.
-    const test::GetAddrInfoDelayGuard delay(300);
+    const test::GetAddrInfoHold hold;
     HttpClientConfig httpConfig;
     httpConfig.connectTimeout = 50ms;
     WebSocketClient client(PlainConfig(), httpConfig);
     Events events;
     client.connectAsync("ws://localhost:1/", kRecording, &events);
+    EXPECT_EQ(client.poll(0ms), 1U);  // its host is being resolved
+    // Taken by the thread of the resolver before the timeout, which would otherwise drop it from the queue.
+    ASSERT_TRUE(test::WaitForHeldGetAddrInfoCalls(1));
     ASSERT_TRUE(PollUntil(client, [&client] { return client.nbConnections() == 0; }));
     EXPECT_EQ(events.handshakeError, HttpClientErrc::connectFailed);
+    test::ReleaseGetAddrInfoCalls();
     const auto start = std::chrono::steady_clock::now();
     EXPECT_EQ(client.poll(10s), 0U);  // woken up by the resolution
     EXPECT_LT(std::chrono::steady_clock::now() - start, 5s);

@@ -147,17 +147,19 @@ TEST(HostResolverTest, MoreResolutionsThanThreads) {
 TEST(HostResolverTest, CancelDropsQueuedResolutions) {
   EventFd wakeupFd;
   HostResolver resolver(wakeupFd);
-  test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(200);
+  const test::GetAddrInfoHold hold;
   vector<std::shared_ptr<HostResolution>> pendings;
   for (uint32_t idx = 0; idx < HostResolver::kMaxThreads + 2U; ++idx) {
     pendings.push_back(MakeResolution("localhost", idx));
     resolver.resolve(pendings.back());
   }
-  std::this_thread::sleep_for(50ms);  // the first ones are being resolved: the last two wait in the queue
+  // The first ones are being resolved: the last two wait in the queue.
+  ASSERT_TRUE(test::WaitForHeldGetAddrInfoCalls(HostResolver::kMaxThreads));
   resolver.cancel(*pendings[HostResolver::kMaxThreads]);
   resolver.cancel(*pendings[HostResolver::kMaxThreads + 1U]);
   // A resolution in progress is not interrupted.
   resolver.cancel(*pendings.front());
+  test::ReleaseGetAddrInfoCalls();
 
   const auto resolved = WaitForResolved(resolver, pendings.size(), 1500ms);
   EXPECT_EQ(resolved.size(), static_cast<std::size_t>(HostResolver::kMaxThreads));
