@@ -13,7 +13,7 @@ The most important changes. Upgrade especially if one of these applies to you:
 - **Crashes and freezes**: route timeouts during deferred work or on a stalled HTTP/2 connection, an invalid `Origin`, a file shrinking while sent, a failing `epoll_wait()` and large chunked uploads.
 - **Corrupted response framing**: streamed bodies not matching `contentLength()`, bodies sent with `204`, `304` or a `HEAD` error, and large incompressible bodies truncated by br and zstd.
 - **HTTP/2**: several `Http2Config` settings were ignored, and many frame sequences desynchronized HPACK, failing the whole connection.
-- **Performance and memory**: no more 40 ms delayed acknowledgments over TLS, a third of the memory for idle TLS connections, bounded br encoder memory, br compressing at quality 4 by default (11 was 100 to 400 times slower), HTTP/2 requests 8 to 23% cheaper.
+- **Performance and memory**: no more 40 ms delayed acknowledgments over TLS, a third of the memory for idle TLS connections, bounded br encoder memory, br compressing at quality 4 by default (11 was 100 to 400 times slower), HTTP/2 requests 8 to 23% cheaper, OpenTelemetry spans recorded by aeronet itself (18 times cheaper, without allocation).
 - **Packaging**: installed packages (CMake install, vcpkg, Conan) now work for their consumers.
 
 ### 1.8.0 Breaking changes
@@ -29,6 +29,7 @@ The most important changes. Upgrade especially if one of these applies to you:
 - **A directory with an index file is redirected to its URL with a slash** (`/docs` to `/docs/`, `301`). See [Mapping paths to files](guides/static-files.md#mapping-paths-to-files).
 - **HTTP/1.0 requests are answered with an `HTTP/1.1` status line** (RFC 9110 §2.5) and an explicit `Connection` header. See [Connections](reference/http-conformance.md#connections).
 - **Compressed responses carry a weak `ETag`** (`W/"v1"`), still matched by `If-None-Match`, and **`206` responses are never compressed** (`status(206)` on a directly compressed body throws `std::logic_error`). See [Entity tags](guides/compression.md#entity-tags).
+- **Spans are recorded and exported by aeronet**, no longer by the trace SDK of opentelemetry-cpp, whose resource, OTLP HTTP client and `OTEL_EXPORTER_OTLP_TRACES_*` variables still apply. The `OTEL_BSP_*` variables no longer do: batches of 512 spans, at most 2048 waiting while the exporter is busy, `exportInterval` unchanged, and the dropped spans counted in one warning per batch instead of one per span. Traces are always sent in protobuf (an `http/json` `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` is ignored with a warning), the `OTEL_SPAN_*` limits no longer apply (aeronet sets at most 8 attributes per span), an attribute value that is not valid UTF-8 is sent as bytes with every opentelemetry-cpp version, and the destruction of the server exports the spans of its requests still in progress (they were dropped). See [Spans](operations/observability.md#spans).
 - **WebSocket `onClose` also reports the connections closed without closing handshake** (`AbnormalClosure`, 1006): each connection ends with exactly one call of `onClose` or `onError`, so the state that the callbacks refer to must outlive the connections of the server. See [Callbacks](protocols/websocket.md#callbacks).
 
 #### API
@@ -40,6 +41,7 @@ The most important changes. Upgrade especially if one of these applies to you:
 - **API that depends on a feature**: the TLS configuration of `HttpServerConfig` (`tls`, `withTls*()`, `withoutTls()`) only exists with `AERONET_ENABLE_OPENSSL` (a build without OpenSSL served a configured TLS listener in clear text), `TLSConfig` and `TLSInfo` moving to `aeronet_tls`, and the WebSocket compression API (`WebSocketConfig::deflateConfig`, `DeflateConfig`, `enableCompression()`...) with `AERONET_ENABLE_ZLIB`. Include paths are unchanged. See [TLS](protocols/tls.md).
 - **`WebSocketConfig` moved to `aeronet/websocket-config.hpp`** (still included by `websocket-handler.hpp`), and **`upgrade::IsSameOriginRequest()` takes whether the connection uses TLS**.
 - **32-bit targets are rejected** at configure time and by a `static_assert`: they never worked in practice. See [64-bit targets only](getting-started/install.md#64-bit-targets-only).
+- **`tracing::SpanPtr` is `std::unique_ptr<Span, SpanRecycler>`**, whose deleter calls the new `Span::recycle()` instead of `delete`: a `Span` implementation of your own (a test double) implements it, as `delete this`. Each span must be released (its `SpanPtr` destroyed or reset) before its `TelemetryContext` is destroyed or assigned. See [Spans](operations/observability.md#spans).
 - **The `http.request` span no longer has the `http.duration_us` attribute**: its duration is the one of the span. See [Built-in instrumentation](operations/observability.md#built-in-instrumentation).
 
 ### 1.8.0 New features
@@ -123,7 +125,7 @@ The most important changes. Upgrade especially if one of these applies to you:
 
 - **TLS**: a read that drains the socket no longer tries it again (one system call less per request, 5.6% more requests per second over user-space TLS), writes no longer stop after the first 16 KiB record, and idle connections release the buffers of OpenSSL after `TLSConfig::idleBufferReleaseDelay` (1 s): 100,000 idle HTTP/1.1 connections take 1.6 GB of heap instead of 4.9 GB. See [TLS record I/O](protocols/tls.md#tls-record-io) and [Memory of idle connections](protocols/tls.md#memory-of-idle-connections).
 - **Fewer system calls**: `TCP_NODELAY` is set once on the listening socket (Linux), and `HttpClient` waits for the response before reading (4 system calls per pooled plaintext request instead of 5).
-- **Unsampled spans cost nothing**: `TelemetryConfig::sampleRate` is applied before a span is created, so that an unsampled request makes no allocation nor OpenTelemetry SDK call. `validate()` rejects a NaN `sampleRate`. See [OpenTelemetry and DogStatsD](operations/observability.md#opentelemetry-and-dogstatsd).
+- **Spans**: aeronet encodes them in OTLP as they are made, in reused records: a sampled `http.request` span costs 90 ns and no allocation on the event loop once warm (1.65 µs and 35 allocations through the trace SDK of opentelemetry-cpp), and its export 0.2 allocations instead of 26 (Release, protobuf 3.21). `TelemetryConfig::sampleRate` is applied before a span is created: an unsampled request costs nothing. `validate()` rejects a NaN `sampleRate`. See [Spans](operations/observability.md#spans).
 - **Async handlers**: 3 allocations per request completing right away instead of 5, and no quadratic time on pipelined requests. `RequestTask<T>` results need not be default constructible. See [Performance](guides/async-handlers.md#performance).
 - **HTTP/2**: HPACK Huffman coding 2 to 3 times faster and cheaper header validation, lookups and storage (8 to 10% fewer server cycles per request, 16 to 23% with 12 to 24 repeated fields), small DATA payloads written with their frame header (7% less server CPU on batches of small responses), and `HttpClient` sends `:path` without HPACK indexing, like nghttp2 and Chromium (26 to 55% less encoding time with distinct paths; `Http2Config::indexRequestPath` restores it for repeated paths). See [HTTP/2](protocols/http2.md) and [HTTP/2 client](modules/http-client.md#http2).
 
@@ -132,6 +134,7 @@ The most important changes. Upgrade especially if one of these applies to you:
 - **Bumped zlib from 1.3.2 to 1.4** (downloaded with `AERONET_ENABLE_ZLIBNG=OFF`; its security fixes concern functions aeronet does not use), and **zstd from 1.5.7 to 1.6.0** (streaming decompression of malformed data no longer exposes uninitialized memory, a failing custom allocator no longer crashes). The Conan recipe keeps `zlib/[~1.3]` and `zstd/[~1.5]` until ConanCenter provides them.
 - **Bumped amc from 2.7.0 to 2.8.1**: an allocation failure in `shrink_to_fit()` (periodic trimming, `HttpClient::releaseUnusedMemory()`) now throws `std::bad_alloc` instead of terminating the process.
 - `fullVersionStringView()` / `fullVersionWithRuntime()` report the OpenTelemetry version and the compile-time features.
+- **opentelemetry-cpp**: aeronet no longer links its trace SDK, its OTLP span exporter and its ostream span exporter.
 
 ## [1.7.0] - 2026-10-26
 

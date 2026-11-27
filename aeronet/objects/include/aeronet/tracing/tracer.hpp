@@ -12,11 +12,11 @@
 
 namespace aeronet::tracing {
 
-// Minimal, header-only tracing facade.
-// By default this is a no-op implementation. When building with
-// -D AERONET_ENABLE_OPENTELEMETRY=ON and linking opentelemetry-cpp, an
-// implementation can be provided that forwards to the SDK.
+// Minimal tracing facade.
+// Without -D AERONET_ENABLE_OPENTELEMETRY=ON, TelemetryContext makes no span. With it, aeronet records the spans itself
+// and exports them in OTLP to the configured endpoint.
 
+// A span, made by TelemetryContext::createSpan() and owned by a SpanPtr, which recycles it instead of deleting it.
 struct Span {
   virtual ~Span() = default;
 
@@ -24,10 +24,21 @@ struct Span {
 
   virtual void setAttribute([[maybe_unused]] std::string_view key, [[maybe_unused]] std::string_view val) noexcept = 0;
 
+  // Ends the span. Later calls of end() and setAttribute() are ignored.
   virtual void end() noexcept = 0;
+
+  // Called by SpanPtr instead of delete: releases the span, which the implementation may reuse (a span of
+  // TelemetryContext returns to its pool, ended first if it was not). An implementation of its own may simply
+  // 'delete this'.
+  virtual void recycle() noexcept = 0;
 };
 
-using SpanPtr = std::unique_ptr<Span>;
+// The deleter of SpanPtr: an empty type, a SpanPtr stays the size of a pointer.
+struct SpanRecycler {
+  void operator()(Span* pSpan) const noexcept { pSpan->recycle(); }
+};
+
+using SpanPtr = std::unique_ptr<Span, SpanRecycler>;
 
 // RAII scope helper that ends span at destruction if not already ended.
 struct SpanRAII {
@@ -51,8 +62,8 @@ struct SpanRAII {
 class TelemetryContextImpl;
 
 // Telemetry context - one per thread (client / SingleHttpServer) instance.
-// Encapsulates OpenTelemetry TracerProvider and MeterProvider.
-// No global singletons - each instance is independent.
+// Encapsulates the span recorder and its exporter thread, the OpenTelemetry MeterProvider and DogStatsD.
+// No global singletons - each instance is independent. Not thread-safe: used by the thread of its owner only.
 class TelemetryContext {
  public:
   TelemetryContext() noexcept;
@@ -68,7 +79,10 @@ class TelemetryContext {
 
   ~TelemetryContext();
 
-  // Create a span with given name. Returns nullptr if tracing disabled/failed.
+  // Create a span with given name. Returns nullptr if tracing disabled or the span is not sampled.
+  // Its spans are exported in batches of 512 (or every exportInterval, see flush()) by a thread of the context. While
+  // that thread is busy, up to 2048 ended spans wait; the next ones are dropped (and counted in a warning).
+  // Each span must be released (its SpanPtr destroyed or reset) before the context is destroyed or assigned.
   [[nodiscard]] SpanPtr createSpan(std::string_view name) const noexcept;
 
   // Whether tracing or metrics are enabled for this context.
@@ -96,7 +110,8 @@ class TelemetryContext {
   // Record a timing value with per-measurement labels. No-op if metrics disabled/failed.
   void timing(std::string_view name, std::chrono::milliseconds ms, MetricLabels labels) const noexcept;
 
-  // Exports the counters summed since the last flush, and sends the buffered DogStatsD metrics.
+  // Exports the counters summed since the last flush, and sends the buffered DogStatsD metrics. Hands the ended spans
+  // to the exporter thread when exportInterval has passed since the last batch.
   // SingleHttpServer flushes its context at each maintenance tick, and HttpClient after each request: flush a context
   // of your own periodically. The destructor flushes too.
   void flush() const noexcept;

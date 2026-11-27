@@ -104,15 +104,13 @@ endmacro()
 function(_aeronet_resolve_opentelemetry_targets from_package missing_var)
   # <library>[:<EXPORT_NAME> when it differs]. Each library comes before the ones it uses: CMake keeps this order on the
   # link line where the package does not declare the dependency, which the Conan one omits for some (metrics on common).
+  # Not the trace SDK nor the span exporters: aeronet records its spans itself, and sends them with the OTLP HTTP client.
   set(_libraries
-    exporter_otlp_http:otlp_http_exporter
     exporter_otlp_http_metric:otlp_http_metric_exporter
-    exporter_ostream_span:ostream_span_exporter
     exporter_otlp_http_client:otlp_http_client
     http_client_curl
     otlp_recordable
     proto
-    trace
     metrics
     logs
     resources

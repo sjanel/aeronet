@@ -72,9 +72,9 @@ ServerContext::ServerContext(ServerContext&& other) noexcept
       eventLoop(std::move(other.eventLoop)),
       lifecycle(std::move(other.lifecycle)),
       router(std::move(other.router)),
+      telemetry(std::move(other.telemetry)),
       connections(std::move(other.connections)),
       sharedBuffers(std::move(other.sharedBuffers)),
-      telemetry(std::move(other.telemetry)),
       io(std::move(other.io)),
       maintenance(std::move(other.maintenance)),
       http1(std::move(other.http1))
@@ -104,6 +104,7 @@ ServerContext& ServerContext::operator=(ServerContext&& other) noexcept {
     eventLoop = std::move(other.eventLoop);
     lifecycle = std::move(other.lifecycle);
     router = std::move(other.router);
+    // The connections before the telemetry: the old connections, holding spans of the old context, go first.
     connections = std::move(other.connections);
     sharedBuffers = std::move(other.sharedBuffers);
     telemetry = std::move(other.telemetry);

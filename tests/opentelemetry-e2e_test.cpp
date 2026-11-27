@@ -11,6 +11,7 @@
 #include <ws2tcpip.h>
 #endif
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <exception>
@@ -23,10 +24,12 @@
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/metric-label.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/otlp_test_collector.hpp"
+#include "aeronet/scoped-env-var.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -261,6 +264,76 @@ TEST(OpenTelemetryEndToEnd, EmitsTracesAndMetrics) {
   }
 }
 
+// aeronet gives its encoded spans to the OTLP HTTP client of opentelemetry-cpp as bytes, which its JSON conversion
+// would skip: the traces are sent in protobuf whatever the protocol asked by the environment.
+TEST(OpenTelemetryEndToEnd, TracesAreSentInProtobufWhenJsonIsAsked) {
+  const test::ScopedEnvVar tracesProtocol("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/json");
+  test::OtlpTestCollector collector;
+
+  TelemetryConfig telemetryCfg;
+  telemetryCfg.otelEnabled = true;
+  telemetryCfg.withEndpoint(collector.endpointForTraces());
+  telemetryCfg.withServiceName("aeronet-e2e-json");
+  telemetryCfg.exportInterval = 50ms;
+  telemetryCfg.exportTimeout = 49ms;
+
+  HttpServerConfig serverCfg;
+  serverCfg.withTelemetryConfig(telemetryCfg);
+  serverCfg.enableKeepAlive = false;
+
+  test::TestServer server(serverCfg);
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("otel-ok"); });
+  EXPECT_TRUE(test::simpleGet(server.port(), "/otel").contains("otel-ok"));
+
+  test::CapturedOtlpRequest traceReq;
+  const auto deadline = std::chrono::steady_clock::now() + 3s;
+  while (traceReq.path.empty() && std::chrono::steady_clock::now() < deadline) {
+    try {
+      auto req = collector.waitForRequest(500ms);
+      if (req.path == "/v1/traces") {
+        traceReq = std::move(req);
+      }
+    } catch (const std::exception&) {
+      log::error("timed out waiting for a single request; loop and check overall deadline");
+    }
+  }
+  ASSERT_EQ(traceReq.path, "/v1/traces") << "Trace export not captured";
+  EXPECT_EQ(traceReq.headerValue("content-type"), "application/x-protobuf");
+  ::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest traceProto;
+  ASSERT_TRUE(traceProto.ParseFromString(traceReq.body));
+  EXPECT_TRUE(SpansContainHttpRequest(traceProto));
+  EXPECT_TRUE(ResourceContainsService(traceProto, "aeronet-e2e-json"));
+}
+
+// A collector rejecting some spans answers with a partial success, logged by the exporter.
+TEST(OpenTelemetryEndToEnd, TraceExportPartialSuccess) {
+  ::opentelemetry::proto::collector::trace::v1::ExportTraceServiceResponse partialSuccess;
+  partialSuccess.mutable_partial_success()->set_rejected_spans(1);
+  partialSuccess.mutable_partial_success()->set_error_message("rejected by the test collector");
+  std::atomic<int> nbTraceExports{0};
+  test::TestServer collector(HttpServerConfig{});
+  collector.router().setDefault(
+      [response = partialSuccess.SerializeAsString(), &nbTraceExports](const HttpRequestView& req) {
+        if (req.path() == "/v1/traces") {
+          nbTraceExports.fetch_add(1);
+        }
+        return HttpResponse(http::StatusCodeOK, std::string_view{response}, "application/x-protobuf");
+      });
+
+  TelemetryConfig telemetryCfg;
+  telemetryCfg.otelEnabled = true;
+  telemetryCfg.withEndpoint("http://127.0.0.1:" + std::to_string(collector.port()) + "/v1/traces");
+  {
+    HttpServerConfig serverCfg;
+    serverCfg.withTelemetryConfig(telemetryCfg);
+    serverCfg.enableKeepAlive = false;
+    test::TestServer server(serverCfg);
+    server.router().setDefault([](const HttpRequestView&) { return HttpResponse("otel-ok"); });
+    EXPECT_TRUE(test::simpleGet(server.port(), "/otel").contains("otel-ok"));
+  }  // The destruction of the server exports its span.
+  EXPECT_EQ(nbTraceExports.load(), 1);
+}
+
 TEST(OpenTelemetryEndToEnd, EmitsPerMeasurementLabels) {
   test::OtlpTestCollector collector;
 
@@ -492,6 +565,7 @@ TEST(OpenTelemetryEndToEnd, OneSpanPerRequestWhateverTheReadsOfItsHead) {
       }
     } catch (const std::exception&) {
       // Periodic exports are asynchronous: keep polling until the deadline.
+      log::error("timed out waiting for a single request; loop and check overall deadline");
     }
   }
   EXPECT_EQ(nbRequestSpans, 1);

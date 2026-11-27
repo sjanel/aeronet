@@ -142,10 +142,11 @@ struct ServerContext {
   Lifecycle lifecycle;
   DateHeaderCache dateHeader;
   Router router;
+  // Telemetry context - one per SingleHttpServer instance (no global singletons). Declared before the connections,
+  // whose requests hold its spans: they are destroyed first.
+  tracing::TelemetryContext telemetry;
   ConnectionStorage connections;
   SharedBuffers sharedBuffers;
-  // Telemetry context - one per SingleHttpServer instance (no global singletons)
-  tracing::TelemetryContext telemetry;
   // Structured access log writer - one per event-loop thread.
   AccessLogWriter accessLog;
   // CONNECT tunnels: created by the first CONNECT request of a run, and destroyed when the event loop stops (always

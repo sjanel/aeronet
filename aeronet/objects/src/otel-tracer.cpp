@@ -1,6 +1,6 @@
 #include <opentelemetry/nostd/shared_ptr.h>
-#include <opentelemetry/sdk/trace/processor.h>
-#include <opentelemetry/trace/tracer.h>
+#include <opentelemetry/nostd/string_view.h>
+#include <opentelemetry/sdk/resource/resource.h>
 
 #include <cassert>
 #include <chrono>
@@ -20,35 +20,9 @@
 #include "aeronet/tracing/tracer.hpp"
 #include "counter-accumulator.hpp"
 #include "dogstatsd-metrics.hpp"
+#include "otlp-span-export.hpp"
+#include "span-recorder.hpp"
 #include "span-sampler.hpp"
-
-// Detect SDK and processor support
-#if __has_include( \
-    <opentelemetry/sdk/trace/tracer_provider.h>) && __has_include(<opentelemetry/sdk/trace/batch_span_processor.h>)
-#define AERONET_HAVE_OTEL_SDK 1
-#include <opentelemetry/sdk/resource/resource.h>
-#include <opentelemetry/sdk/trace/batch_span_processor.h>
-#include <opentelemetry/sdk/trace/batch_span_processor_options.h>
-#include <opentelemetry/sdk/trace/sampler.h>
-#include <opentelemetry/sdk/trace/samplers/always_on.h>
-#include <opentelemetry/sdk/trace/tracer_provider.h>
-#include <opentelemetry/trace/span.h>
-#include <opentelemetry/trace/tracer_provider.h>
-
-#endif
-
-// Prefer OTLP HTTP exporter (requires curl client). Fallback to ostream exporter.
-#if __has_include( \
-    <opentelemetry/exporters/otlp/otlp_http_exporter.h>) && __has_include(<opentelemetry/ext/http/client/http_client.h>)
-#define AERONET_HAVE_OTLP_HTTP 1
-#include <opentelemetry/exporters/otlp/otlp_environment.h>
-#include <opentelemetry/exporters/otlp/otlp_http_exporter.h>
-#include <opentelemetry/exporters/otlp/otlp_http_exporter_options.h>
-#include <opentelemetry/sdk/trace/exporter.h>
-#elif __has_include(<opentelemetry/exporters/ostream/span_exporter.h>)
-#define AERONET_HAVE_OSTREAM_EXPORTER 1
-#include <opentelemetry/exporters/ostream/span_exporter.h>
-#endif
 
 // Detect metrics SDK support for MeterProvider
 #if __has_include(<opentelemetry/sdk/metrics/meter_provider.h>)
@@ -88,25 +62,9 @@
 
 namespace aeronet::tracing {
 
-#ifdef AERONET_HAVE_OTEL_SDK
-
 namespace {
 
-namespace {
 inline auto OtelSv(std::string_view sv) { return opentelemetry::nostd::string_view(sv.data(), sv.size()); }
-}  // namespace
-
-#if defined(AERONET_HAVE_OTLP_HTTP) || defined(AERONET_HAVE_OTLP_METRICS)
-opentelemetry::exporter::otlp::OtlpHeaders buildOtlpHeaders(const TelemetryConfig& cfg) {
-  opentelemetry::exporter::otlp::OtlpHeaders headers;
-  // The HTTP headers are stored as 'name:value' strings.
-  for (auto header : cfg.httpHeadersRange()) {
-    const auto colonPos = header.find(':');
-    headers.emplace(std::string(header.substr(0, colonPos)), std::string(header.substr(colonPos + 1)));
-  }
-  return headers;
-}
-#endif
 
 opentelemetry::sdk::resource::Resource buildTelemetryResource(const TelemetryConfig& cfg) {
   if (cfg.serviceName().empty()) {
@@ -126,25 +84,7 @@ using OtelGauge = opentelemetry::metrics::UpDownCounter<int64_t>;
 #endif
 #endif
 
-// OpenTelemetry Span implementation
-class OtelSpan final : public Span {
- public:
-  explicit OtelSpan(opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> span) noexcept
-      : _span(std::move(span)) {}
-
-  void setAttribute(std::string_view key, int64_t val) noexcept override { _span->SetAttribute(OtelSv(key), val); }
-
-  void setAttribute(std::string_view key, std::string_view val) noexcept override {
-    _span->SetAttribute(OtelSv(key), OtelSv(val));
-  }
-
-  void end() noexcept override { _span->End(); }
-
- private:
-  opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> _span;
-};
-
-// Seed of the span sampler: the samplers of the servers of a process draw different sequences.
+// Seed of the span sampler and of the span ids: the contexts of a process draw different sequences.
 uint64_t RandomSeed() {
   std::random_device randomDevice;
   return (static_cast<uint64_t>(randomDevice()) << 32U) ^ randomDevice();
@@ -187,6 +127,9 @@ class TelemetryContextImpl {
       _dogstatsd.increment(name, delta, labels);
     });
     _dogstatsd.flush();
+    if (_spanRecorder) {
+      _spanRecorder->flush();
+    }
   }
 
 #ifdef AERONET_HAVE_METRICS_SDK
@@ -250,9 +193,7 @@ class TelemetryContextImpl {
   }
 #endif
 
-  opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider> _tracerProvider;
-  opentelemetry::nostd::shared_ptr<opentelemetry::trace::Tracer> _tracer;
-  // Applies TelemetryConfig::sampleRate before the SDK is called (whose sampler records all the spans it gets).
+  // Applies TelemetryConfig::sampleRate before a span is created.
   detail::SpanSampler _spanSampler;
 
 #ifdef AERONET_HAVE_METRICS_SDK
@@ -271,6 +212,9 @@ class TelemetryContextImpl {
 
   detail::CounterAccumulator _pendingCounters;
   detail::DogStatsdMetrics _dogstatsd;
+  // The spans, recorded and exported by aeronet, null when OpenTelemetry is disabled. Last: destroyed first, it exports
+  // its last spans.
+  std::unique_ptr<detail::SpanRecorder> _spanRecorder;
 };
 
 TelemetryContext::TelemetryContext() noexcept = default;
@@ -288,46 +232,11 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) {
 
   const auto telemetryResource = buildTelemetryResource(cfg);
 
-  // Build trace exporter
-#ifdef AERONET_HAVE_OTLP_HTTP
-  opentelemetry::exporter::otlp::OtlpHttpExporterOptions opts;
-  if (cfg.endpoint().empty()) {
-    log::warn("OTLP endpoint is empty; using default endpoint from environment or SDK defaults");
-  } else {
-    opts.url = cfg.endpoint();
-    log::info("Initializing OTLP HTTP trace exporter with endpoint: {}", cfg.endpoint());
-  }
-  opts.http_headers = buildOtlpHeaders(cfg);
-  auto exporter = std::unique_ptr<opentelemetry::sdk::trace::SpanExporter>(
-      new opentelemetry::exporter::otlp::OtlpHttpExporter(std::move(opts)));  // NOLINT(performance-move-const-arg)
-#elifdef AERONET_HAVE_OSTREAM_EXPORTER
-  log::info("Initializing ostream trace exporter (OTLP not available)");
-  auto exporter = std::unique_ptr<opentelemetry::sdk::trace::SpanExporter>(
-      new opentelemetry::exporter::trace::OStreamSpanExporter());
-#else
-#error "No trace exporter available - neither OTLP HTTP nor ostream exporter found"
-#endif
-
-  // Spans end on the event loop thread: they must not be exported there. A SimpleSpanProcessor exports each span
-  // synchronously when it ends, stalling the whole event loop for a collector round trip, and up to the exporter
-  // timeout when the collector is slow or unreachable. The batch processor only queues the ended span; its own thread
-  // exports the queued spans every exportInterval (or as soon as a batch is full).
-  opentelemetry::sdk::trace::BatchSpanProcessorOptions batchOpts;
-  batchOpts.schedule_delay_millis = cfg.exportInterval;
-  auto processor = std::unique_ptr<opentelemetry::sdk::trace::SpanProcessor>(
-      new opentelemetry::sdk::trace::BatchSpanProcessor(std::move(exporter), batchOpts));
-
-  // Create provider - NO global singleton, keep it in this instance. The spans are sampled before being started (see
-  // TelemetryContextImpl::_spanSampler): the SDK records all those it gets. Its trace id ratio sampler would start each
-  // unsampled span anyway (an allocation for a span that does nothing), and aeronet's attributes on it.
-  auto sampler = std::unique_ptr<opentelemetry::sdk::trace::Sampler>(new opentelemetry::sdk::trace::AlwaysOnSampler());
-
-  ctx._tracerProvider = opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider>(
-      new opentelemetry::sdk::trace::TracerProvider(std::move(processor), telemetryResource, std::move(sampler)));
-
-  // Get tracer from this provider (NOT from global)
-  ctx._tracer = ctx._tracerProvider->GetTracer("aeronet", AERONET_VERSION_STR);
-  assert(ctx._tracer != nullptr);
+  // Spans end on the event loop thread: they must not be exported there. The recorder only appends an ended span to
+  // its batch, exported by its own thread as soon as the batch is full, or at a flush() once exportInterval passed.
+  ctx._spanRecorder = std::make_unique<detail::SpanRecorder>(detail::MakeOtlpHttpSpanSink(cfg),
+                                                             detail::MakeOtlpSpanBatchHeader(telemetryResource),
+                                                             cfg.exportInterval, RandomSeed());
 
   // Initialize metrics provider if SDK available
 #if defined(AERONET_HAVE_METRICS_SDK) && defined(AERONET_HAVE_OTLP_METRICS)
@@ -348,7 +257,7 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) {
     metricOpts.url = std::move(endpoint);
   }
 
-  metricOpts.http_headers = buildOtlpHeaders(cfg);
+  metricOpts.http_headers = detail::MakeOtlpHeaders(cfg);
 
   auto metricExporter = std::unique_ptr<opentelemetry::sdk::metrics::PushMetricExporter>(
       new opentelemetry::exporter::otlp::OtlpHttpMetricExporter(
@@ -403,10 +312,10 @@ TelemetryContext::TelemetryContext(TelemetryContext&&) noexcept = default;
 TelemetryContext& TelemetryContext::operator=(TelemetryContext&&) noexcept = default;
 
 SpanPtr TelemetryContext::createSpan(std::string_view name) const noexcept {
-  if (!_impl || !_impl->_tracer || !_impl->_spanSampler.sample()) {
+  if (!_impl || !_impl->_spanRecorder || !_impl->_spanSampler.sample()) {
     return nullptr;
   }
-  return std::make_unique<OtelSpan>(_impl->_tracer->StartSpan(OtelSv(name)));
+  return _impl->_spanRecorder->createSpan(name);
 }
 
 void TelemetryContext::counterAdd(std::string_view name, uint64_t delta, MetricLabels labels) const noexcept {
@@ -478,7 +387,5 @@ void TelemetryContext::timing(std::string_view name, std::chrono::milliseconds m
 DogStatsD* TelemetryContext::dogstatsdClient() const noexcept {
   return _impl ? &_impl->_dogstatsd.dogstatsdClient() : nullptr;
 }
-
-#endif  // AERONET_HAVE_OTEL_SDK
 
 }  // namespace aeronet::tracing
