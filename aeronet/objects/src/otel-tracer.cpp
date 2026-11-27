@@ -13,7 +13,6 @@
 #include <utility>
 
 #include "aeronet/dogstatsd.hpp"
-#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/metric-label.hpp"
 #include "aeronet/telemetry-config.hpp"
@@ -120,7 +119,7 @@ class TelemetryContextImpl {
             it->second->Add(delta, detail::OtelMetricLabels(labels));
           }
         } catch (const std::exception& ex) {
-          log_noexcept::error("Failed to add counter '{}': {}", name, ex.what());
+          log::error("Failed to add counter '{}': {}", name, ex.what());
         }
       }
 #endif
@@ -160,7 +159,7 @@ class TelemetryContextImpl {
       }
 #endif
     } catch (const std::exception& ex) {
-      log_noexcept::error("Failed to set gauge '{}': {}", name, ex.what());
+      log::error("Failed to set gauge '{}': {}", name, ex.what());
     }
   }
 
@@ -188,7 +187,7 @@ class TelemetryContextImpl {
       }
 #endif
     } catch (const std::exception& ex) {
-      log_noexcept::error("Failed to record histogram '{}': {}", name, ex.what());
+      log::error("Failed to record histogram '{}': {}", name, ex.what());
     }
   }
 #endif

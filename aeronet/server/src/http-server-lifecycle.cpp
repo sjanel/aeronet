@@ -19,7 +19,6 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/lifecycle.hpp"
 #include "aeronet/internal/server-context.hpp"
-#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/router-config.hpp"
@@ -577,7 +576,7 @@ void SingleHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
   // Only from Running: a concurrent stop() (Stopping) must not be turned back into a drain.
   // The connections are owned by the event loop: their count cannot be read from here.
   if (current == internal::Lifecycle::State::Running && _ctx.lifecycle.enterDraining()) {
-    log_noexcept::info("Initiating graceful drain");
+    log::info("Initiating graceful drain");
   }
   // Keep listener open during drain to allow health probes to connect and receive 503 status.
   // Regular connections will still be accepted but will receive Connection: close headers.

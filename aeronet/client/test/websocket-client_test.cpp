@@ -638,8 +638,10 @@ TEST(WebSocketClientTls, EchoesOverTlsWithAlpnOfferingHttp11Only) {
   serverConfig.withPort(0).withPollInterval(std::chrono::milliseconds{5});
   serverConfig.tls.enabled = true;
   serverConfig.tls.withCertPem(certPem).withKeyPem(keyPem);
-  // The server prefers h2: the upgrade connection only offers http/1.1.
+#ifdef AERONET_ENABLE_HTTP2
+  // The server prefers h2: the upgrade connection only offers http/1.1. A server without HTTP/2 refuses to offer h2.
   serverConfig.tls.withTlsAlpnProtocols(std::array<std::string_view, 2>{"h2", "http/1.1"});
+#endif
   Router router;
   SetEchoRoutes(router);
   SingleHttpServer server(std::move(serverConfig), std::move(router));

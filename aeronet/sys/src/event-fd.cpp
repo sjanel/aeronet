@@ -12,7 +12,6 @@
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/errno-throw.hpp"
-#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/system-error.hpp"
@@ -39,7 +38,7 @@ void EventFd::send() const noexcept {
   if (ret == kInvalidHandle) {
     const auto savedErr = LastSystemError();
     if (savedErr != error::kWouldBlock) {
-      log_noexcept::error("Event fd send failed err={}: {}", savedErr, SystemErrorMessage(savedErr));
+      log::error("Event fd send failed err={}: {}", savedErr, SystemErrorMessage(savedErr));
     }
   }
 }
@@ -76,7 +75,7 @@ void EventFd::send() const noexcept {
   if (ret == kInvalidHandle) {
     const auto savedErr = LastSystemError();
     if (savedErr != error::kWouldBlock) {
-      log_noexcept::error("EventFd pipe send failed err={}: {}", savedErr, SystemErrorMessage(savedErr));
+      log::error("EventFd pipe send failed err={}: {}", savedErr, SystemErrorMessage(savedErr));
     }
   }
 }
@@ -112,7 +111,7 @@ void EventFd::send() const noexcept {
   if (ret == SOCKET_ERROR) {
     const auto savedErr = LastSystemError();
     if (savedErr != error::kWouldBlock) {
-      log_noexcept::error("EventFd socket send failed err={}: {}", savedErr, SystemErrorMessage(savedErr));
+      log::error("EventFd socket send failed err={}: {}", savedErr, SystemErrorMessage(savedErr));
     }
   }
 }

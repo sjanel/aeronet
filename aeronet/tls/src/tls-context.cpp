@@ -39,7 +39,6 @@
 #include <system_error>
 #endif
 
-#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
@@ -392,7 +391,7 @@ class TlsContext::KeyLogWriter {
 
   ~KeyLogWriter() {
     if (_file != nullptr && std::fclose(_file) != 0) {
-      log_noexcept::error("Failed to close TLS key log file");
+      log::error("Failed to close TLS key log file");
     }
   }
 
@@ -400,7 +399,7 @@ class TlsContext::KeyLogWriter {
   void write(std::string_view line) noexcept {
     std::scoped_lock lock(_mutex);
     if (std::fwrite(line.data(), line.size(), 1, _file) != 1 || std::fputc('\n', _file) == EOF) {
-      log_noexcept::error("Failed to append TLS key log line");
+      log::error("Failed to append TLS key log line");
     }
   }
 

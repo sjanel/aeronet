@@ -47,14 +47,14 @@
 #include "aeronet/url-decode.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-#include "aeronet/log-noexcept.hpp"
+#include "aeronet/log.hpp"
 #endif
 
 namespace aeronet {
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 void LogAsyncCallbackPostFailure(const char* what) noexcept {
-  log_noexcept::error("Exception posting async callback: {}", what);
+  log::error("Exception posting async callback: {}", what);
 }
 #endif
 

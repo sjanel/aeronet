@@ -100,9 +100,9 @@ function(AeronetSetProjectProperties name)
     target_link_libraries(${name} PRIVATE amc::amc)
   endif()
   if(AERONET_ENABLE_SPDLOG)
-    # Use header-only mode to avoid introducing a link dependency that would
-    # force exporting/packaging spdlog. Consumers can supply their own spdlog
-    # if they also define AERONET_ENABLE_SPDLOG, otherwise they build without it.
+    # spdlog is compiled header-only into aeronet_tech (src/log.cpp, the only source including it with
+    # <spdlog/version.h> of version.hpp): no link dependency to export or package. Consumers can supply their own
+    # spdlog if they also define AERONET_ENABLE_SPDLOG, otherwise they build without it.
     target_compile_definitions(${name} PUBLIC AERONET_ENABLE_SPDLOG)
     if(AERONET_SPDLOG_USE_STD_FORMAT)
       target_compile_definitions(${name} PUBLIC SPDLOG_USE_STD_FORMAT)

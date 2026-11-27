@@ -2,8 +2,10 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstddef>
 #include <format>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -11,6 +13,29 @@
 #include <vector>
 
 #include "aeronet/log-capture.hpp"
+
+#ifdef AERONET_ENABLE_SPDLOG
+#include <spdlog/common.h>
+#include <spdlog/spdlog.h>
+#endif
+
+namespace aeronet {
+namespace {
+
+// An argument whose formatting throws.
+struct ThrowingFormatArg {};
+
+}  // namespace
+}  // namespace aeronet
+
+template <>
+struct std::formatter<aeronet::ThrowingFormatArg> {
+  static constexpr std::format_parse_context::iterator parse(std::format_parse_context& ctx) { return ctx.begin(); }
+
+  static std::format_context::iterator format(const aeronet::ThrowingFormatArg& /*arg*/, std::format_context& /*ctx*/) {
+    throw std::runtime_error("formatter failure");
+  }
+};
 
 namespace aeronet {
 
@@ -67,6 +92,87 @@ TEST(LogTest, LevelFiltersTheMessages) {
   EXPECT_FALSE(logs.contains("critical message")) << logs;
 }
 
+TEST(LogTest, EveryCallWritesAtOrAboveTheCurrentLevel) {
+  if (!test::LogCapture::kCapturesLogs) {
+    GTEST_SKIP() << "the logs are not captured on this platform";
+  }
+  ScopedLogLevel level(log::level::trace);
+  EXPECT_EQ(log::get_level(), log::level::trace);
+  test::LogCapture capture;
+  log::trace("trace formatted {}", 0);
+  log::trace("trace as is {}");
+  log::debug("debug formatted {}", 1);
+  log::debug("debug as is {}");
+  log::info("info formatted {}", 2);
+  log::info("info as is {}");
+  log::warn("warn formatted {}", 3);
+  log::warn("warn as is {}");
+  log::error("error formatted {}", 4);
+  log::error("error as is {}");
+  log::critical("critical formatted {}", 5);
+  log::critical("critical as is {}");
+  log::log(log::level::info, "log formatted {} {}", 6, "text");
+  log::log(log::level::info, "log as is {}");
+
+  log::set_level(log::level::critical);
+  EXPECT_EQ(log::get_level(), log::level::critical);
+  log::trace("filtered {}", 0);
+  log::trace("filtered");
+  log::debug("filtered {}", 1);
+  log::debug("filtered");
+  log::info("filtered {}", 2);
+  log::info("filtered");
+  log::warn("filtered {}", 3);
+  log::warn("filtered");
+  log::error("filtered {}", 4);
+  log::error("filtered");
+  log::log(log::level::err, "filtered {}", 5);
+  log::log(log::level::err, "filtered");
+  log::critical("still written {}", 6);
+
+  const std::string logs = capture.take();
+  static constexpr std::array kExpected{
+      "trace formatted 0\n",    "trace as is {}\n", "debug formatted 1\n",    "debug as is {}\n",
+      "info formatted 2\n",     "info as is {}\n",  "warn formatted 3\n",     "warn as is {}\n",
+      "error formatted 4\n",    "error as is {}\n", "critical formatted 5\n", "critical as is {}\n",
+      "log formatted 6 text\n", "log as is {}\n",   "still written 6\n",
+  };
+  for (std::string_view expected : kExpected) {
+    EXPECT_TRUE(logs.contains(expected)) << expected << " not in " << logs;
+  }
+  EXPECT_FALSE(logs.contains("filtered")) << logs;
+}
+
+// A message that cannot be formatted is dropped with a line on stderr: the call does not throw.
+TEST(LogTest, MessageThatCannotBeFormattedIsDropped) {
+  ScopedLogLevel level(log::level::info);
+  std::string logs;
+  testing::internal::CaptureStderr();
+  {
+    test::LogCapture capture;
+    log::error("dropped {}", ThrowingFormatArg{});
+    log::info("written after the failure {}", 1);
+    logs = capture.take();
+  }
+  const std::string errors = testing::internal::GetCapturedStderr();
+  EXPECT_TRUE(errors.contains("aeronet::log dropped a message that could not be formatted or written")) << errors;
+  if (test::LogCapture::kCapturesLogs) {
+    EXPECT_FALSE(logs.contains("dropped")) << logs;
+    EXPECT_TRUE(logs.contains("written after the failure 1\n")) << logs;
+  }
+}
+
+#ifdef AERONET_ENABLE_SPDLOG
+
+TEST(LogTest, SetLevelAlsoSetsTheLevelOfSpdlog) {
+  ScopedLogLevel level(log::level::err);
+  EXPECT_EQ(spdlog::get_level(), spdlog::level::err);
+  log::set_level(log::level::debug);
+  EXPECT_EQ(spdlog::get_level(), spdlog::level::debug);
+}
+
+#endif
+
 // Each line is written at once: the lines logged by concurrent threads do not interleave.
 TEST(LogTest, LinesOfConcurrentThreadsDoNotInterleave) {
   if (!test::LogCapture::kCapturesLogs) {
@@ -89,6 +195,7 @@ TEST(LogTest, LinesOfConcurrentThreadsDoNotInterleave) {
     test::LogCapture capture;
     {
       std::vector<std::jthread> threads;
+      threads.reserve(kNbThreads);
       for (int threadIdx = 0; threadIdx < kNbThreads; ++threadIdx) {
         threads.emplace_back([threadIdx, &padding] {
           for (int lineIdx = 0; lineIdx < kNbLinesPerThread; ++lineIdx) {

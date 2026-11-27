@@ -23,7 +23,7 @@ aeronet is deliberately modular. CMake options select code and dependencies at c
 | `AERONET_ENABLE_CLANG_TIDY` | OFF | Run clang-tidy during the build, on the translation units and on every header (see the [static analysis recipe](#static-analysis)). `-D CLANG_TIDY=<path>` selects the executable (the first `clang-tidy` of `PATH` by default). With `AERONET_WARNINGS_AS_ERRORS`, a finding fails the build. |
 | `AERONET_ENABLE_WARNINGS` | top-level | Enable the project warning set. |
 | `AERONET_WARNINGS_AS_ERRORS` | OFF | Promote warnings to errors in Debug builds, except for the benchmark executables built on competitor frameworks, whose warnings are kept as warnings. |
-| `AERONET_SPDLOG_USE_STD_FORMAT` | ON | Use `std::format` rather than fmt through spdlog. |
+| `AERONET_SPDLOG_USE_STD_FORMAT` | ON | Compile spdlog with `std::format` rather than its bundled fmt (`SPDLOG_USE_STD_FORMAT`, also defined for the consumers). aeronet formats its own messages with `std::format` either way. |
 
 ## Protocol and integration features
 

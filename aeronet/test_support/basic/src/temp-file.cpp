@@ -35,7 +35,6 @@
 #include <utility>
 
 #include "aeronet/base-fd.hpp"
-#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/system-error.hpp"
@@ -174,14 +173,12 @@ void ScopedTempFile::cleanup() noexcept {
     const bool removed = std::filesystem::remove(_path, ec);
     try {
       if (ec) {
-        log_noexcept::error("ScopedTempFile::cleanup: remove({}) failed: {} ({})", _path.string(), ec.value(),
-                            ec.message());
+        log::error("ScopedTempFile::cleanup: remove({}) failed: {} ({})", _path.string(), ec.value(), ec.message());
       } else if (!removed) {
-        log_noexcept::error("ScopedTempFile::cleanup: expected to remove file {}, but nothing was removed",
-                            _path.string());
+        log::error("ScopedTempFile::cleanup: expected to remove file {}, but nothing was removed", _path.string());
       }
     } catch (const std::filesystem::filesystem_error& ex) {
-      log_noexcept::error("ScopedTempFile::cleanup: exception while removing file {}: {}", _path.string(), ex.what());
+      log::error("ScopedTempFile::cleanup: exception while removing file {}: {}", _path.string(), ex.what());
     }
     _path.clear();
   }

@@ -19,7 +19,6 @@
 #include <span>
 #include <stdexcept>
 
-#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/tls-config.hpp"
@@ -95,7 +94,7 @@ int TlsTicketKeyStore::processTicket(unsigned char keyName[16], unsigned char* i
   } catch (const std::exception& ex) {
     // Key generation failure: no ticket is issued, the handshake goes on. Leave no error behind for the I/O operation
     // driving it.
-    log_noexcept::error("TLS session ticket {} failed: {}", enc == 1 ? "encryption" : "decryption", ex.what());
+    log::error("TLS session ticket {} failed: {}", enc == 1 ? "encryption" : "decryption", ex.what());
     ::ERR_clear_error();
     return 0;
   }

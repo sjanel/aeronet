@@ -5,6 +5,16 @@ coverage:
   precision: 2
   round: down
   range: "70...100"
+  status:
+    project:
+      default:
+        # Compared with the base commit: a drop up to this much (lines moved, a few error paths) passes.
+        # New code is still checked by the patch status (default: at least the coverage of the base).
+        target: auto
+        threshold: 0.1%
+      # Floor for the whole project, so the small drops above cannot add up.
+      minimum:
+        target: 95%
 
 comment:
   layout: "reach,diff,flags,files"

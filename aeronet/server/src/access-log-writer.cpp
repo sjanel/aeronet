@@ -22,7 +22,6 @@
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-version.hpp"
-#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/ndigits.hpp"
@@ -205,7 +204,7 @@ void AccessLogWriter::flush() noexcept {
 #endif
     if (written <= 0) {
       // flush is noexcept, so logging failures must not escape this path.
-      log_noexcept::error("access log write failed on fd {}: errno {}", fd, errno);
+      log::error("access log write failed on fd {}: errno {}", fd, errno);
       _buffer.clear();
       _sink = AccessLogConfig::Sink::None;  // Disable further logging on error
       return;

@@ -14,7 +14,7 @@
 #include <utility>
 
 #include "aeronet/decimal-writer.hpp"
-#include "aeronet/log-noexcept.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/metric-label.hpp"
 #include "aeronet/ndigits.hpp"
@@ -146,7 +146,7 @@ void DogStatsD::appendMetric(std::string_view metric, std::string_view value, st
   try {
     _buf.ensureAvailableCapacity(static_cast<std::size_t>(newLine) + lineSize);
   } catch (const std::bad_alloc&) {
-    log_noexcept::error("DogStatsD: unable to allocate memory for metric message");
+    log::error("DogStatsD: unable to allocate memory for metric message");
     return;
   }
 
@@ -193,10 +193,9 @@ void DogStatsD::flush() noexcept {
     // and do not mark the connection for immediate reconnect. Other errors indicate
     // a more serious problem with the socket and should trigger a reconnect attempt.
     if (serr == error::kWouldBlock) {
-      log_noexcept::debug("DogStatsD: dropping metrics of size {} due to EAGAIN/EWOULDBLOCK", datagramSize);
+      log::debug("DogStatsD: dropping metrics of size {} due to EAGAIN/EWOULDBLOCK", datagramSize);
     } else {
-      log_noexcept::error("DogStatsD: unable to send metrics of size {} with error: {}", datagramSize,
-                          SystemErrorMessage(serr));
+      log::error("DogStatsD: unable to send metrics of size {} with error: {}", datagramSize, SystemErrorMessage(serr));
       _retryConnectionCounter = kReconnectionThreshold;  // mark as disconnected but retry immediately on next send
     }
   }
@@ -289,8 +288,8 @@ int DogStatsD::connect() noexcept {
   assert(_fd);
   _retryConnectionCounter = static_cast<uint8_t>(-_fd.connect(socketPath));
   if (_retryConnectionCounter == 1) {
-    log_noexcept::error("DogStatsD: unable to connect to socket '{}'. Full error: {}", socketPath,
-                        SystemErrorMessage(LastSystemError()));
+    log::error("DogStatsD: unable to connect to socket '{}'. Full error: {}", socketPath,
+               SystemErrorMessage(LastSystemError()));
   }
 
   return -_retryConnectionCounter;

@@ -24,7 +24,6 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/lifecycle.hpp"
-#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
@@ -400,7 +399,7 @@ void MultiHttpServer::stop() noexcept {
     _control->stopRequested.store(true, std::memory_order_relaxed);
     _control->lifecycleTracker.notifyStopRequested();
 
-    log_noexcept::debug("HttpServer stopping (instances={})", _servers.size());
+    log::debug("HttpServer stopping (instances={})", _servers.size());
     std::ranges::for_each(_servers, [](SingleHttpServer& server) { server.stop(); });
     if (_probeServer) {
       _probeServer->stop();
@@ -426,7 +425,7 @@ void MultiHttpServer::stop() noexcept {
   if (lastHandleState) {
     lastHandleState->wait();
   }
-  log_noexcept::info("HttpServer stopped");
+  log::info("HttpServer stopped");
 }
 
 void MultiHttpServer::start() {

@@ -14,7 +14,6 @@
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/router-config.hpp"
@@ -48,11 +47,11 @@ void WaitReady(SingleHttpServer& server, std::chrono::milliseconds timeout) noex
           return;
         }
       } catch (const std::exception& ex) {
-        log_noexcept::error("Readiness probe request failed, retrying... {}", ex.what());
+        log::error("Readiness probe request failed, retrying... {}", ex.what());
       }
       std::this_thread::sleep_for(5ms);  // NOLINT(misc-include-cleaner)
     }
-    log_noexcept::error("server readiness probe did not return 200 within timeout");
+    log::error("server readiness probe did not return 200 within timeout");
   }
 
   // The listening socket accepts connections (into its backlog) as soon as the server is constructed: no probe
@@ -62,7 +61,7 @@ void WaitReady(SingleHttpServer& server, std::chrono::milliseconds timeout) noex
     std::this_thread::sleep_for(1ms);  // NOLINT(misc-include-cleaner)
   }
   if (!server.isRunning()) {
-    log_noexcept::error("server event loop not running within timeout");
+    log::error("server event loop not running within timeout");
   }
 }
 
@@ -82,7 +81,7 @@ SingleHttpServer CreateServer() noexcept {
     server.start();
     WaitReady(server, std::chrono::milliseconds{500});
   } catch (const std::exception& ex) {
-    log_noexcept::error("TestServer failed to start: {}", ex.what());
+    log::error("TestServer failed to start: {}", ex.what());
   }
   return server;
 }
@@ -95,7 +94,7 @@ SingleHttpServer CreateServer(HttpServerConfig cfg, RouterConfig routerCfg, std:
     server.start();
     WaitReady(server, std::chrono::milliseconds{500});
   } catch (const std::exception& ex) {
-    log_noexcept::error("TestServer failed to start: {}", ex.what());
+    log::error("TestServer failed to start: {}", ex.what());
   }
   return server;
 }
@@ -111,7 +110,7 @@ uint16_t TestServer::port() const noexcept {
   try {
     return server.port();
   } catch (const std::exception& ex) {
-    log_noexcept::error("TestServer exception in port(): {}", ex.what());
+    log::error("TestServer exception in port(): {}", ex.what());
   }
   return 0;
 }
