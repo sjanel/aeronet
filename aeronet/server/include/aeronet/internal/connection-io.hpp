@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cassert>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -10,6 +9,7 @@
 #include <utility>
 
 #include "aeronet/amc-type-traits.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/internal/connection-storage.hpp"

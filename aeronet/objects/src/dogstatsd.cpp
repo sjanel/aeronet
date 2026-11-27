@@ -3,7 +3,6 @@
 #include <cassert>
 #include <cerrno>
 #include <charconv>
-#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -13,6 +12,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"

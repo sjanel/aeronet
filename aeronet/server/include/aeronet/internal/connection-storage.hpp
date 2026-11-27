@@ -1,11 +1,11 @@
 #pragma once
 
 #include <cassert>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/connection.hpp"
 #include "aeronet/native-handle.hpp"

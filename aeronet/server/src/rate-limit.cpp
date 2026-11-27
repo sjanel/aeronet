@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +11,7 @@
 #include <stdexcept>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/ndigits.hpp"

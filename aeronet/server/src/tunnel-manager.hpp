@@ -1,12 +1,12 @@
 #pragma once
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/host-resolver.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/connection-io.hpp"

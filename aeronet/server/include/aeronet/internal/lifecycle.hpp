@@ -2,12 +2,12 @@
 
 #include <atomic>
 #include <cassert>
-#include <chrono>
 #include <cstdint>
 #include <stdexcept>
 #include <thread>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/event-fd.hpp"
 
 namespace aeronet::internal {

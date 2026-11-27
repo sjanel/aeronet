@@ -1,10 +1,10 @@
 #include "aeronet/internal/keep-alive-deadline-queue.hpp"
 
 #include <cassert>
-#include <chrono>
 #include <cstdint>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/native-handle.hpp"
 

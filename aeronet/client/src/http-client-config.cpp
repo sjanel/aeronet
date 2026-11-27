@@ -1,11 +1,11 @@
 #include "aeronet/http-client-config.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <limits>
 #include <span>
 #include <stdexcept>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/http-header.hpp"

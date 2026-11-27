@@ -1,6 +1,5 @@
 #include <atomic>
 #include <cassert>
-#include <chrono>
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
@@ -16,6 +15,7 @@
 #include "aeronet/async-await-state.hpp"
 #include "aeronet/async-handler-state.hpp"
 #include "aeronet/async-resume-poster.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-message.hpp"

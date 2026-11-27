@@ -1,11 +1,11 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/tls-config.hpp"

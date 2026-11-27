@@ -1,6 +1,5 @@
 #include <atomic>
 #include <cassert>
-#include <chrono>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -10,6 +9,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/http-method.hpp"

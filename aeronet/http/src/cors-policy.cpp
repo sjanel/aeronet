@@ -1,10 +1,10 @@
 #include "aeronet/cors-policy.hpp"
 
-#include <chrono>
 #include <cstdint>
 #include <stdexcept>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-header-value-reverse-tokens-iterator.hpp"

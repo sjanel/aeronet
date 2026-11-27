@@ -1,7 +1,6 @@
 #pragma once
 
 #include <array>
-#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +11,7 @@
 #include <utility>
 
 #include "aeronet/amc-type-traits.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/major-minor-version.hpp"
 #include "aeronet/static-concatenated-strings.hpp"

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <charconv>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -22,6 +21,7 @@
 #include <thread>
 #endif
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/compiler-config.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/encoding.hpp"

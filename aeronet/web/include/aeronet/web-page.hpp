@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -8,6 +7,7 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/html-document.hpp"
 #include "aeronet/http-status-code.hpp"
 

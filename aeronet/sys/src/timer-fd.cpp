@@ -14,11 +14,11 @@
 // Socket pair — included via socket-ops.hpp
 #endif
 
-#include <chrono>
 #include <cstdint>
 #include <ctime>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"

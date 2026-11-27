@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -12,6 +11,7 @@
 #include <stop_token>
 #include <thread>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/compiler-config.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/event-loop.hpp"

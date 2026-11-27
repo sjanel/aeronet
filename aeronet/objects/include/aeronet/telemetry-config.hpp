@@ -1,12 +1,12 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <ranges>
 #include <span>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/city-hash.hpp"
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/dogstatsd.hpp"

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cassert>
-#include <chrono>
 #include <cstdint>
 #include <glaze/glaze.hpp>
 #include <glaze/yaml.hpp>  // IWYU pragma: keep
@@ -9,6 +8,7 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/duration-string.hpp"
 
 // ============================================================================

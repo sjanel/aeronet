@@ -2,13 +2,13 @@
 
 #include <algorithm>
 #include <charconv>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
 #include <string_view>
 #include <system_error>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-status-code.hpp"
 
 namespace aeronet {

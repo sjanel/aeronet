@@ -1,7 +1,8 @@
 #include "aeronet/http2-config.hpp"
 
-#include <chrono>
 #include <stdexcept>
+
+#include "aeronet/chrono-lite.hpp"
 
 namespace aeronet {
 

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cassert>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -9,6 +8,7 @@
 
 #include "aeronet/access-log-config.hpp"
 #include "aeronet/builtin-probes-config.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/http-header.hpp"

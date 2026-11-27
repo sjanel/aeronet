@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -19,6 +18,7 @@
 #include <span>
 #include <stdexcept>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/tls-config.hpp"

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <chrono>
+#include "aeronet/chrono-lite.hpp"
 
 namespace aeronet {
 

@@ -4,13 +4,13 @@
 #include <openssl/types.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <memory>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/internal/server-context.hpp"

@@ -1,9 +1,9 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/dogstatsd.hpp"
 #include "aeronet/metric-label.hpp"
 #include "aeronet/telemetry-config.hpp"

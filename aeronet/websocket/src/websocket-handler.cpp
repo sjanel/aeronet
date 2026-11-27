@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -12,6 +11,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-bytes.hpp"

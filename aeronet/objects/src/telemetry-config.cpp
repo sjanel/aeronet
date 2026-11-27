@@ -1,7 +1,6 @@
 #include "aeronet/telemetry-config.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <format>
@@ -9,6 +8,7 @@
 #include <stdexcept>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"

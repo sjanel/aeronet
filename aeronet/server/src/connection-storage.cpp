@@ -1,9 +1,9 @@
 #include "aeronet/internal/connection-storage.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/internal/http-response-access.hpp"
 

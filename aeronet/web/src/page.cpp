@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -25,6 +24,7 @@
 
 #include "aeronet/address-space.hpp"
 #include "aeronet/cctype.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/css-selector.hpp"
 #include "aeronet/html-document.hpp"

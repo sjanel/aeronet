@@ -1,9 +1,9 @@
 #include "aeronet/signal-handler.hpp"
 
 #include <atomic>
-#include <chrono>
 #include <csignal>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/log.hpp"
 
 namespace {

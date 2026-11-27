@@ -3,7 +3,6 @@
 #include <opentelemetry/sdk/resource/resource.h>
 
 #include <cassert>
-#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <memory>
@@ -12,6 +11,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/dogstatsd.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/metric-label.hpp"

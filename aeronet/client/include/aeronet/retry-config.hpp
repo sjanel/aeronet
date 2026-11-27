@@ -1,11 +1,11 @@
 #pragma once
 
 #include <amc/allocator.hpp>
-#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/flat-set.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/small-vector.hpp"

@@ -3,12 +3,12 @@
 #include <openssl/types.h>
 
 #include <array>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <span>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/vector.hpp"
 
