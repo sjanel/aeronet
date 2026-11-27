@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
-#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
@@ -18,6 +17,7 @@
 #include <utility>
 
 #include "aeronet/builtin-probes-config.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"

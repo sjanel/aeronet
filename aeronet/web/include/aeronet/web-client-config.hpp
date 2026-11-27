@@ -1,10 +1,10 @@
 #pragma once
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 
 #include "aeronet/address-space.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-client-config.hpp"
 
 namespace aeronet {

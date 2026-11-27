@@ -1,10 +1,10 @@
 #include "aeronet/builtin-probes-config.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <stdexcept>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/url-char-class.hpp"
 

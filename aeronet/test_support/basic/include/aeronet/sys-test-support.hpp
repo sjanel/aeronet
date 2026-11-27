@@ -1011,6 +1011,46 @@ struct GetAddrInfoDelayGuard {
   ~GetAddrInfoDelayGuard() { g_getaddrinfo_delay_ms.store(0, std::memory_order_release); }
 };
 
+#ifdef AERONET_WANT_SOCKET_OVERRIDES
+// While set, each getaddrinfo call waits until it is cleared. Counts the calls held since the GetAddrInfoHold started.
+inline std::atomic<bool> g_getaddrinfo_held{false};
+inline std::atomic<uint32_t> g_getaddrinfo_nb_held{0};
+
+// Let the getaddrinfo calls held by a GetAddrInfoHold, and the next ones, proceed.
+inline void ReleaseGetAddrInfoCalls() noexcept { g_getaddrinfo_held.store(false, std::memory_order_release); }
+
+// Wait until 'nbCalls' getaddrinfo calls are held by the GetAddrInfoHold in scope, for at most 'timeout'. Tell whether
+// they are.
+[[nodiscard]] inline bool WaitForHeldGetAddrInfoCalls(uint32_t nbCalls,
+                                                      std::chrono::milliseconds timeout = std::chrono::seconds{10}) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (g_getaddrinfo_nb_held.load(std::memory_order_acquire) < nbCalls) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  }
+  return true;
+}
+
+// Holds each getaddrinfo call until ReleaseGetAddrInfoCalls() or its destruction, simulating a DNS resolver answering
+// when the test decides. WaitForHeldGetAddrInfoCalls() then tells when resolutions are in progress, taken by a resolver
+// thread (out of the reach of a cancellation): a sleep can only guess it, a loaded machine may start the thread late.
+struct GetAddrInfoHold {
+  GetAddrInfoHold() noexcept {
+    g_getaddrinfo_nb_held.store(0, std::memory_order_relaxed);
+    g_getaddrinfo_held.store(true, std::memory_order_release);
+  }
+
+  GetAddrInfoHold(const GetAddrInfoHold&) = delete;
+  GetAddrInfoHold(GetAddrInfoHold&&) noexcept = delete;
+  GetAddrInfoHold& operator=(const GetAddrInfoHold&) = delete;
+  GetAddrInfoHold& operator=(GetAddrInfoHold&&) noexcept = delete;
+
+  ~GetAddrInfoHold() { ReleaseGetAddrInfoCalls(); }
+};
+#endif  // AERONET_WANT_SOCKET_OVERRIDES
+
 // Tells whether 'host' is under the special-use "invalid" top-level domain (RFC 6761 section 6.4), which never
 // resolves. The fully qualified form (one trailing dot) is accepted, and the comparison ignores case.
 inline bool IsInvalidTldHost(std::string_view host) {
@@ -1602,6 +1642,12 @@ extern "C" __attribute__((no_sanitize("address"))) int getaddrinfo(const char* n
   const int delayMs = aeronet::test::g_getaddrinfo_delay_ms.load(std::memory_order_acquire);
   if (delayMs > 0) {
     std::this_thread::sleep_for(std::chrono::milliseconds{delayMs});
+  }
+  if (aeronet::test::g_getaddrinfo_held.load(std::memory_order_acquire)) {
+    aeronet::test::g_getaddrinfo_nb_held.fetch_add(1U, std::memory_order_release);
+    while (aeronet::test::g_getaddrinfo_held.load(std::memory_order_acquire)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
   }
   // RFC 6761 section 6.4: resolution libraries should answer "invalid" names negatively right away. The system ones
   // may still query the DNS, which can stall for tens of seconds on CI runners.

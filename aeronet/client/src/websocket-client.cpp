@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -17,6 +16,7 @@
 #include <utility>
 
 #include "aeronet/adaptive-poll-timeout.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/connection.hpp"
 #include "aeronet/event-fd.hpp"
 #include "aeronet/event-loop.hpp"

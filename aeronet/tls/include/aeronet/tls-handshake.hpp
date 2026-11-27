@@ -2,10 +2,10 @@
 
 #include <openssl/types.h>
 
-#include <chrono>
 #include <cstdint>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-handshake-callback.hpp"

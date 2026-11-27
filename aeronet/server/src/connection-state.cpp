@@ -9,13 +9,13 @@
 #include <algorithm>
 #include <bit>
 #include <cassert>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-view.hpp"

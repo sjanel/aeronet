@@ -1,10 +1,10 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <expected>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/internal/web-session.hpp"
 #include "aeronet/web-client-config.hpp"

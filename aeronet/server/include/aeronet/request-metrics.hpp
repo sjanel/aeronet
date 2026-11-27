@@ -1,9 +1,9 @@
 #pragma once
 
-#include <chrono>
 #include <cstddef>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"

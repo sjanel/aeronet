@@ -4,7 +4,6 @@
 
 #include <cassert>
 #include <cerrno>
-#include <chrono>
 #include <cstdio>
 #include <stdexcept>
 #include <string_view>
@@ -19,6 +18,7 @@
 #endif
 
 #include "aeronet/access-log-config.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-version.hpp"

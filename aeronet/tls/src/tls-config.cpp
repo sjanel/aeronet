@@ -1,11 +1,11 @@
 #include "aeronet/tls-config.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/secure-zero.hpp"

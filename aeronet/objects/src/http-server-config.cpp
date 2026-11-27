@@ -1,7 +1,6 @@
 #include "aeronet/http-server-config.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -12,6 +11,7 @@
 
 #include "aeronet/adaptive-poll-timeout.hpp"
 #include "aeronet/builtin-probes-config.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/decompression-config.hpp"

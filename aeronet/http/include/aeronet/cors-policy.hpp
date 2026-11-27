@@ -1,9 +1,9 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/concatenated-header-values.hpp"
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/http-method.hpp"

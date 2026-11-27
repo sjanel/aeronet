@@ -1,9 +1,9 @@
 #pragma once
 
 #include <cassert>
-#include <chrono>
 #include <cstdint>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/vector.hpp"

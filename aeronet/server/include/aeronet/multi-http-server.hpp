@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -13,6 +12,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/config-file.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/middleware.hpp"

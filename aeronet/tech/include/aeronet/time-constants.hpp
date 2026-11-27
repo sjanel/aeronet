@@ -1,9 +1,9 @@
 #pragma once
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/timedef.hpp"
 
 namespace aeronet {

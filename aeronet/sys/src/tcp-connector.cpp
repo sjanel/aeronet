@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <span>
@@ -18,6 +17,7 @@
 
 #include "aeronet/address-space.hpp"
 #include "aeronet/base-fd.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"

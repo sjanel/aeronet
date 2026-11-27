@@ -1,8 +1,8 @@
 #pragma once
 
-#include <chrono>
 #include <cstddef>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/websocket-constants.hpp"
 
 #ifdef AERONET_ENABLE_ZLIB

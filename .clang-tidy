@@ -31,8 +31,10 @@ CheckOptions:
   # protobuf 22, its statuses are absl ones), so that no include list is right for all the supported versions.
   # lexbor neither: its typedefs are declared in one header (lexbor/dom/interface.h) and its structs, inline functions
   # and macros in others (lexbor/dom/interfaces/*.h).
+  # A missing <chrono> neither: aeronet/chrono-lite.hpp provides its durations, time points and clocks at a fraction of
+  # its compile time, but include-cleaner attributes all the standard chrono symbols to <chrono>.
   - key: misc-include-cleaner.IgnoreHeaders
-    value: "glaze/.*;openssl/.*;bits/.*;google/protobuf/.*;absl/.*;lexbor/.*"
+    value: "glaze/.*;openssl/.*;bits/.*;google/protobuf/.*;absl/.*;lexbor/.*;<chrono>"
   - key: modernize-use-equals-default.IgnoreMacros
     value: "0"
   - key: modernize-use-auto.MinTypeNameLength

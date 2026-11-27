@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -8,6 +7,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/concatenated-headers.hpp"

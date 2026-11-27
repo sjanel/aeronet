@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cassert>
 #include <charconv>
-#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <span>
@@ -14,6 +13,7 @@
 #include <utility>
 
 #include "aeronet/cctype.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"

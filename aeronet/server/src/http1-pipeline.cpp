@@ -2,7 +2,6 @@
 
 #include <cassert>
 #include <charconv>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -12,6 +11,7 @@
 #include <system_error>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/compiler-config.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"

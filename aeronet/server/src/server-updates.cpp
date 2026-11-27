@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
-#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -15,6 +14,7 @@
 
 #include "aeronet/accept-encoding-negotiation.hpp"
 #include "aeronet/access-log-writer.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/http-message.hpp"

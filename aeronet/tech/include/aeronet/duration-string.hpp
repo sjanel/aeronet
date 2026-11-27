@@ -1,8 +1,8 @@
 #pragma once
 
-#include <chrono>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {

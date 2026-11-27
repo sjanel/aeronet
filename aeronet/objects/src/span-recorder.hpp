@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -10,6 +9,7 @@
 #include <string_view>
 #include <thread>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/object-pool.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tracing/tracer.hpp"

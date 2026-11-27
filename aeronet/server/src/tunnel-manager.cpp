@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -10,6 +9,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/connect-target.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/event-loop.hpp"

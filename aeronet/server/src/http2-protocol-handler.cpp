@@ -4,7 +4,6 @@
 #include <array>
 #include <cassert>
 #include <charconv>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -15,6 +14,7 @@
 #include <system_error>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/connect-target.hpp"
 #include "aeronet/connection-state.hpp"

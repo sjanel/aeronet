@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -10,6 +9,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/city-hash.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/object-array-pool.hpp"

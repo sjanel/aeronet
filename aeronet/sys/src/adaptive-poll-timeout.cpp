@@ -2,13 +2,13 @@
 
 #include <algorithm>
 #include <cassert>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/timedef.hpp"
 
 namespace aeronet {

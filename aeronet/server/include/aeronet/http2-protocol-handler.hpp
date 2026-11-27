@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -10,6 +9,7 @@
 #include <variant>
 
 #include "aeronet/amc-type-traits.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"

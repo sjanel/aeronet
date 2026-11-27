@@ -1,11 +1,11 @@
 #include "aeronet/rate-limit-middleware.hpp"
 
 #include <cassert>
-#include <chrono>
 #include <memory>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"

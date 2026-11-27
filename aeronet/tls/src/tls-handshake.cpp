@@ -7,12 +7,12 @@
 #include <openssl/x509.h>
 
 #include <cassert>
-#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/tls-config.hpp"

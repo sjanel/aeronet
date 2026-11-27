@@ -1,10 +1,10 @@
 #pragma once
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/middleware.hpp"

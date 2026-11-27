@@ -1,6 +1,5 @@
 #include "aeronet/web-client.hpp"
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -12,6 +11,7 @@
 #include <utility>
 
 #include "aeronet/address-space.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/css-selector.hpp"
 #include "aeronet/html-document.hpp"

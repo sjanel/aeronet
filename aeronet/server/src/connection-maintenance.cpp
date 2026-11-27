@@ -2,10 +2,10 @@
 
 #include <algorithm>
 #include <cassert>
-#include <chrono>
 #include <cstdint>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/compiler-config.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/http-request-view.hpp"

@@ -1,7 +1,6 @@
 #include "aeronet/jwt.hpp"
 
 #include <cassert>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <glaze/glaze.hpp>
@@ -10,6 +9,7 @@
 #include <utility>
 
 #include "aeronet/base64.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/jwt-algorithm-set.hpp"
 #include "aeronet/jwt-algorithm.hpp"
 #include "aeronet/jwt-error.hpp"

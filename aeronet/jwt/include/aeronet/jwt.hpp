@@ -1,10 +1,10 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <string>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/dynamic-concatenated-strings.hpp"
 #include "aeronet/jwt-algorithm-set.hpp"
 #include "aeronet/jwt-algorithm.hpp"

@@ -1,11 +1,11 @@
 #include "aeronet/route-group.hpp"
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/middleware.hpp"

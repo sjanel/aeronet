@@ -5,8 +5,6 @@
 
 #include "aeronet/compiler-config.hpp"
 #include "aeronet/time-constants.hpp"
-#include "aeronet/timedef.hpp"
-#include "aeronet/timestring.hpp"
 
 namespace aeronet::internal {
 
@@ -34,10 +32,9 @@ class DateHeaderCache {
   }
 
  private:
-  AERONET_NOINLINE void refresh(std::time_t second) noexcept {
-    _second = second;
-    TimeToStringRFC7231(SysClock::from_time_t(second), _header);
-  }
+  // Formats the date of 'second', once per second: out of line, so that the calendar code of <chrono> stays out of
+  // the headers.
+  AERONET_NOINLINE void refresh(std::time_t second) noexcept;
 
   WallSecondsFn _wallSeconds{&std::time};
   std::time_t _second{std::numeric_limits<std::time_t>::min()};
