@@ -250,6 +250,10 @@ set_target_properties(aeronet-bench-internal-timestring PROPERTIES FOLDER "bench
 AeronetAddProjectBenchmark(aeronet-bench-internal-log ${AERONET_BENCH_ROOT}/internal/log_bench.cpp LIBRARIES aeronet_tech)
 set_target_properties(aeronet-bench-internal-log PROPERTIES FOLDER "benchmarks/internal")
 
+AeronetAddProjectBenchmark(aeronet-bench-internal-format-lite ${AERONET_BENCH_ROOT}/internal/format-lite_bench.cpp
+                           LIBRARIES aeronet_tech)
+set_target_properties(aeronet-bench-internal-format-lite PROPERTIES FOLDER "benchmarks/internal")
+
 AeronetAddProjectBenchmark(aeronet-bench-internal-string-equal-ignore-case ${AERONET_BENCH_INTERNAL_STRING_EQUAL} LIBRARIES aeronet_objects)
 set_target_properties(aeronet-bench-internal-string-equal-ignore-case PROPERTIES FOLDER "benchmarks/internal")
 

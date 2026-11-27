@@ -4,7 +4,7 @@
 
 ## Logging
 
-aeronet logs through `<aeronet/log.hpp>`, with the calls of spdlog: `log::trace()`, `debug()`, `info()`, `warn()`, `error()` and `critical()` take a `std::format` string, checked at compile time, and its arguments (without arguments, the text is written as is), `log::set_level()` and `log::get_level()` the level (`log::level::trace` to `critical`, and `off`):
+aeronet logs through `<aeronet/log.hpp>`, with the calls of spdlog: `log::trace()`, `debug()`, `info()`, `warn()`, `error()` and `critical()` take a format string, checked at compile time, and its arguments (without arguments, the text is written as is), `log::set_level()` and `log::get_level()` the level (`log::level::trace` to `critical`, and `off`):
 
 ```cpp
 #include <aeronet/log.hpp>
@@ -13,11 +13,13 @@ log::set_level(log::level::warn);  // runtime level, process-wide
 log::info("server listening on {}", 8080);
 ```
 
-A call below the current level costs a load and a comparison (0.2 ns, against 2 ns through spdlog directly), and the calls never throw: a message that cannot be formatted or written (a throwing `std::formatter`, a failed allocation) is dropped, with a line on standard error.
+The format strings are those of `std::format`, with the same output, for arguments of type `bool`, `char`, the integer types, `float`, `double`, strings (`std::string`, `std::string_view`, C strings) and `void` pointers: `{}` and `{:spec}` with the standard format specification of the type, except the locale-specific form `L`, the debug form `?`, dynamic width or precision (`{:{}}`) and argument indexes (`{0}`). Each argument must have its replacement field. `<aeronet/log.hpp>` does not include `<format>`, whose parsing alone costs about 0.2 s per source file: format a value of another type into a string first (`std::format` with a `std::formatter` of your own).
+
+A call below the current level costs a load and a comparison (0.2 ns, against 2 ns through spdlog directly), and the calls never throw: a message that cannot be formatted or written (`{:c}` of an integer that is not a character, a failed allocation) is dropped, with a line on standard error.
 
 With `AERONET_ENABLE_SPDLOG`, the messages are written by the default logger of spdlog, with its sinks and pattern. `log::set_level()` also sets the level of the spdlog loggers, but a level set through spdlog only does not change which messages aeronet writes. spdlog is compiled into `aeronet_tech` only: `<aeronet/log.hpp>` does not include it. Without it, a small built-in logger writes to standard output, with ISO 8601 UTC timestamps at millisecond precision, each line in a single write: the lines logged by concurrent threads do not interleave.
 
-The library logs failures with their context (connection, file, OpenSSL reason) at `error` or `warn`, lifecycle events at `info`, and per-request details at `debug` and below, which are compiled in but filtered by the level. Keep `info` or `warn` in production. Tests: [log_test.cpp](../../aeronet/tech/test/log_test.cpp), benchmark: [log_bench.cpp](../../benchmarks/internal/log_bench.cpp).
+The library logs failures with their context (connection, file, OpenSSL reason) at `error` or `warn`, lifecycle events at `info`, and per-request details at `debug` and below, which are compiled in but filtered by the level. Keep `info` or `warn` in production. Tests: [log_test.cpp](../../aeronet/tech/test/log_test.cpp) and [format-lite_test.cpp](../../aeronet/tech/test/format-lite_test.cpp) (each accepted format specification against `std::format`), benchmarks: [log_bench.cpp](../../benchmarks/internal/log_bench.cpp) and [format-lite_bench.cpp](../../benchmarks/internal/format-lite_bench.cpp).
 
 ### Access log
 

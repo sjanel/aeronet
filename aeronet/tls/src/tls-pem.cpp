@@ -10,11 +10,11 @@
 #include <openssl/x509_vfy.h>
 
 #include <cassert>
-#include <format>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/format-lite.hpp"
 #include "aeronet/tls-raii.hpp"
 
 namespace aeronet {
@@ -43,7 +43,7 @@ void ForEachPemCertificate(std::string_view pem, std::string_view what, OnCertif
   // The reads stop at the end of the data, reported as a missing PEM block, or at the first malformed certificate.
   const unsigned long lastError = ::ERR_peek_last_error();
   if (!hasCertificate || ERR_GET_LIB(lastError) != ERR_LIB_PEM || ERR_GET_REASON(lastError) != PEM_R_NO_START_LINE) {
-    ThrowOpenSslError(std::format("Failed to parse {}", what));
+    ThrowOpenSslError(Format("Failed to parse {}", what));
   }
   ::ERR_clear_error();
 }
@@ -54,7 +54,7 @@ void ThrowOpenSslError(std::string_view context) {
   char reason[256];
   ::ERR_error_string_n(::ERR_peek_error(), reason, sizeof(reason));
   ::ERR_clear_error();
-  throw std::runtime_error(std::format("{}: {}", context, std::string_view(reason)));
+  throw std::runtime_error(Format("{}: {}", context, std::string_view(reason)));
 }
 
 void UseCertificateChainPem(SSL_CTX* ctx, std::string_view certPem, std::string_view keyPem) {
@@ -88,11 +88,11 @@ void UseCertificateChainFiles(SSL_CTX* ctx, const char* certFile, const char* ke
   // Used to decrypt the PEM blocks of both files.
   ::SSL_CTX_set_default_passwd_cb(ctx, RejectPassphrase);
   if (::SSL_CTX_use_certificate_chain_file(ctx, certFile) != 1) {
-    ThrowOpenSslError(std::format("Failed to load TLS certificate file '{}'", certFile));
+    ThrowOpenSslError(Format("Failed to load TLS certificate file '{}'", certFile));
   }
   // See UseCertificateChainPem() for the key check.
   if (::SSL_CTX_use_PrivateKey_file(ctx, keyFile, SSL_FILETYPE_PEM) != 1 || ::SSL_CTX_check_private_key(ctx) != 1) {
-    ThrowOpenSslError(std::format("Failed to load TLS private key file '{}'", keyFile));
+    ThrowOpenSslError(Format("Failed to load TLS private key file '{}'", keyFile));
   }
 }
 

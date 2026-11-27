@@ -1,11 +1,12 @@
 #include "aeronet/log.hpp"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdio>
-#include <format>
-#include <iterator>
 #include <string>
 #include <string_view>
+
+#include "aeronet/format-lite.hpp"
 
 #ifdef AERONET_ENABLE_SPDLOG
 // spdlog is compiled into this source only, header-only: the aeronet headers do not include it, and the aeronet
@@ -17,8 +18,6 @@
 #include <spdlog/logger.h>
 #include <spdlog/spdlog.h>
 #else
-#include <cstddef>
-
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
@@ -86,8 +85,8 @@ void EndLine(std::string& line) {
 
 #endif
 
-// Writes 'text' formatted with '*pArgs', or as is without arguments (null 'pArgs').
-void Emit(level::level_enum lvl, std::string_view text, const std::format_args* pArgs) noexcept {
+// Writes 'text' formatted with the 'nbArgs' arguments of 'pArgs', or as is without arguments (null 'pArgs').
+void Emit(level::level_enum lvl, std::string_view text, const FormatArg* pArgs, std::size_t nbArgs) noexcept {
   try {
 #ifdef AERONET_ENABLE_SPDLOG
     if (pArgs == nullptr) {
@@ -95,19 +94,20 @@ void Emit(level::level_enum lvl, std::string_view text, const std::format_args* 
       return;
     }
     std::string message;
-    std::vformat_to(std::back_inserter(message), text, *pArgs);
+    VFormatTo(message, text, pArgs, nbArgs);
     WriteLine(lvl, message);
 #else
     std::string line = StartLine(lvl, text.size());
     if (pArgs == nullptr) {
       line.append(text);
     } else {
-      std::vformat_to(std::back_inserter(line), text, *pArgs);
+      VFormatTo(line, text, pArgs, nbArgs);
     }
     EndLine(line);
 #endif
   } catch (...) {
-    // A formatter that throws, or a failed allocation: the logging call sites (destructors included) must not fail.
+    // An argument that cannot be formatted ('{:c}' of an integer out of the range of char) or a failed allocation: the
+    // logging call sites (destructors included) must not fail.
     std::fputs("aeronet::log dropped a message that could not be formatted or written\n", stderr);
   }
 }
@@ -123,9 +123,11 @@ void set_level(level::level_enum lvl) {
 
 namespace detail {
 
-void Write(level::level_enum lvl, std::string_view message) noexcept { Emit(lvl, message, nullptr); }
+void Write(level::level_enum lvl, std::string_view message) noexcept { Emit(lvl, message, nullptr, 0); }
 
-void Write(level::level_enum lvl, std::string_view fmt, std::format_args args) noexcept { Emit(lvl, fmt, &args); }
+void Write(level::level_enum lvl, std::string_view fmt, const FormatArg* pArgs, std::size_t nbArgs) noexcept {
+  Emit(lvl, fmt, pArgs, nbArgs);
+}
 
 }  // namespace detail
 

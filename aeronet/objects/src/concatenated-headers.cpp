@@ -1,10 +1,10 @@
 #include "aeronet/concatenated-headers.hpp"
 
 #include <cassert>
-#include <format>
 #include <stdexcept>
 #include <string_view>
 
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/lower-ascii-key.hpp"
@@ -18,8 +18,7 @@ namespace {
 
 void ValidateRequestHeader(LowerAsciiKey headerName) {
   if (http::IsReservedOrForbiddenRequestHeader(headerName)) {
-    throw std::invalid_argument(
-        std::format("attempt to set reserved request header: '{}'", std::string_view(headerName)));
+    throw std::invalid_argument(Format("attempt to set reserved request header: '{}'", std::string_view(headerName)));
   }
   // Not reserved (a request with a body may carry it), but a client must not send a 100-continue expectation in a
   // request without content (RFC 9110 §10.1.1), as most requests sent with the global headers are.
@@ -30,7 +29,7 @@ void ValidateRequestHeader(LowerAsciiKey headerName) {
 
 void ValidateResponseHeader(LowerAsciiKey headerName) {
   if (http::IsReservedResponseHeader(headerName)) {
-    throw std::invalid_argument(std::format("attempt to set reserved header: '{}'", std::string_view(headerName)));
+    throw std::invalid_argument(Format("attempt to set reserved header: '{}'", std::string_view(headerName)));
   }
   // Not reserved (a handler sets it with HttpResponse::location()), but specific to each response: a global one
   // would be on every response, and duplicated (the global first, which clients follow) in the redirects that the
@@ -62,15 +61,15 @@ void Validate(const ConcatenatedHeaders& headers, HeaderType type) {
     LowerAsciiKey headerName(headerNameValue.substr(0, colonPos));
 
     if (!http::IsValidHeaderName(headerName)) {
-      throw std::invalid_argument(std::format("header has invalid name: '{}'", std::string_view(headerName)));
+      throw std::invalid_argument(Format("header has invalid name: '{}'", std::string_view(headerName)));
     }
 
     std::string_view headerValue = headerNameValue.substr(colonPos + http::HeaderSep.size());
     if (TrimOws(headerValue) != headerValue) {
-      throw std::invalid_argument(std::format("header value has leading/trailing OWS: '{}'", headerValue));
+      throw std::invalid_argument(Format("header value has leading/trailing OWS: '{}'", headerValue));
     }
     if (!http::IsValidHeaderValue(headerValue)) {
-      throw std::invalid_argument(std::format("header has invalid value: '{}'", headerValue));
+      throw std::invalid_argument(Format("header has invalid value: '{}'", headerValue));
     }
 
     if (type == HeaderType::Response) {
