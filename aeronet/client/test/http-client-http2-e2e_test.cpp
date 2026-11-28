@@ -1339,11 +1339,14 @@ TEST(HttpClientHttp2E2ETest, IdentityCodingInstallsTheReceivedBody) {
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), kIdentityCodedBody);
   EXPECT_TRUE(resp.hasBodyCaptured());  // the receive buffer allocation, transferred
-  EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
 
   if (test::SupportedEncodings().empty()) {
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), http::identity);
     return;
   }
+
+  EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
+
   // A sink leaves its decoded body in the decompression scratch.
   test::CollectingBodySink sink;
   auto sinkResult = client.get(Url("/same-size-coded"), sink);
