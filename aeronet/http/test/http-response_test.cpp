@@ -46,6 +46,7 @@
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-payload.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
@@ -59,6 +60,52 @@
 #include "aeronet/vector.hpp"
 
 namespace aeronet {
+
+#if defined(AERONET_ENABLE_GLAZE) || defined(AERONET_ENABLE_PROTOBUF)
+namespace {
+// This file includes neither <aeronet/http-json.hpp> nor <aeronet/http-protobuf.hpp>: their body helpers, which the
+// core headers only declare, are not callable here (a compile error instead of an undefined reference at link time).
+struct NotSerialized {};
+
+#ifdef AERONET_ENABLE_GLAZE
+static_assert(!HttpJsonIncluded<NotSerialized>);
+template <class T>
+constexpr bool kHttpResponseBodyJsonCallable = requires(HttpResponse& resp, const T& value) { resp.bodyJson(value); };
+static_assert(!kHttpResponseBodyJsonCallable<NotSerialized>);
+template <class T>
+constexpr bool kHttpResponseBodyYamlCallable =
+    requires(HttpResponse& resp, const T& value) { std::move(resp).bodyYaml(value); };
+static_assert(!kHttpResponseBodyYamlCallable<NotSerialized>);
+template <class T>
+constexpr bool kHttpRequestViewBodyAsCallable = requires(const HttpRequestView& request) { request.bodyAs<T>(); };
+static_assert(!kHttpRequestViewBodyAsCallable<NotSerialized>);
+template <class T>
+constexpr bool kHttpRequestViewBodyAsYamlCallable =
+    requires(const HttpRequestView& request) { request.bodyAsYaml<T>(); };
+static_assert(!kHttpRequestViewBodyAsYamlCallable<NotSerialized>);
+#endif
+
+#ifdef AERONET_ENABLE_PROTOBUF
+static_assert(!HttpProtobufIncluded<NotSerialized>);
+template <class T>
+constexpr bool kHttpResponseBodyProtoCallable = requires(HttpResponse& resp, const T& msg) { resp.bodyProto(msg); };
+static_assert(!kHttpResponseBodyProtoCallable<NotSerialized>);
+template <class T>
+constexpr bool kHttpResponseBodyAsProtoCallable = requires(const HttpResponse& resp) { resp.bodyAsProto<T>(); };
+static_assert(!kHttpResponseBodyAsProtoCallable<NotSerialized>);
+template <class T>
+constexpr bool kHttpRequestViewMakeProtoResponseCallable =
+    requires(const HttpRequestView& request, const T& msg) { request.makeProtoResponse(msg); };
+static_assert(!kHttpRequestViewMakeProtoResponseCallable<NotSerialized>);
+#ifndef AERONET_PROTOBUF_LITE
+template <class T>
+constexpr bool kHttpResponseBodyProtoJsonCallable =
+    requires(HttpResponse& resp, const T& msg) { std::move(resp).bodyProtoJson(msg); };
+static_assert(!kHttpResponseBodyProtoJsonCallable<NotSerialized>);
+#endif
+#endif
+}  // namespace
+#endif
 
 class HttpResponseTest : public ::testing::Test {
  protected:

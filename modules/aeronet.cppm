@@ -14,6 +14,13 @@ module;
 
 #include <aeronet/aeronet.hpp>
 
+// The umbrella headers leave out Glaze, which is expensive to parse in each file that includes them. The module is
+// compiled once: it keeps the JSON / YAML body helpers and SerializeToJson().
+#ifdef AERONET_ENABLE_GLAZE
+#include <aeronet/http-json.hpp>
+#include <aeronet/json-serializer.hpp>
+#endif
+
 export module aeronet;
 
 export namespace aeronet {

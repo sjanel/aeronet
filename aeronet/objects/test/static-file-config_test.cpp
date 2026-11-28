@@ -11,7 +11,8 @@
 #endif
 
 #ifdef AERONET_ENABLE_GLAZE
-#include <glaze/glaze.hpp>
+#include <glaze/json/read.hpp>
+#include <glaze/json/write.hpp>
 #include <glaze/yaml.hpp>
 #include <string_view>
 

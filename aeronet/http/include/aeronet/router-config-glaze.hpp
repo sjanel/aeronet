@@ -1,6 +1,7 @@
 #pragma once
 
-#include <glaze/glaze.hpp>
+#include <glaze/json/read.hpp>
+#include <glaze/json/write.hpp>
 
 #include "aeronet/cors-policy-glaze.hpp"  // IWYU pragma: export
 #include "aeronet/router-config.hpp"

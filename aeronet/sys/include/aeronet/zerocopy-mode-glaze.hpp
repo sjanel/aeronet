@@ -1,6 +1,7 @@
 #pragma once
 
-#include <glaze/glaze.hpp>
+#include <glaze/json/read.hpp>
+#include <glaze/json/write.hpp>
 
 #include "aeronet/zerocopy-mode.hpp"
 

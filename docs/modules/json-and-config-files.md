@@ -108,7 +108,7 @@ The configuration objects are aggregates that Glaze reflects member by member, s
 
 ### Serialize configuration objects yourself
 
-The loaders and `dumpConfig()` cover configuration files. To read or write a configuration object with Glaze in your own code, as part of a larger document for instance, include `<aeronet/aeronet-config.hpp>` for `HttpServerConfig`, `RouterConfig` and `StaticFileConfig`, or `<aeronet/http-client-config-glaze.hpp>` for `HttpClientConfig`. The umbrella headers (`<aeronet/aeronet.hpp>`, `<aeronet/aeronet-server.hpp>`, `<aeronet/aeronet-client.hpp>`) include them.
+The loaders and `dumpConfig()` cover configuration files. To read or write a configuration object with Glaze in your own code, as part of a larger document for instance, include `<aeronet/aeronet-config.hpp>` for `HttpServerConfig`, `RouterConfig` and `StaticFileConfig`, or `<aeronet/http-client-config-glaze.hpp>` for `HttpClientConfig`. The umbrella headers (`<aeronet/aeronet.hpp>`, `<aeronet/aeronet-server.hpp>`, `<aeronet/aeronet-client.hpp>`) include the loaders, but not these headers, which include Glaze.
 
 ```cpp
 #include <aeronet/aeronet-config.hpp>
@@ -123,7 +123,7 @@ The configuration headers do not include Glaze, which is expensive to compile: m
 
 ## JSON and YAML bodies
 
-The body helpers live in `<aeronet/http-json.hpp>`, which includes Glaze. Glaze is expensive to compile, so the widely included core headers only declare these helpers: include `<aeronet/http-json.hpp>` in the files that use them. The `<aeronet/aeronet.hpp>` umbrella header includes it.
+The body helpers live in `<aeronet/http-json.hpp>`, which includes Glaze. Glaze is expensive to compile, so the widely included core headers only declare these helpers: include `<aeronet/http-json.hpp>` in the files that use them. The umbrella headers (`<aeronet/aeronet.hpp>`...) do not include it either. Without it, a call to a helper does not compile: the error names the missing header (`requires HttpJsonIncluded<T>  // #include <aeronet/http-json.hpp>`). The C++ module (`import aeronet;`, see [C++ modules](../getting-started/install.md#c-modules-experimental)) is compiled once, so it includes `<aeronet/http-json.hpp>` and `<aeronet/json-serializer.hpp>`: the helpers and `SerializeToJson()` need no include there.
 
 Any type Glaze can serialize works: standard containers, and aggregates such as `struct Order { std::string item; int quantity; };`, which Glaze reflects without annotations.
 

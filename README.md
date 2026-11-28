@@ -63,7 +63,7 @@ Spin up a basic HTTP server that responds on `/hello` in just a few lines.
 **All code examples** in the `README` and the documentation pages are guaranteed to compile as they are covered by a CI check.
 
 ```cpp
-#include <aeronet/aeronet.hpp> // unique 'umbrella' header, includes all public API
+#include <aeronet/aeronet.hpp> // unique 'umbrella' header of the core public API
 
 using namespace aeronet;
 

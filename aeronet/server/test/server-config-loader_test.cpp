@@ -7,7 +7,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <glaze/glaze.hpp>
+#include <glaze/json/read.hpp>
+#include <glaze/json/write.hpp>
 #include <iterator>
 #include <limits>
 #include <map>

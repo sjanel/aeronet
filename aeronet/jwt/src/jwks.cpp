@@ -1,7 +1,9 @@
 #include "aeronet/jwks.hpp"
 
 #include <algorithm>
-#include <glaze/glaze.hpp>
+#include <glaze/json/generic.hpp>
+#include <glaze/json/read.hpp>
+#include <glaze/json/write.hpp>
 #include <string_view>
 
 #include "aeronet/jwt-error.hpp"

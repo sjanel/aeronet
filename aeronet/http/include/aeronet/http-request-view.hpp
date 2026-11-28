@@ -26,6 +26,7 @@
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-response.hpp"
@@ -675,12 +676,14 @@ class HttpRequestView {
   /// Definition lives in <aeronet/http-json.hpp> (include it to use this method) so that translation
   /// units that do not parse JSON/YAML do not pay the (heavy) Glaze compilation cost.
   template <class T>
+    requires HttpJsonIncluded<T>  // #include <aeronet/http-json.hpp>
   [[nodiscard]] std::expected<T, HttpResponse> bodyAs() const;
 
   /// Parse the request body as YAML into type T.
   /// Returns the parsed object on success, or an HttpResponse (400 Bad Request) on parse failure.
   /// Definition lives in <aeronet/http-json.hpp> (include it to use this method).
   template <class T>
+    requires HttpJsonIncluded<T>  // #include <aeronet/http-json.hpp>
   [[nodiscard]] std::expected<T, HttpResponse> bodyAsYaml() const;
 #endif
 
@@ -693,14 +696,17 @@ class HttpRequestView {
   /// Request for a malformed body or missing required fields.
   /// Definition lives in <aeronet/http-protobuf.hpp> (include it to use this method), which includes protobuf.
   template <class T>
+    requires HttpProtobufIncluded<T>  // #include <aeronet/http-protobuf.hpp>
   [[nodiscard]] std::expected<T, HttpResponse> bodyAsProto() const;
 
   /// Same as bodyAsProto<T>(), but parses into 'msg' (for instance allocated on an Arena), which is replaced.
   template <class T>
+    requires HttpProtobufIncluded<T>  // #include <aeronet/http-protobuf.hpp>
   [[nodiscard]] std::expected<void, HttpResponse> bodyAsProto(T& msg) const;
 
   /// Same as makeProtoResponse(http::StatusCodeOK, msg, policy).
   template <class T>
+    requires HttpProtobufIncluded<T>  // #include <aeronet/http-protobuf.hpp>
   [[nodiscard]] HttpResponse makeProtoResponse(
       const T& msg, ProtoNotAcceptablePolicy policy = ProtoNotAcceptablePolicy::SendBinary) const {
     return makeProtoResponse(http::StatusCodeOK, msg, policy);
@@ -714,6 +720,7 @@ class HttpRequestView {
   /// Acceptable. Throws like bodyProto() and bodyProtoJson(). Definition lives in <aeronet/http-protobuf.hpp> (include
   /// it to use this method), which includes protobuf.
   template <class T>
+    requires HttpProtobufIncluded<T>  // #include <aeronet/http-protobuf.hpp>
   [[nodiscard]] HttpResponse makeProtoResponse(
       http::StatusCode statusCode, const T& msg,
       ProtoNotAcceptablePolicy policy = ProtoNotAcceptablePolicy::SendBinary) const;

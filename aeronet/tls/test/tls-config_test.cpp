@@ -18,7 +18,8 @@
 #include "aeronet/http-server-config.hpp"
 
 #ifdef AERONET_ENABLE_GLAZE
-#include <glaze/glaze.hpp>
+#include <glaze/json/read.hpp>
+#include <glaze/json/write.hpp>
 
 #include "aeronet/tls-config-glaze.hpp"  // IWYU pragma: keep (glz::meta of TLSConfig and its members)
 

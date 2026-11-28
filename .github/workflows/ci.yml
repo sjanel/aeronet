@@ -243,10 +243,11 @@ jobs:
 
       - name: Install coverage toolchain and dependencies (LLVM)
         run: |
-          # A recent LLVM toolchain is required for llvm-profdata/llvm-cov
-          ./scripts/ci-apt-install.sh --llvm 21 ninja-build build-essential python3-pip \
+          # LLVM 23, as the local coverage script. llvm-cov 21 reported CheckFormatSpec and CheckFormatString of
+          # format-lite.hpp as never executed, although format-lite_test calls them (PR #1009).
+          ./scripts/ci-apt-install.sh --llvm 23 ninja-build build-essential python3-pip \
             libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev \
-            libprotobuf-dev protobuf-compiler llvm-21 llvm-21-tools
+            libprotobuf-dev protobuf-compiler llvm-23 llvm-23-tools
 
       - name: Configure with Clang source-based coverage flags
         run: |
@@ -273,8 +274,8 @@ jobs:
             -D AERONET_ENABLE_WEBSOCKET=ON \
             -D AERONET_ENABLE_HTTP_CLIENT=ON \
             -D AERONET_ENABLE_ASYNC_HANDLERS=ON \
-            -D CMAKE_C_COMPILER=clang-21 \
-            -D CMAKE_CXX_COMPILER=clang++-21 \
+            -D CMAKE_C_COMPILER=clang-23 \
+            -D CMAKE_CXX_COMPILER=clang++-23 \
             -D CMAKE_C_FLAGS="-DNDEBUG -fprofile-instr-generate -fcoverage-mapping -O0 -fno-omit-frame-pointer" \
             -D CMAKE_CXX_FLAGS="-DNDEBUG -fprofile-instr-generate -fcoverage-mapping -O0 -fno-omit-frame-pointer" \
             -D CMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate"
@@ -294,7 +295,7 @@ jobs:
           cd ${BUILD_DIR}
 
           # Merge all profraw files into a single profdata
-          llvm-profdata-21 merge -sparse ../coverage-*.profraw -o coverage.profdata
+          llvm-profdata-23 merge -sparse ../coverage-*.profraw -o coverage.profdata
 
           # llvm-cov only reports source files for binaries passed on the command line,
           # so include every executed *_test binary from both tests/ and aeronet/.
@@ -313,13 +314,13 @@ jobs:
           IGNORE='(/test/|_test\.cpp$|test_support|CompilerId|_deps|generated/|static-string-view-helpers.hpp|internal/city_impl.hpp|internal/flat_hash_map.hpp|internal/bytell_hash_map.hpp|internal/city.hpp)'
 
           # Generate lcov report for Codecov
-          llvm-cov-21 export --format=lcov \
+          llvm-cov-23 export --format=lcov \
             --instr-profile=coverage.profdata \
             --ignore-filename-regex="$IGNORE" \
             "$MAIN_BINARY" "${OBJECT_ARGS[@]}" > coverage.lcov
 
           # Generate HTML report
-          llvm-cov-21 show --format=html \
+          llvm-cov-23 show --format=html \
             --instr-profile=coverage.profdata \
             --ignore-filename-regex="$IGNORE" \
             --show-branches=count \

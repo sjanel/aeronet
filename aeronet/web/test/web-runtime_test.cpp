@@ -24,7 +24,8 @@
 #include "web-test-util.hpp"
 
 #ifdef AERONET_ENABLE_GLAZE
-#include <glaze/glaze.hpp>
+#include <glaze/json/read.hpp>
+#include <glaze/json/write.hpp>
 
 #include "aeronet/address-space.hpp"
 #include "aeronet/glaze-round-trip.hpp"

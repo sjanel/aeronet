@@ -17,6 +17,10 @@
 //    include <aeronet/aeronet.hpp>, each re-exported header line is annotated with
 //      IWYU pragma: export
 //    so that symbols they provide are treated as satisfied for direct use in user code.
+//  * Glaze and protobuf are expensive to compile: include <aeronet/http-json.hpp> (JSON / YAML body helpers),
+//    <aeronet/aeronet-config.hpp> and <aeronet/http-client-config-glaze.hpp> (Glaze metadata of the configuration
+//    types) and <aeronet/http-protobuf.hpp> (protobuf body helpers) in the files that use them. The configuration
+//    loaders are included.
 //  * If you prefer more granular control (to minimize compile time), you can include the
 //    specific individual headers instead of this umbrella.
 

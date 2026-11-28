@@ -25,7 +25,7 @@ add_executable(shop main.cpp)
 target_link_libraries(shop PRIVATE shop_messages aeronet::aeronet)
 ```
 
-Then include `<aeronet/http-protobuf.hpp>` in the files that serialize or parse messages. protobuf is expensive to compile, so the core headers only declare the protobuf helpers, and the umbrella headers (`<aeronet/aeronet.hpp>`) do not include it. Without it, calling a helper fails at link time with an undefined reference to it.
+Then include `<aeronet/http-protobuf.hpp>` in the files that serialize or parse messages. protobuf is expensive to compile, so the core headers only declare the protobuf helpers, and the umbrella headers (`<aeronet/aeronet.hpp>`) do not include it. Without it, a call to a helper does not compile: the error names the missing header (`requires HttpProtobufIncluded<T>  // #include <aeronet/http-protobuf.hpp>`).
 
 A complete server is in [examples/protobuf.cpp](../../examples/protobuf.cpp), with its [protobuf-shop.proto](../../examples/protobuf-shop.proto). The snippets below use `google.protobuf.Struct`, a message shipped with protobuf, so that they compile as is: generated messages are used the same way.
 

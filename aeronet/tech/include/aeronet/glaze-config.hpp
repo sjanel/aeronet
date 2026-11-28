@@ -1,7 +1,8 @@
 #pragma once
 
 #include <cassert>
-#include <glaze/glaze.hpp>
+#include <glaze/json/read.hpp>
+#include <glaze/json/write.hpp>
 #include <glaze/yaml.hpp>
 #include <stdexcept>
 #include <string>

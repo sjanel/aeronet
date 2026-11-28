@@ -2,7 +2,6 @@
 
 #include <gtest/gtest.h>
 
-#include <glaze/glaze.hpp>  // IWYU pragma: export
 #include <string>
 
 namespace aeronet::test {
