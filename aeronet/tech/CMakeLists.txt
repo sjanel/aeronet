@@ -192,6 +192,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    saturate-cast_test
+    test/saturate-cast_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
     search-crlf_test
     test/search-crlf_test.cpp
     LIBRARIES

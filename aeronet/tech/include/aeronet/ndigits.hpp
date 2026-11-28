@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <bit>
 #include <concepts>
 #include <cstdint>
@@ -18,23 +17,30 @@ constexpr std::uint8_t ndigits(std::unsigned_integral auto n) noexcept {
 
   if constexpr (sizeof(n) <= sizeof(std::uint16_t)) {
     static constexpr uint16_t kThresholds[]{100, 1000, 10000};
+
     uint8_t digits = 2;
     digits = static_cast<uint8_t>(digits + (n >= kThresholds[0]));
     digits = static_cast<uint8_t>(digits + (n >= kThresholds[1]));
     digits = static_cast<uint8_t>(digits + (n >= kThresholds[2]));
+
     return digits;
   } else {
     using U = std::uintmax_t;
 
     static constexpr uint8_t kMaxNbBits = (sizeof(U) * 8U) - 1U;
-    static constexpr auto pow10 = [] {
-      std::array<U, std::numeric_limits<U>::digits10 + 1> arr{};
-      arr[0] = 9U;
+
+    struct Pow10 {
+      U arr[std::numeric_limits<U>::digits10 + 1];
+    };
+
+    static constexpr Pow10 pow10 = [] {
+      Pow10 res;
+      res.arr[0] = 9U;
       for (unsigned int i = 1U; i < std::numeric_limits<U>::digits10; ++i) {
-        arr[i] = (arr[i - 1U] * 10U) + 9U;
+        res.arr[i] = (res.arr[i - 1U] * 10U) + 9U;
       }
-      arr[std::numeric_limits<U>::digits10] = std::numeric_limits<U>::max();
-      return arr;
+      res.arr[std::numeric_limits<U>::digits10] = std::numeric_limits<U>::max();
+      return res;
     }();
 
     const uint8_t floorLog2 = kMaxNbBits - static_cast<uint8_t>(std::countl_zero(static_cast<U>(n)));
@@ -44,7 +50,7 @@ constexpr std::uint8_t ndigits(std::unsigned_integral auto n) noexcept {
     static_assert(((1233U * kMaxNbBits) >> 12U) <= std::numeric_limits<U>::digits10,
                   "ndigits approximation bound changed");
 
-    return static_cast<uint8_t>(estimate + 1U + (pow10[estimate] < n));
+    return static_cast<uint8_t>(estimate + 1U + (pow10.arr[estimate] < n));
   }
 }
 

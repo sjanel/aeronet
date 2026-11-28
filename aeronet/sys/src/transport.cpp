@@ -18,7 +18,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/native-handle.hpp"
 #ifdef AERONET_WINDOWS
-#include "aeronet/safe-cast.hpp"
+#include "aeronet/saturate-cast.hpp"
 #endif
 #include "aeronet/sendfile.hpp"
 #include "aeronet/system-error.hpp"
