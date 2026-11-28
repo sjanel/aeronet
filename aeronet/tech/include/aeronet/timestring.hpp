@@ -1,15 +1,108 @@
 #pragma once
 
-#include <chrono>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/timedef.hpp"
 
 namespace aeronet {
+
+// A date of the proleptic Gregorian calendar, as std::chrono::year_month_day, which needs the whole <chrono>.
+struct CivilDate {
+  int year;
+  unsigned month;  // 1 to 12
+  unsigned day;    // 1 to 31
+};
+
+/// The date of the day 'daysSinceEpoch' (0 for 1970-01-01), as std::chrono::year_month_day{sys_days}: the algorithm of
+/// Neri and Schneider (https://arxiv.org/abs/2102.06959, proposition 6.3), that of libstdc++. 'daysSinceEpoch' must be
+/// in [-536895458, 536846365] (-1468000-03-01 to 1471805-06-05), which holds the days of any SysTimePoint.
+constexpr CivilDate CivilDateOfDays(std::int64_t daysSinceEpoch) noexcept {
+  static constexpr auto kYearShift = static_cast<std::uint32_t>(-1468000);
+  static constexpr std::uint32_t kDayShift = 536895458;
+
+  // Out of the range, the 32-bit arithmetic below wraps: 'shiftedDays' must not be negative, nor 4 * shiftedDays + 3
+  // overflow.
+  assert(daysSinceEpoch >= -std::int64_t{kDayShift} &&
+         // NOLINTNEXTLINE(modernize-use-integer-sign-comparison)
+         daysSinceEpoch < static_cast<std::int64_t>((1UL << 30U) - kDayShift));
+  const std::uint32_t shiftedDays = static_cast<std::uint32_t>(daysSinceEpoch) + kDayShift;
+  const std::uint32_t n1 = (4U * shiftedDays) + 3U;
+  const std::uint32_t centuries = n1 / 146097U;
+  const std::uint32_t dayOfCentury = n1 % 146097U / 4U;
+
+  const std::uint32_t n2 = (4U * dayOfCentury) + 3U;
+  const std::uint64_t u2 = std::uint64_t{2939745} * n2;
+  const auto yearOfCentury = static_cast<std::uint32_t>(u2 >> 32U);
+  const std::uint32_t dayOfYear = static_cast<std::uint32_t>(u2 & 0xFFFFFFFFU) / 2939745U / 4U;
+
+  const std::uint32_t n3 = (2141U * dayOfYear) + 197913U;
+  const std::uint32_t month = n3 >> 16U;
+  const std::uint32_t dayOfMonth = (n3 & 0xFFFFU) / 2141U;
+
+  // The computation counts the years from March: January and February belong to the next year.
+  const bool janOrFeb = dayOfYear >= 306U;
+  return {
+      static_cast<int>((100U * centuries) + yearOfCentury + (janOrFeb ? 1U : 0U) + kYearShift),
+      janOrFeb ? month - 12U : month,
+      dayOfMonth + 1U,
+  };
+}
+
+/// The day of 'date' since 1970-01-01, as sys_days{year_month_day}: the algorithm of Neri and Schneider (proposition
+/// 6.2), that of libstdc++. 'date' must be valid (see IsValidCivilDate()) and from -1468000-03-01 to 1471745-02-28.
+constexpr std::int32_t DaysOfCivilDate(CivilDate date) noexcept {
+  constexpr auto kYearShift = static_cast<std::uint32_t>(-1468000);
+  constexpr std::uint32_t kDayShift = 536895458;
+
+  // The computation counts the years from March: January and February belong to the previous year.
+  const bool janOrFeb = date.month < 3U;
+  const std::uint32_t year = static_cast<std::uint32_t>(date.year) - kYearShift - (janOrFeb ? 1U : 0U);
+  const std::uint32_t month = janOrFeb ? date.month + 12U : date.month;
+  // Out of the range, 'year' wraps below 0 or 1461 * year overflows.
+  assert(year <= 2939744U);
+
+  const std::uint32_t century = year / 100U;
+  const std::uint32_t yearDays = (1461U * year / 4U) - century + (century / 4U);
+  const std::uint32_t monthDays = ((979U * month) - 2919U) / 32U;
+
+  return static_cast<std::int32_t>(yearDays + monthDays + (date.day - 1U) - kDayShift);
+}
+
+/// Whether 'year' is a leap year of the proleptic Gregorian calendar.
+constexpr bool IsLeapYear(int year) noexcept {
+  // year % 100 == 0 ? year % 400 == 0 : year % 4 == 0, as libstdc++: a multiple of 4 is a multiple of 100 if and only
+  // if it is one of 25, and a multiple of 400 if and only if it is one of 16.
+  return (static_cast<unsigned>(year) & (year % 25 == 0 ? 15U : 3U)) == 0;
+}
+
+/// Whether 'date' exists (month 1 to 12, day 1 to the last of the month), as std::chrono::year_month_day::ok() but for
+/// any year (ok() also requires -32767 to 32767).
+constexpr bool IsValidCivilDate(CivilDate date) noexcept {
+  if (date.month == 0 || date.month > 12U || date.day == 0) {
+    return false;
+  }
+  if (date.month == 2U) {
+    return date.day <= (IsLeapYear(date.year) ? 29U : 28U);
+  }
+  // 31 days, except April, June, September and November (30).
+  return date.day <= (((date.month ^ (date.month >> 3U)) & 1U) | 30U);
+}
+
+/// The day of the week of the day 'daysSinceEpoch', 0 for Sunday, as std::chrono::weekday{sys_days}.c_encoding().
+constexpr unsigned WeekdayOfDays(std::int64_t daysSinceEpoch) noexcept {
+  // (4 + daysSinceEpoch) mod 7 (1970-01-01 was a Thursday) in unsigned arithmetic, as libstdc++: a negative day is
+  // shifted by kNegativeShift, which leaves its remainder unchanged and its sum with 4 positive.
+  constexpr std::uint64_t kMax = ~std::uint64_t{0};
+  constexpr std::uint64_t kNegativeShift = kMax - ((7U * ((kMax - 260U) / 7U)) - 1U);
+  const std::uint64_t shift = daysSinceEpoch >= 0 ? 0U : kNegativeShift;
+  return static_cast<unsigned>((4U + static_cast<std::uint64_t>(daysSinceEpoch) - shift) % 7U);
+}
 
 // English abbreviations of the week days from Sunday (the order of std::chrono::weekday::c_encoding()), and of the
 // months from January, as HTTP dates spell them (RFC 9110 §5.6.7). Fixed-width: no pointer-array indirection.
@@ -94,18 +187,61 @@ constexpr unsigned MonthOfAbbreviation(const char* ptr) noexcept {
   return idx == 12U ? 0U : static_cast<unsigned>(idx) + 1U;
 }
 
+namespace detail {
+
+// The day since 1970-01-01 of 'timePoint', and its milliseconds since the start of that day.
+struct DayAndMillisecond {
+  std::int64_t epochDay;
+  std::uint32_t millisecondOfDay;
+};
+
+constexpr DayAndMillisecond DayAndMillisecondOf(SysTimePoint timePoint) noexcept {
+  // In milliseconds before taking the day: the day floor of a time point near SysTimePoint::min() does not fit its
+  // ticks (nanoseconds for libstdc++), that of its milliseconds does.
+  const auto msFloor = std::chrono::floor<std::chrono::milliseconds>(timePoint);
+  const auto dayFloor = std::chrono::floor<std::chrono::days>(msFloor);
+  return {
+      dayFloor.time_since_epoch().count(),
+      static_cast<std::uint32_t>((msFloor - dayFloor).count()),
+  };
+}
+
+// Writes 'YYYY-MM-DD' and returns a pointer after it.
+constexpr auto WriteDateISO8601(CivilDate date, auto out) {
+  out = write4(out, date.year);
+  *out = '-';
+  out = write2(++out, date.month);
+  *out = '-';
+  return write2(++out, date.day);
+}
+
+// Writes 'YYYY-MM-DDTHH:MM:SS' and returns a pointer after it.
+constexpr auto WriteDateTimeISO8601(DayAndMillisecond dayAndMs, auto out) {
+  const std::uint32_t secondOfDay = dayAndMs.millisecondOfDay / 1000U;
+  const std::uint32_t hour = secondOfDay / 3600U;
+  const std::uint32_t secondOfHour = secondOfDay - (hour * 3600U);
+  const std::uint32_t minute = secondOfHour / 60U;
+  out = WriteDateISO8601(CivilDateOfDays(dayAndMs.epochDay), out);
+  *out = 'T';
+  out = write2(++out, hour);
+  *out = ':';
+  out = write2(++out, minute);
+  *out = ':';
+  return write2(++out, secondOfHour - (minute * 60U));
+}
+
+}  // namespace detail
+
+// The formatters below write 4-digit years: the year of their time point must be 0 to 9999, as that of any SysTimePoint
+// of libstdc++ (1677 to 2262), but not of all those of libc++ (microseconds) and MSVC (100 ns), which span far more.
+
 /// Writes chars of the representation of a given time point in ISO 8601 UTC format with maximum performance and return
 /// a pointer after the last char written. The written format will be:
 ///   - 'YYYY-MM-DD'
 /// The buffer should have a space of at least 10 chars.
 constexpr auto DateISO8601UTC(SysTimePoint timePoint, auto out) {
-  const auto daysFloor = std::chrono::floor<std::chrono::days>(timePoint);
-  const std::chrono::year_month_day ymd{daysFloor};
-  out = write4(out, static_cast<int>(ymd.year()));
-  *out = '-';
-  out = write2(++out, static_cast<unsigned>(ymd.month()));
-  *out = '-';
-  return write2(++out, static_cast<unsigned>(ymd.day()));
+  return detail::WriteDateISO8601(
+      CivilDateOfDays(std::chrono::floor<std::chrono::days>(timePoint).time_since_epoch().count()), out);
 }
 
 /// Writes chars of the representation of a given time point in ISO 8601 UTC format with maximum performance and return
@@ -114,16 +250,7 @@ constexpr auto DateISO8601UTC(SysTimePoint timePoint, auto out) {
 /// The buffer should have a space of at least 20 chars.
 template <bool WithFinalZ = true>
 constexpr auto TimeToStringISO8601UTC(SysTimePoint timePoint, auto out) {
-  const auto daysFloor = std::chrono::floor<std::chrono::days>(timePoint);
-  const std::chrono::hh_mm_ss hms{
-      std::chrono::floor<std::chrono::milliseconds>(timePoint - daysFloor)};  // ms floor also used by ms variant
-  out = DateISO8601UTC(timePoint, out);
-  *out = 'T';
-  out = write2(++out, hms.hours().count());
-  *out = ':';
-  out = write2(++out, hms.minutes().count());
-  *out = ':';
-  out = write2(++out, hms.seconds().count());
+  out = detail::WriteDateTimeISO8601(detail::DayAndMillisecondOf(timePoint), out);
   if constexpr (WithFinalZ) {
     *out = 'Z';
     ++out;
@@ -136,11 +263,10 @@ constexpr auto TimeToStringISO8601UTC(SysTimePoint timePoint, auto out) {
 ///   - 'YYYY-MM-DDTHH:MM:SS.sssZ'
 /// The buffer should have a space of at least 24 chars (ISO8601UTCWithMsStrLen).
 constexpr auto TimeToStringISO8601UTCWithMs(SysTimePoint timePoint, auto out) {
-  const auto daysFloor = std::chrono::floor<std::chrono::days>(timePoint);
-  const std::chrono::hh_mm_ss hms{std::chrono::floor<std::chrono::milliseconds>(timePoint - daysFloor)};
-  out = TimeToStringISO8601UTC<false>(timePoint, out);
+  const detail::DayAndMillisecond dayAndMs = detail::DayAndMillisecondOf(timePoint);
+  out = detail::WriteDateTimeISO8601(dayAndMs, out);
   *out = '.';
-  out = write3(++out, hms.subseconds().count());
+  out = write3(++out, dayAndMs.millisecondOfDay % 1000U);
   *out = 'Z';
   return ++out;
 }
@@ -149,22 +275,21 @@ constexpr auto TimeToStringISO8601UTCWithMs(SysTimePoint timePoint, auto out) {
 /// Buffer must have space for at least 29 characters (no null terminator added):
 /// WWW, DD Mon YYYY HH:MM:SS GMT
 /// Returns pointer past last written char.
-constexpr auto TimeToStringRFC7231(SysTimePoint tp, auto out) {
+inline auto TimeToStringRFC7231(SysTimePoint tp, auto out) {
   static constexpr char kSkeleton[]{
       '?', '?', '?', ',', ' ', '?', '?', ' ', '?', '?', '?', ' ', '?', '?', '?',
       '?', ' ', '?', '?', ':', '?', '?', ':', '?', '?', ' ', 'G', 'M', 'T',
   };
 
-  using namespace std::chrono;
-
-  const sys_seconds secTp = time_point_cast<seconds>(tp);
-  const auto day_point = floor<days>(secTp);
-  const year_month_day ymd{day_point};
-  const weekday wd{day_point};
+  // Rounded down, as the ISO 8601 formatters: time_point_cast() rounds toward 0, 1970-01-01 for 500 ms before it.
+  const std::chrono::sys_seconds secTp = std::chrono::floor<std::chrono::seconds>(tp);
+  const auto dayPoint = std::chrono::floor<std::chrono::days>(secTp);
+  const std::int64_t epochDay = dayPoint.time_since_epoch().count();
+  const CivilDate date = CivilDateOfDays(epochDay);
 
   // Seconds since midnight, in [0, 86400). Two divisions instead of three:
   // m and s are both derived from the remainder after removing hours.
-  const unsigned tod = static_cast<unsigned>((secTp - day_point).count());
+  const unsigned tod = static_cast<unsigned>((secTp - dayPoint).count());
   const unsigned hour = tod / 3600;
   const unsigned rem = tod - (hour * 3600);
   const unsigned min = rem / 60;
@@ -172,12 +297,12 @@ constexpr auto TimeToStringRFC7231(SysTimePoint tp, auto out) {
 
   std::memcpy(out, kSkeleton, sizeof(kSkeleton));
 
-  std::memcpy(out, kWeekdayAbbreviations[wd.c_encoding()], sizeof(kWeekdayAbbreviations[0]));
-  write2(out + 5, static_cast<unsigned>(ymd.day()));
+  std::memcpy(out, kWeekdayAbbreviations[WeekdayOfDays(epochDay)], sizeof(kWeekdayAbbreviations[0]));
+  write2(out + 5, date.day);
 
-  std::memcpy(out + 8, kMonthAbbreviations[static_cast<unsigned>(ymd.month()) - 1], sizeof(kMonthAbbreviations[0]));
+  std::memcpy(out + 8, kMonthAbbreviations[date.month - 1], sizeof(kMonthAbbreviations[0]));
 
-  write4(out + 12, static_cast<int>(ymd.year()));
+  write4(out + 12, date.year);
   write2(out + 17, hour);
   write2(out + 20, min);
   write2(out + 23, sec);

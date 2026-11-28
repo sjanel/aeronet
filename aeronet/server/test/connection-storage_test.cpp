@@ -2,7 +2,6 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -14,6 +13,7 @@
 #endif
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/connection.hpp"
 #include "aeronet/file-payload.hpp"

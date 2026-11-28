@@ -1,6 +1,7 @@
-// Micro-benchmark of aeronet::Format (aeronet/format-lite.hpp, the formatting of the aeronet logs and exception messages)
-// against std::format, on the messages of the library: default formats of integers and strings, which format-lite
-// writes itself, and format specifications, which it hands to std::format one field at a time.
+// Micro-benchmark of aeronet::Format (aeronet/format-lite.hpp, the formatting of the aeronet logs and exception
+// messages) against std::format, on the messages of the library: default formats of integers and strings, and integer
+// format specifications, which format-lite writes itself, and the other format specifications, which it hands to
+// std::format one field at a time.
 #include <benchmark/benchmark.h>
 
 #include <cstddef>
@@ -54,6 +55,26 @@ void BM_StdFormatSpecifications(benchmark::State& state) {
   }
 }
 BENCHMARK(BM_StdFormatSpecifications);
+
+void BM_FormatLiteIntegerSpecifications(benchmark::State& state) {
+  unsigned events = 0;
+  int delta = -1;
+  for (auto _ : state) {
+    std::string message = Format("events={:#010x} delta={:+} mask={:08b}", ++events, --delta, events & 0xFFU);
+    benchmark::DoNotOptimize(message);
+  }
+}
+BENCHMARK(BM_FormatLiteIntegerSpecifications);
+
+void BM_StdFormatIntegerSpecifications(benchmark::State& state) {
+  unsigned events = 0;
+  int delta = -1;
+  for (auto _ : state) {
+    std::string message = std::format("events={:#010x} delta={:+} mask={:08b}", ++events, --delta, events & 0xFFU);
+    benchmark::DoNotOptimize(message);
+  }
+}
+BENCHMARK(BM_StdFormatIntegerSpecifications);
 
 }  // namespace
 }  // namespace aeronet

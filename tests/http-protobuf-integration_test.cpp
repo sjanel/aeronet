@@ -2,10 +2,8 @@
 // HTTP/1.1 and over cleartext HTTP/2, with and without compression.
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <format>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -13,10 +11,12 @@
 
 #include "aeronet-test-required.pb.h"
 #include "aeronet-test.pb.h"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-constants.hpp"
@@ -67,7 +67,7 @@ Order MakeOrder(std::size_t payloadSize = 16) {
   order.set_customer("jdoe@example.com");
   for (int pos = 0; pos < 3; ++pos) {
     auto* item = order.add_items();
-    item->set_sku(std::format("SKU-{}", pos));
+    item->set_sku(Format("SKU-{}", pos));
     item->set_quantity(static_cast<uint32_t>(pos + 1));
   }
   (*order.mutable_tags())["channel"] = "web";
@@ -157,7 +157,7 @@ class HttpProtobuf : public ::testing::TestWithParam<HttpVersionMode> {
   }
 
   [[nodiscard]] std::string url(std::string_view target) const {
-    return std::format("http://127.0.0.1:{}{}", ts.port(), target);
+    return Format("http://127.0.0.1:{}{}", ts.port(), target);
   }
 
   // Sends the request built by 'build' to 'target' with a client of configuration 'cfg' and returns the response.
@@ -168,7 +168,7 @@ class HttpProtobuf : public ::testing::TestWithParam<HttpVersionMode> {
     std::forward<Build>(build)(request);
     auto result = client.request(std::move(request));
     if (!result) {
-      throw std::runtime_error(std::format("request to {} failed", target));
+      throw std::runtime_error(Format("request to {} failed", target));
     }
     return std::move(result).value();
   }

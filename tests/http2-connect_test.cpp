@@ -2,13 +2,13 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-frame-types.hpp"

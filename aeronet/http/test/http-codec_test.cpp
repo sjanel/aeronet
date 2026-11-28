@@ -8,7 +8,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <format>
 #include <limits>
 #include <span>
 #include <string>
@@ -21,6 +20,7 @@
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-codec-result.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -338,9 +338,9 @@ TEST(HttpCodecCompression, CompressionWeakensAStrongETag) {
           for (bool addTrailer : {false, true}) {
             // Without Content-Length for HTTP/2 (Http2Config::sendContentLengthHeader).
             const bool sendContentLengthHeader = !http2Enabled() || addTrailer;
-            SCOPED_TRACE(std::format("leadingZeroes={} etag={} vary={} captured={} trailer={}", useLeadingZeroes,
-                                     static_cast<int>(etagCase), varyContent.data() == nullptr ? "none" : varyContent,
-                                     capturedBody, addTrailer));
+            SCOPED_TRACE(Format("leadingZeroes={} etag={} vary={} captured={} trailer={}", useLeadingZeroes,
+                                static_cast<int>(etagCase), varyContent.data() == nullptr ? "none" : varyContent,
+                                capturedBody, addTrailer));
             HttpResponse resp = HttpResponseTest::MakeResponse(varyContent, capturedBody, addTrailer, body,
                                                                sendContentLengthHeader, etagCase);
             ASSERT_EQ(HttpCodec::TryCompressBody(state, Encoding::gzip, resp), CompressResponseResult::Compressed);

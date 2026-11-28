@@ -17,7 +17,13 @@
 #include <string_view>
 #include <type_traits>
 
+#include "aeronet/raw-chars.hpp"
+
 namespace aeronet {
+
+/// The buffers that the formatting functions append to.
+template <class Out>
+concept FormatOutput = std::is_same_v<Out, std::string> || std::is_same_v<Out, RawChars>;
 
 // An argument of a format call: its value, or the view of a string, which must outlive the call.
 class FormatArg {
@@ -84,7 +90,8 @@ class FormatArg {
   /// Appends the argument to 'out', formatted as std::format formats it for 'field', its replacement field ('{}' or
   /// '{:spec}', braces included). Throws std::format_error when it cannot ('{:c}' of an integer out of the range of
   /// char).
-  void formatTo(std::string& out, std::string_view field) const;
+  template <FormatOutput Out>
+  void formatTo(Out& out, std::string_view field) const;
 
  private:
   struct StringValue {
@@ -278,14 +285,21 @@ using FormatString = CheckedFormatString<std::type_identity_t<Args>...>;
 
 /// Appends 'fmt' formatted with the 'nbArgs' arguments of 'pArgs' to 'out', as std::format would. 'fmt' must be checked
 /// for them (FormatString). Throws std::format_error as FormatArg::formatTo().
-void VFormatTo(std::string& out, std::string_view fmt, const FormatArg* pArgs, std::size_t nbArgs);
+template <FormatOutput Out>
+void VFormatTo(Out& out, std::string_view fmt, const FormatArg* pArgs, std::size_t nbArgs);
+
+/// Appends 'fmt' formatted with 'args' to 'out', as std::format_to(std::back_inserter(out), fmt, args...) would.
+template <FormatOutput Out, class... Args>
+void FormatTo(Out& out, FormatString<Args...> fmt, const Args&... args) {
+  const FormatArg formatArgs[]{FormatArg(args)..., FormatArg()};
+  VFormatTo(out, fmt.get(), formatArgs, sizeof...(Args));
+}
 
 /// 'fmt' formatted with 'args', as std::format would.
 template <class... Args>
 [[nodiscard]] std::string Format(FormatString<Args...> fmt, const Args&... args) {
-  const FormatArg formatArgs[]{FormatArg(args)..., FormatArg()};
   std::string out;
-  VFormatTo(out, fmt.get(), formatArgs, sizeof...(Args));
+  FormatTo(out, fmt, args...);
   return out;
 }
 

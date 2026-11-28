@@ -5,13 +5,13 @@
 #include <gtest/gtest.h>
 
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <span>
 #include <string_view>
 #include <system_error>
 
 #include "aeronet/adaptive-poll-timeout.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/connection.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"

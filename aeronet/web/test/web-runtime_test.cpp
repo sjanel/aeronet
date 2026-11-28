@@ -3,7 +3,6 @@
 #include <gtest/gtest.h>
 
 #include <bit>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -15,6 +14,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/test_server_fixture.hpp"

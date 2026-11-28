@@ -9,7 +9,6 @@
 #include <array>
 #include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <exception>
 #include <memory>
@@ -22,6 +21,7 @@
 #define AERONET_WANT_SOCKET_OVERRIDES
 #define AERONET_WANT_READ_WRITE_OVERRIDES
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"

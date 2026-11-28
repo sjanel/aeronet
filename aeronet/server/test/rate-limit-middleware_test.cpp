@@ -2,12 +2,12 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <memory>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/middleware.hpp"

@@ -1,6 +1,5 @@
 #include "aeronet/test_server_fixture.hpp"
 
-#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -11,6 +10,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"

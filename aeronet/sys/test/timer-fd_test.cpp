@@ -4,7 +4,6 @@
 #include <sys/timerfd.h>
 
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -18,6 +17,7 @@
 #include <utility>
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/vector.hpp"

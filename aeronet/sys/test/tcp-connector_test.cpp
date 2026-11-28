@@ -10,7 +10,6 @@
 
 #include <cassert>
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <deque>
@@ -25,6 +24,7 @@
 
 #include "aeronet/address-space.hpp"
 #include "aeronet/base-fd.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/system-error.hpp"

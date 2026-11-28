@@ -3,12 +3,10 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
-#include <format>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -16,10 +14,12 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-constants.hpp"
@@ -32,6 +32,8 @@
 #include "aeronet/middleware.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
+#include "aeronet/router.hpp"
+#include "aeronet/static-file-config.hpp"
 #include "aeronet/static-file-handler.hpp"
 #include "aeronet/supported-accept-encoding.hpp"
 #include "aeronet/temp-file.hpp"
@@ -84,7 +86,7 @@ class ProtocolParity : public ::testing::TestWithParam<HttpVersionMode> {
   }
 
   [[nodiscard]] std::string url(std::string_view target) const {
-    return std::format("http://127.0.0.1:{}{}", ts.port(), target);
+    return Format("http://127.0.0.1:{}{}", ts.port(), target);
   }
 
   // Sends the request built by 'build' from a client request to 'target' and returns the response.
@@ -95,7 +97,7 @@ class ProtocolParity : public ::testing::TestWithParam<HttpVersionMode> {
     std::forward<Build>(build)(request);
     auto result = client.request(std::move(request));
     if (!result) {
-      throw std::runtime_error(std::format("request to {} failed", target));
+      throw std::runtime_error(Format("request to {} failed", target));
     }
     return std::move(result).value();
   }
@@ -201,11 +203,11 @@ TEST_P(ProtocolParity, RequestMiddlewareSeesPathAndQueryParameters) {
   std::string seen;
   ts.router().addRequestMiddleware([&](HttpRequestView& req) {
     std::scoped_lock lock(mutex);
-    seen = std::format("{}|{}", req.pathParamValueOrEmpty("id"), req.queryParamValueOrEmpty("q"));
+    seen = Format("{}|{}", req.pathParamValueOrEmpty("id"), req.queryParamValueOrEmpty("q"));
     return MiddlewareResult::Continue();
   });
   ts.router().setPath(http::Method::GET, "/items/{id}", [](const HttpRequestView& req) {
-    return HttpResponse(std::format("{}|{}", req.pathParamValueOrEmpty("id"), req.queryParamValueOrEmpty("q")));
+    return HttpResponse(Format("{}|{}", req.pathParamValueOrEmpty("id"), req.queryParamValueOrEmpty("q")));
   });
   const auto resp = send(http::Method::GET, "/items/42?q=abc");
   EXPECT_EQ(resp.status(), http::StatusCodeOK);
@@ -639,9 +641,9 @@ TEST_P(ProtocolParity, IdentityVariantVariesOnAcceptEncoding) {
 // body of a few MiB of incompressible data used to fail: brotli stopped reading its input after about 1.5 MiB of 64 KiB
 // writes, zstd after a block of a 1 MiB write.
 TEST_P(ProtocolParity, LargeIncompressibleBodiesAreCompressedWhole) {
-  static constexpr std::size_t kPieceSize = 64UL << 10;
+  static constexpr std::size_t kPieceSize = 64UL << 10U;
   static constexpr std::size_t kNbPieces = 32;
-  static constexpr std::size_t kLargeSize = 1UL << 20;
+  static constexpr std::size_t kLargeSize = 1UL << 20U;
   const RawChars payload = test::MakeRandomPayload((kPieceSize * kNbPieces) + kLargeSize);
   // kNbPieces pieces of kPieceSize bytes, then one of kLargeSize bytes.
   const auto forEachPiece = [](std::string_view body, auto&& func) {
@@ -685,7 +687,7 @@ TEST_P(ProtocolParity, LargeIncompressibleBodiesAreCompressedWhole) {
     cfg.withDecompression(false).withDefaultAcceptEncoding(GetEncodingStr(encoding));
     HttpClient client(std::move(cfg));
     for (std::string_view target : {"/streamed", "/appended", "/inline-appended"}) {
-      SCOPED_TRACE(std::format("{} {}", GetEncodingStr(encoding), target));
+      SCOPED_TRACE(Format("{} {}", GetEncodingStr(encoding), target));
       const auto resp = client.request(client.makeRequest(http::Method::GET, url(target)));
       ASSERT_TRUE(resp.has_value());
       EXPECT_EQ(resp->status(), http::StatusCodeOK);
@@ -723,12 +725,12 @@ TEST_P(ProtocolParity, UnsupportedContentCodingAnswerListsTheDecodedOnes) {
 // 1xx, 204 and 304 responses carry no content, whatever the handler set: no body, no Content-Length, no Content-Type.
 TEST_P(ProtocolParity, StatusesWithoutContentDropTheBody) {
   for (http::StatusCode status : {http::StatusCodeNoContent, http::StatusCodeNotModified}) {
-    ts.router().setPath(http::Method::GET, std::format("/buffered{}", status), [status](const HttpRequestView&) {
+    ts.router().setPath(http::Method::GET, Format("/buffered{}", status), [status](const HttpRequestView&) {
       HttpResponse resp(status, "BODY-OF-RESPONSE");
       resp.trailerAddLine("x-trailer", "t").headerAddLine("x-custom", "kept");
       return resp;
     });
-    ts.router().setPath(http::Method::GET, std::format("/streamed{}", status),
+    ts.router().setPath(http::Method::GET, Format("/streamed{}", status),
                         [status](const HttpRequestView&, HttpResponseWriter& writer) {
                           writer.status(status);
                           writer.headerAddLine("x-custom", "kept");
@@ -737,8 +739,8 @@ TEST_P(ProtocolParity, StatusesWithoutContentDropTheBody) {
                           writer.end();
                         });
     for (std::string_view kind : {"/buffered", "/streamed"}) {
-      SCOPED_TRACE(std::format("{}{}", kind, status));
-      const auto resp = send(http::Method::GET, std::format("{}{}", kind, status));
+      SCOPED_TRACE(Format("{}{}", kind, status));
+      const auto resp = send(http::Method::GET, Format("{}{}", kind, status));
       EXPECT_EQ(resp.status(), status);
       EXPECT_TRUE(resp.bodyInMemory().empty());
       EXPECT_EQ(resp.trailersSize(), 0U);
@@ -877,8 +879,7 @@ TEST_P(ProtocolParityHttpsRedirect, PlaintextRequestsAreRedirected) {
 
   const auto resp = send(http::Method::GET, "/page?a=1&b=two%20words");
   EXPECT_EQ(resp.status(), http::StatusCodeMovedPermanently);
-  EXPECT_EQ(resp.headerValueOrEmpty(http::Location),
-            std::format("https://127.0.0.1:{}/page?a=1&b=two%20words", kHttpsPort));
+  EXPECT_EQ(resp.headerValueOrEmpty(http::Location), Format("https://127.0.0.1:{}/page?a=1&b=two%20words", kHttpsPort));
 
   // The body of the request is not read.
   const auto post = send(http::Method::POST, "/page", [](auto& req) { req.body(std::string(256UL * 1024UL, 'b')); });

@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -17,6 +16,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/hpack.hpp"
 #include "aeronet/http-constants.hpp"
@@ -3059,14 +3059,14 @@ TEST(Http2Connection, LargerInitialWindowIsNotAdjustedBySettingsAck) {
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   OpenClientStream(conn, 1);
-  EXPECT_EQ(conn.getStream(1)->recvWindow(), 1 << 20);
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), static_cast<int32_t>(1U << 20U));
 
   AcknowledgeSettings(conn);
   EXPECT_FALSE(conn.hasPendingOutput());
-  EXPECT_EQ(conn.getStream(1)->recvWindow(), 1 << 20);
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), static_cast<int32_t>(1U << 20U));
 
   OpenClientStream(conn, 3);
-  EXPECT_EQ(conn.getStream(3)->recvWindow(), 1 << 20);
+  EXPECT_EQ(conn.getStream(3)->recvWindow(), static_cast<int32_t>(1U << 20U));
 }
 
 TEST(Http2Connection, PeerInitialWindowOnlyControlsNewStreamSendWindow) {
@@ -4606,6 +4606,7 @@ TEST(Http2Connection, HeadersDependingOnItselfWithInvalidPaddingIsAConnectionErr
   };
   const auto frame = SerializeFrame(
       FrameHeader(static_cast<uint32_t>(kPayload.size()), FrameType::Headers,
+                  // NOLINTNEXTLINE(bugprone-signed-bitwise) uint8_t flags, promoted to int by the first '|'
                   FrameFlags::HeadersPadded | FrameFlags::HeadersPriority | FrameFlags::HeadersEndHeaders, 1),
       kPayload);
 
@@ -4937,7 +4938,7 @@ TEST(Http2Connection, DisabledPriorityIsValidatedButNotRecorded) {
   RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
-  const auto expectDefaultPriority = [&conn]() {
+  const auto expectDefaultPriority = [&conn] {
     const Http2Stream* pStream = conn.getStream(1);
     ASSERT_NE(pStream, nullptr);
     EXPECT_EQ(pStream->streamDependency(), 0U);
@@ -5836,6 +5837,7 @@ TEST(Http2ConnectionRfc9113Audit, PaddingOfDataCountsAgainstBothWindows) {
 // RFC 9113 §7: an unknown error code triggers no special behavior. A RST_STREAM carrying one closes only its stream,
 // and a GOAWAY carrying one is reported as is, like any error code other than NO_ERROR.
 TEST(Http2ConnectionRfc9113Audit, UnknownErrorCodesTriggerNoSpecialBehavior) {
+  // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) a code that RFC 9113 does not define
   static constexpr auto kUnknownErrorCode = static_cast<ErrorCode>(0xBEEFU);
   EXPECT_EQ(ErrorCodeName(kUnknownErrorCode), "UNKNOWN_ERROR");
 

@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -29,6 +28,7 @@
 
 #include "aeronet/access-log-config.hpp"
 #include "aeronet/builtin-probes-config.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"

@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -16,6 +15,7 @@
 #include <utility>
 
 #include "aeronet/cctype.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/compiler-config.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
@@ -282,15 +282,14 @@ bool ParseCookieDate(std::string_view value, std::chrono::sys_seconds& date) noe
   if (hour < 0 || day < 1 || day > 31 || month == 0 || year < 1601 || hour > 23 || minute > 59 || second > 59) {
     return false;
   }
-  const std::chrono::year_month_day ymd{std::chrono::year{year}, std::chrono::month{month},
-                                        std::chrono::day{static_cast<unsigned>(day)}};
-  if (!ymd.ok()) {
+  const CivilDate civilDate{year, month, static_cast<unsigned>(day)};
+  if (!IsValidCivilDate(civilDate)) {
     return false;  // such as February 30
   }
-  // In seconds from the start: the hours and minutes of MSVC are 32-bit counts, and the minutes since 1970 overflow one
-  // after year 6053.
-  date = std::chrono::sys_seconds{std::chrono::sys_days{ymd}} + std::chrono::hours{hour} +
-         std::chrono::minutes{minute} + std::chrono::seconds{second};
+  // In 64-bit seconds: the minutes since 1970 overflow a 32-bit count after year 6053.
+  date = std::chrono::sys_seconds{std::chrono::seconds{(std::int64_t{DaysOfCivilDate(civilDate)} * 86400) +
+                                                       (std::int64_t{hour} * 3600) + (std::int64_t{minute} * 60) +
+                                                       second}};
   return true;
 }
 

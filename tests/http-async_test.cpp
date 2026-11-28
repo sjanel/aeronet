@@ -1,10 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <format>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -12,7 +10,9 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/cors-policy.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
@@ -157,7 +157,7 @@ void ExpectUploadMakingProgressIsServed(HttpServerConfig cfg) {
     }
     if (inTime) {
       const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
-      EXPECT_TRUE(resp.ends_with(std::format("\r\n\r\n{}", kBody))) << resp;
+      EXPECT_TRUE(resp.ends_with(Format("\r\n\r\n{}", kBody))) << resp;
       return;
     }
   }
@@ -333,16 +333,16 @@ TEST(HttpAsyncHandlers, TrailersOfBodyDecompressedToNothingSurviveOtherConnectio
       started.store(true, std::memory_order_release);
       WaitFor(allow);
     });
-    co_return HttpResponse(std::format("[{}|{}]", body, req.trailerValueOrEmpty("x-sig")));
+    co_return HttpResponse(Format("[{}|{}]", body, req.trailerValueOrEmpty("x-sig")));
   });
   ts.router().setPath(http::Method::GET, "/other", [](const HttpRequestView&) { return HttpResponse("other"); });
 
   static constexpr std::string_view kGzipOfNothing("\x1f\x8b\x08\0\0\0\0\0\0\x03\x03\0\0\0\0\0\0\0\0\0", 20);
   test::ClientConnection client(ts.port());
-  test::sendAll(client.fd(), std::format("POST /first HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n"
-                                         "Content-Encoding: gzip\r\nConnection: close\r\n\r\n"
-                                         "{:x}\r\n{}\r\n0\r\nx-sig: secret-value\r\n\r\n",
-                                         kGzipOfNothing.size(), kGzipOfNothing));
+  test::sendAll(client.fd(), Format("POST /first HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n"
+                                    "Content-Encoding: gzip\r\nConnection: close\r\n\r\n"
+                                    "{:x}\r\n{}\r\n0\r\nx-sig: secret-value\r\n\r\n",
+                                    kGzipOfNothing.size(), kGzipOfNothing));
   ASSERT_TRUE(WaitFor(started));
   const std::string other = test::sendAndCollect(ts.port(),
                                                  "GET /other HTTP/1.1\r\nHost: h\r\nConnection: close\r\n"
@@ -364,8 +364,7 @@ std::string GzipPost(std::string_view target, std::string_view payload, int nbSt
     body = test::Compress(Encoding::gzip, body);
     encodings.append(", gzip");
   }
-  std::string request =
-      PostHead(target, body.size(), std::format("{}Content-Encoding: {}\r\n", extraHeaders, encodings));
+  std::string request = PostHead(target, body.size(), Format("{}Content-Encoding: {}\r\n", extraHeaders, encodings));
   request.append(std::string_view(body));
   return request;
 }
@@ -390,11 +389,10 @@ TEST(HttpAsyncHandlers, DecompressedBodySurvivesCompressedUploadsOfOtherConnecti
         allow.store(false, std::memory_order_release);
       });
     }
-    co_return HttpResponse(std::format("[{}|{}]", contentLength, body));
+    co_return HttpResponse(Format("[{}|{}]", contentLength, body));
   });
-  ts.router().setPath(http::Method::POST, "/other", [](const HttpRequestView& req) {
-    return HttpResponse(std::format("other:{}", req.body().size()));
-  });
+  ts.router().setPath(http::Method::POST, "/other",
+                      [](const HttpRequestView& req) { return HttpResponse(Format("other:{}", req.body().size())); });
 
   for (const std::string& held : {std::string(9000, 'A'), std::string()}) {
     for (const int nbStages : {1, 2}) {
@@ -413,7 +411,7 @@ TEST(HttpAsyncHandlers, DecompressedBodySurvivesCompressedUploadsOfOtherConnecti
         allow.store(true, std::memory_order_release);
       }
       const std::string resp = test::recvUntilClosed(client.fd());
-      EXPECT_TRUE(resp.ends_with(std::format("[{}|{}]", held.size(), held)))
+      EXPECT_TRUE(resp.ends_with(Format("[{}|{}]", held.size(), held)))
           << held.size() << " bytes, " << nbStages << " stage(s): " << resp.substr(0, 512);
     }
   }
@@ -445,10 +443,9 @@ TEST(HttpAsyncHandlers, CompressedBodyCanBeReadInChunks) {
        }) {
     const std::string request = GzipPost(target, payload, 1, "Connection: close\r\n");
     const std::string atOnce = test::sendAndCollect(ts.port(), request);
-    EXPECT_TRUE(atOnce.ends_with(std::format("\r\n\r\n{}", expected))) << target << ": " << atOnce.substr(0, 512);
+    EXPECT_TRUE(atOnce.ends_with(Format("\r\n\r\n{}", expected))) << target << ": " << atOnce.substr(0, 512);
     const std::string inTwoParts = SendBodyAfterDispatch(ts.port(), request, dispatched);
-    EXPECT_TRUE(inTwoParts.ends_with(std::format("\r\n\r\n{}", expected)))
-        << target << ": " << inTwoParts.substr(0, 512);
+    EXPECT_TRUE(inTwoParts.ends_with(Format("\r\n\r\n{}", expected))) << target << ": " << inTwoParts.substr(0, 512);
   }
 }
 
@@ -458,10 +455,10 @@ TEST(HttpAsyncHandlers, PipelinedCompressedRequestsReadTheirOwnBodies) {
   ts.resetRouterAndGet().setPath(http::Method::POST, "/async", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
     const std::string_view body = co_await req.bodyAwaitable();
     co_await req.deferWork([] {});
-    co_return HttpResponse(std::format("[{}|{}]", req.headerValueOrEmpty(http::ContentLength), body));
+    co_return HttpResponse(Format("[{}|{}]", req.headerValueOrEmpty(http::ContentLength), body));
   });
   ts.router().setPath(http::Method::POST, "/sync", [](const HttpRequestView& req) {
-    return HttpResponse(std::format("[{}|{}]", req.headerValueOrEmpty(http::ContentLength), req.body()));
+    return HttpResponse(Format("[{}|{}]", req.headerValueOrEmpty(http::ContentLength), req.body()));
   });
 
   const std::string longBody(300, 'a');
@@ -471,8 +468,8 @@ TEST(HttpAsyncHandlers, PipelinedCompressedRequestsReadTheirOwnBodies) {
                                  GzipPost("/sync", "sync", 1) + GzipPost("/async", "last", 2, "Connection: close\r\n"));
   const std::string resp = test::recvUntilClosed(client.fd());
   EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), 4) << resp.substr(0, 1024);
-  EXPECT_TRUE(resp.contains(std::format("[300|{}]", longBody))) << resp.substr(0, 1024);
-  EXPECT_TRUE(resp.contains(std::format("[20|{}]", shortBody))) << resp.substr(0, 1024);
+  EXPECT_TRUE(resp.contains(Format("[300|{}]", longBody))) << resp.substr(0, 1024);
+  EXPECT_TRUE(resp.contains(Format("[20|{}]", shortBody))) << resp.substr(0, 1024);
   EXPECT_TRUE(resp.contains("[4|sync]")) << resp.substr(0, 1024);
   EXPECT_TRUE(resp.ends_with("[4|last]")) << resp.substr(0, 1024);
 }
@@ -490,12 +487,11 @@ TEST(HttpAsyncHandlers, PipelinedBodyViewsSurviveBytesReceivedWhileSuspended) {
           started.store(true, std::memory_order_release);
           WaitFor(allow);
         });
-        co_return HttpResponse(std::format("[{}|{}|{}|{}]", req.pathParamValueOrEmpty("id"),
-                                           req.queryParamValueOrEmpty("q"), req.headerValueOrEmpty("x-h"), body));
+        co_return HttpResponse(Format("[{}|{}|{}|{}]", req.pathParamValueOrEmpty("id"), req.queryParamValueOrEmpty("q"),
+                                      req.headerValueOrEmpty("x-h"), body));
       });
-  ts.router().setPath(http::Method::POST, "/sync", [](const HttpRequestView& req) {
-    return HttpResponse(std::format("[sync:{}]", req.body().size()));
-  });
+  ts.router().setPath(http::Method::POST, "/sync",
+                      [](const HttpRequestView& req) { return HttpResponse(Format("[sync:{}]", req.body().size())); });
 
   static constexpr std::size_t kPipelinedBody = std::size_t{1} << 20U;
   test::ClientConnection client(ts.port());
@@ -521,8 +517,8 @@ TEST(HttpAsyncHandlers, PipelinedRequestWaitingForItsBody) {
   ts.resetRouterAndGet().setPath(
       http::Method::POST, "/async/{id}", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         const std::string_view body = co_await req.bodyAwaitable();
-        co_return HttpResponse(std::format("[{}|{}|{}|{}]", req.pathParamValueOrEmpty("id"),
-                                           req.queryParamValueOrEmpty("q"), req.headerValueOrEmpty("x-h"), body));
+        co_return HttpResponse(Format("[{}|{}|{}|{}]", req.pathParamValueOrEmpty("id"), req.queryParamValueOrEmpty("q"),
+                                      req.headerValueOrEmpty("x-h"), body));
       });
   ts.router().setPath(http::Method::GET, "/sync", [](const HttpRequestView&) { return HttpResponse("[sync]"); });
 
@@ -550,7 +546,7 @@ TEST(HttpAsyncHandlers, PipelinedRequestWaitingForItsBody) {
 TEST(HttpAsyncHandlers, ChunkedBodyReceivedInSeveralReadsAfterDispatch) {
   ts.resetRouterAndGet().setPath(http::Method::POST, "/chunked", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
     const std::string_view body = co_await req.bodyAwaitable();
-    co_return HttpResponse(std::format("{}|{}", body, req.trailerValueOrEmpty("x-end")));
+    co_return HttpResponse(Format("{}|{}", body, req.trailerValueOrEmpty("x-end")));
   });
 
   test::ClientConnection client(ts.port());
@@ -657,11 +653,11 @@ TEST(HttpAsyncHandlers, ExpectContinueIsSentOnceForBodyReceivedInSeveralParts) {
 // handler is async or not.
 TEST(HttpAsyncHandlers, ExpectContinueIsSentForEachRequestOfAKeepAliveConnection) {
   ts.resetRouterAndGet().setPath(http::Method::POST, "/sync", [](const HttpRequestView& req) {
-    return HttpResponse(std::format("sync:{}", req.body()));
+    return HttpResponse(Format("sync:{}", req.body()));
   });
   ts.router().setPath(http::Method::POST, "/async", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
     const std::string_view body = co_await req.bodyAwaitable();
-    co_return HttpResponse(std::format("async:{}", body));
+    co_return HttpResponse(Format("async:{}", body));
   });
 
   test::ClientConnection client(ts.port());
@@ -674,7 +670,7 @@ TEST(HttpAsyncHandlers, ExpectContinueIsSentForEachRequestOfAKeepAliveConnection
     test::sendAll(client.fd(), "lo");
     const std::string resp = test::recvWithTimeout(client.fd(), 2s);
     EXPECT_TRUE(resp.starts_with("HTTP/1.1 200 ")) << resp;
-    EXPECT_TRUE(resp.ends_with(std::format("\r\n\r\n{}:hello", target.substr(1)))) << resp;
+    EXPECT_TRUE(resp.ends_with(Format("\r\n\r\n{}:hello", target.substr(1)))) << resp;
   }
 }
 
@@ -687,7 +683,7 @@ TEST(HttpAsyncHandlers, ExpectContinueIsSentWhenTheHandlerWaitsForTheBody) {
                                  [](HttpRequestView& req) -> RequestTask<HttpResponse> {
                                    const int value = co_await req.deferWork([] { return 7; });
                                    const std::string_view body = co_await req.bodyAwaitable();
-                                   co_return HttpResponse(std::format("{}:{}", value, body));
+                                   co_return HttpResponse(Format("{}:{}", value, body));
                                  });
   ts.router().setPath(http::Method::POST, "/reject", [](HttpRequestView&) -> RequestTask<HttpResponse> {
     co_return HttpResponse(http::StatusCodeForbidden, "rejected");
@@ -871,9 +867,8 @@ TEST(HttpAsyncHandlers, BodyOfTimedOutHandlerStaysValidForItsDeferredWork) {
                  co_return HttpResponse("done");
                })
       .timeout(50ms);
-  ts.router().setPath(http::Method::POST, "/other", [](const HttpRequestView& req) {
-    return HttpResponse(std::format("other:{}", req.body().size()));
-  });
+  ts.router().setPath(http::Method::POST, "/other",
+                      [](const HttpRequestView& req) { return HttpResponse(Format("other:{}", req.body().size())); });
 
   test::ClientConnection client(ts.port());
   test::sendAll(client.fd(), PostHead("/slow", kBodySize) + std::string(kBodySize, 'A'));
@@ -885,7 +880,7 @@ TEST(HttpAsyncHandlers, BodyOfTimedOutHandlerStaysValidForItsDeferredWork) {
   for (const char letter : {'B', 'C'}) {
     const std::string other = test::sendAndCollect(
         ts.port(), PostHead("/other", kBodySize, "Connection: close\r\n") + std::string(kBodySize, letter));
-    EXPECT_TRUE(other.ends_with(std::format("other:{}", kBodySize))) << other.substr(0, 512);
+    EXPECT_TRUE(other.ends_with(Format("other:{}", kBodySize))) << other.substr(0, 512);
   }
 
   allow.store(true, std::memory_order_release);
@@ -915,9 +910,8 @@ TEST(HttpAsyncHandlers, DecompressedBodyOfTimedOutHandlerStaysValidForItsDeferre
                  co_return HttpResponse("done");
                })
       .timeout(50ms);
-  ts.router().setPath(http::Method::POST, "/other", [](const HttpRequestView& req) {
-    return HttpResponse(std::format("other:{}", req.body().size()));
-  });
+  ts.router().setPath(http::Method::POST, "/other",
+                      [](const HttpRequestView& req) { return HttpResponse(Format("other:{}", req.body().size())); });
 
   test::ClientConnection client(ts.port());
   test::sendAll(client.fd(), GzipPost("/slow", std::string(kBodySize, 'A'), 1));
@@ -1042,7 +1036,7 @@ AsyncUpload ChunkedGzipUpload(std::string_view data, std::string_view trailerLin
   return {
       "POST /upload HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nContent-Encoding: gzip\r\nConnection: "
       "close\r\n\r\n",
-      std::format("{:x}\r\n{}\r\n0\r\n{}\r\n", data.size(), data, trailerLine),
+      Format("{:x}\r\n{}\r\n0\r\n{}\r\n", data.size(), data, trailerLine),
   };
 }
 
@@ -1063,8 +1057,8 @@ TEST(HttpAsyncHandlers, DeferredWorkReadsHeadersUnchangedByTheArrivalOfTheBody) 
                          std::memory_order_release);
     });
     const std::string_view body = co_await req.bodyAwaitable();
-    co_return HttpResponse(std::format("[{}|{}|{}]", req.headerValueOrEmpty(http::ContentEncoding), body,
-                                       req.trailerValueOrEmpty("x-sig")));
+    co_return HttpResponse(
+        Format("[{}|{}|{}]", req.headerValueOrEmpty(http::ContentEncoding), body, req.trailerValueOrEmpty("x-sig")));
   });
 
   const std::string payload(200, 'p');
@@ -1082,7 +1076,7 @@ TEST(HttpAsyncHandlers, DeferredWorkReadsHeadersUnchangedByTheArrivalOfTheBody) 
     std::this_thread::sleep_for(50ms);
     allow.store(true, std::memory_order_release);
     const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
-    EXPECT_TRUE(resp.ends_with(std::format("[|{}|{}]", payload, trailer))) << resp.substr(0, 512);
+    EXPECT_TRUE(resp.ends_with(Format("[|{}|{}]", payload, trailer))) << resp.substr(0, 512);
     EXPECT_TRUE(headerStable.load(std::memory_order_acquire));
   };
 
@@ -1133,7 +1127,7 @@ TEST(HttpAsyncHandlers, EmptyCompressedChunkedBodyReceivedAfterDispatch) {
                                  [&dispatched](HttpRequestView& req) -> RequestTask<HttpResponse> {
                                    dispatched.store(true, std::memory_order_release);
                                    const std::string_view body = co_await req.bodyAwaitable();
-                                   co_return HttpResponse(std::format("[{}]", body));
+                                   co_return HttpResponse(Format("[{}]", body));
                                  });
 
   const std::string request = ChunkedGzipUpload("", "").head + "0\r\n\r\n";
@@ -1364,7 +1358,7 @@ TEST(HttpAsyncHandlers, RequestStaysUnchangedDuringDeferredWorkWhileItsBodyArriv
     });
     const bool moreBody = req.hasMoreBody();
     const std::string_view body = co_await req.bodyAwaitable();
-    co_return HttpResponse(std::format("[{}|{}|{}]", moreBody, body, req.trailerValueOrEmpty("x-sig")));
+    co_return HttpResponse(Format("[{}|{}|{}]", moreBody, body, req.trailerValueOrEmpty("x-sig")));
   });
 
   const auto expectBodyAfterTheWork = [&](std::string_view head, std::string_view body, std::string_view expected) {

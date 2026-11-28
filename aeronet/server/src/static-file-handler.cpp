@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cassert>
 #include <charconv>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -21,6 +20,7 @@
 
 #include "aeronet/bytes-string.hpp"
 #include "aeronet/char-hexadecimal-converter.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
@@ -367,7 +367,15 @@ template <class IsLinkServable>
       log::error("Failed to get last write time for directory entry '{}': {}", PathString(current.path()).c_str(),
                  stepEc.message());
     } else {
+#if defined(__GLIBCXX__) || defined(_LIBCPP_VERSION)
+      // file_clock::to_sys() of libstdc++ and libc++ is in their internal chrono headers, clock_cast() in <chrono>. The
+      // file_clock of libc++ counts nanoseconds, its system_clock microseconds.
+      info.lastModified =
+          std::chrono::time_point_cast<SysClock::duration>(std::filesystem::file_time_type::clock::to_sys(writeTime));
+#else
+      // The file_clock of the MSVC STL converts through utc_clock only (aeronet/chrono-lite.hpp is <chrono> there).
       info.lastModified = std::chrono::clock_cast<SysClock>(writeTime);
+#endif
     }
 
     info.entry = std::move(current);

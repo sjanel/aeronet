@@ -3,12 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <exception>
-#include <format>
 #include <iterator>
 #include <optional>
 #include <span>
@@ -19,9 +17,11 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -629,7 +629,8 @@ namespace {
 // An h2c client connection over a socket, driven by hand: the test decides when it reads, and therefore when it answers
 // the SETTINGS and PING frames of the server.
 struct ManualH2cClient {
-  explicit ManualH2cClient(uint16_t port, const Http2Config& config = Http2Config{}) : cnx(port), client(config, false) {
+  explicit ManualH2cClient(uint16_t port, const Http2Config& config = Http2Config{})
+      : cnx(port), client(config, false) {
     client.sendClientPreface();
     writePending();
   }
@@ -841,9 +842,8 @@ TEST(Http2Core, ClientGracefulGoAwayStillSendsTheBodiesHeldByFlowControl) {
   static constexpr std::size_t kBodySize = 4UL * kWindowSize;
   test::TestServer server(
       HttpServerConfig{}.withHttp2(Http2Config{}.withEnableH2c(true)).withPollInterval(std::chrono::milliseconds{5}));
-  server.router().setPath(http::Method::GET, "/large", [](const HttpRequestView& req) {
-    return req.makeResponse(std::string(kBodySize, 'x'));
-  });
+  server.router().setPath(http::Method::GET, "/large",
+                          [](const HttpRequestView& req) { return req.makeResponse(std::string(kBodySize, 'x')); });
 
   ManualH2cClient h2(server.port(), Http2Config{}.withInitialWindowSize(kWindowSize));
   std::size_t nbBodyBytes = 0;
@@ -921,7 +921,6 @@ TEST(Http2Core, ClientGracefulGoAwayStillAnswersTheRunningAsyncHandlers) {
   // Its last stream answered, the connection closes.
   EXPECT_TRUE(test::WaitForPeerClose(h2.cnx.fd(), std::chrono::milliseconds{2000}));
 }
-
 
 TEST(Http2Core, PerRouteTimeoutResponseIsSentWithoutWaitingForAnEvent) {
   // The 408 answering a stream whose per-route timeout elapsed is queued by the periodic maintenance, which sends it:
@@ -2730,7 +2729,7 @@ TEST(Http2Compression, HeadCarriesTheHeadersOfTheCompressedGet) {
     test::TlsHttp2Client client(ts.port());
     ASSERT_TRUE(client.isConnected());
     for (std::string_view target : {"/head-gz/plain", "/head-gz/direct", "/head-gz/streamed"}) {
-      SCOPED_TRACE(std::format("{} leading zeroes {}", target, useLeadingZeroes));
+      SCOPED_TRACE(Format("{} leading zeroes {}", target, useLeadingZeroes));
       const auto get = client.request("GET", target, acceptGzip);
       const auto head = client.request("HEAD", target, acceptGzip);
       EXPECT_EQ(get.statusCode, 200);

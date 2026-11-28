@@ -6,7 +6,6 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
-#include <chrono>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -17,6 +16,7 @@
 #endif
 
 #include "aeronet/address-space.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"

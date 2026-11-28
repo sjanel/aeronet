@@ -2,12 +2,12 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"

@@ -13,13 +13,13 @@
 #include <array>
 #include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <memory>
 #include <span>
 #include <stdexcept>
 #include <thread>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/tls-config.hpp"
 
 namespace {

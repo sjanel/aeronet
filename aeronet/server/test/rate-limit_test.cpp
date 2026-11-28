@@ -5,7 +5,6 @@
 #include <array>
 #include <atomic>
 #include <barrier>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -16,6 +15,8 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#include "aeronet/chrono-lite.hpp"
 
 namespace aeronet {
 namespace {

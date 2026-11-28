@@ -4,7 +4,6 @@
 
 #include <array>
 #include <bit>
-#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -21,6 +20,7 @@
 
 #include "aeronet/access-log-config.hpp"
 #include "aeronet/aeronet-config.hpp"  // IWYU pragma: keep (glz::meta of the configuration objects)
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/direct-compression-mode.hpp"
 #include "aeronet/encoding.hpp"

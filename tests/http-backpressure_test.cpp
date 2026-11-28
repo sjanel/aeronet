@@ -10,12 +10,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
-#include <format>
 #include <functional>
 #include <initializer_list>
 #include <iterator>
@@ -27,7 +25,9 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
@@ -72,8 +72,7 @@ constexpr std::string_view kBlockLoopPath = "/block-loop";
 void SendWhileEventLoopBlocked(uint16_t serverPort, test::EventLoopBlocker& blocker,
                                const std::function<void()>& sendWhileBlocked) {
   test::ClientConnection blockerCnx(serverPort);
-  test::sendAll(blockerCnx.fd(),
-                std::format("GET {} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", kBlockLoopPath));
+  test::sendAll(blockerCnx.fd(), Format("GET {} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", kBlockLoopPath));
   blocker.runWhileBlocked(sendWhileBlocked);
   EXPECT_TRUE(test::recvUntilClosed(blockerCnx.fd()).ends_with("blocked"));
 }
@@ -298,7 +297,7 @@ TEST(HttpBackpressure, PipelinedFileResponsesBehindBufferedResponseAreIntact) {
   router.setPath(http::Method::GET, "/in-memory",
                  [&inMemoryBody](const HttpRequestView& req) { return req.makeResponse(inMemoryBody); });
   for (std::size_t filePos = 0; filePos < std::size(files); ++filePos) {
-    router.setPath(http::Method::GET, std::format("/file/{}", filePos),
+    router.setPath(http::Method::GET, Format("/file/{}", filePos),
                    [path = files[filePos].filePath().string()](const HttpRequestView&) {
                      return HttpResponse(http::StatusCodeOK).file(File(path));
                    });
@@ -460,7 +459,7 @@ TEST(HttpBackpressure, HalfCloseRightAfterTheRequestStillGetsTheWholeResponse) {
     const test::ClientConnection cnx = ConnectSlowReader(server.port());
     const NativeHandle fd = cnx.fd();
     SendWhileEventLoopBlocked(server.port(), blocker, [fd, target] {
-      test::sendAll(fd, std::format("GET {} HTTP/1.1\r\nHost: x\r\n\r\n", target));
+      test::sendAll(fd, Format("GET {} HTTP/1.1\r\nHost: x\r\n\r\n", target));
       ASSERT_TRUE(ShutdownWrite(fd));
     });
     std::this_thread::sleep_for(100ms);  // the server served the event
@@ -515,7 +514,7 @@ TEST(HttpBackpressure, HalfCloseWhileTheResponseWaitsForTheSocketStillGetsTheWho
     SCOPED_TRACE(target);
     test::ClientConnection cnx(server.port(), 500ms, kMinimalReceiveBufferSize);
     const NativeHandle fd = cnx.fd();
-    test::sendAll(fd, std::format("GET {} HTTP/1.1\r\nHost: x\r\n\r\n", target));
+    test::sendAll(fd, Format("GET {} HTTP/1.1\r\nHost: x\r\n\r\n", target));
     std::this_thread::sleep_for(100ms);  // the response now waits for the socket
     ASSERT_TRUE(ShutdownWrite(fd));
     std::this_thread::sleep_for(100ms);  // the server handled the readable event of the half-close
@@ -542,7 +541,7 @@ int SendBufferSize(int fd) {
 // connection, so reading it as soon as the accepted socket exists may see the system default.
 int AcceptedSendBufferSize(std::string_view path) {
   test::ClientConnection sock(ts.port());
-  test::sendAll(sock.fd(), std::format("GET {} HTTP/1.1\r\nhost: h\r\n\r\n", path));
+  test::sendAll(sock.fd(), Format("GET {} HTTP/1.1\r\nhost: h\r\n\r\n", path));
   if (!test::recvWithTimeout(sock.fd(), 2s).starts_with("HTTP/1.1 200")) {
     return -1;
   }

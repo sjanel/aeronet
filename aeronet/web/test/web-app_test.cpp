@@ -2,7 +2,6 @@
 // production build of React rendering a table, the observers, and the Intl API of the prelude.
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <fstream>
 #include <ios>
 #include <iterator>
@@ -11,6 +10,7 @@
 #include <utility>
 
 #include "../src/js-module.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"

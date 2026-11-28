@@ -2,10 +2,11 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+
+#include "aeronet/chrono-lite.hpp"
 
 using namespace aeronet;
 

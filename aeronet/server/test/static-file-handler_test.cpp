@@ -10,6 +10,7 @@
 #ifdef AERONET_POSIX
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 #endif
 
@@ -17,6 +18,7 @@
 #include <dlfcn.h>
 
 #include <cstdarg>
+#include <ctime>
 #endif
 
 #include <algorithm>
@@ -27,7 +29,6 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
-#include <format>
 #include <fstream>
 #include <ios>
 #include <random>
@@ -49,6 +50,7 @@
 #include "aeronet/features.hpp"
 #include "aeronet/file-sys-test-support.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request-view.hpp"
@@ -73,7 +75,7 @@ std::atomic<const char*> gReplaceWithFifoBeforeOpen{nullptr};
 // Interposes open(): libaeronet_sys (File) calls it through the PLT.
 extern "C" int open(const char* path, int flags, ...) {
   mode_t mode = 0;
-  if ((flags & (O_CREAT | O_TMPFILE)) != 0) {
+  if ((flags & (O_CREAT | O_TMPFILE)) != 0) {  // NOLINT(bugprone-signed-bitwise) int flags of open()
     va_list args;
     va_start(args, flags);
     mode = va_arg(args, mode_t);
@@ -482,7 +484,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingEscapesAndFormatsSizes) {
     const std::string_view body = resp.bodyInMemory();
     if (maxEntriesToList < 3U) {
       EXPECT_EQ(resp.headerValueOrEmpty(http::XDirectoryListingTruncated), "1");
-      EXPECT_TRUE(body.contains(std::format("Listing truncated after {} entries.", maxEntriesToList)));
+      EXPECT_TRUE(body.contains(Format("Listing truncated after {} entries.", maxEntriesToList)));
     } else {
       EXPECT_EQ(resp.headerValueOrEmpty(http::XDirectoryListingTruncated), "0");
       EXPECT_FALSE(body.contains("Listing truncated after"));
@@ -748,7 +750,7 @@ TEST_F(StaticFileHandlerTest, DirectoryRedirectLocationIsReEncoded) {
     HttpResponse resp = handler(req);
 
     EXPECT_EQ(resp.status(), http::StatusCodeMovedPermanently);
-    EXPECT_EQ(resp.headerValueOrEmpty(http::Location), std::format("/{}/", encodedName));
+    EXPECT_EQ(resp.headerValueOrEmpty(http::Location), Format("/{}/", encodedName));
     EXPECT_FALSE(resp.hasHeader("set-cookie"));
     EXPECT_EQ(resp.headerValueOrEmpty(http::CacheControl), "no-cache");
   }
@@ -1166,8 +1168,12 @@ TEST_F(StaticFileHandlerTest, RangeHeaderForms) {
   static constexpr Case kCases[]{
       {"Range: bytes=, 2-5,,", http::StatusCodePartialContent, "bytes 2-5/10", ""},  // empty list elements are ignored
       {"Range: BYTES=2-5", http::StatusCodePartialContent, "bytes 2-5/10", ""},  // the range unit is case-insensitive
-      {"Range: bytes= 2-5", http::StatusCodePartialContent, "bytes 2-5/10",
-       ""},  // OWS after "=" (RFC 9110 errata 7419)
+      {
+          "Range: bytes= 2-5",
+          http::StatusCodePartialContent,
+          "bytes 2-5/10",
+          "",
+      },  // OWS after "=" (RFC 9110 errata 7419)
       {"Range: bytes=-3", http::StatusCodePartialContent, "bytes 7-9/10", ""},
       {"Range: bytes=3-", http::StatusCodePartialContent, "bytes 3-9/10", ""},
       {"Range: bytes=100-200", http::StatusCodeRangeNotSatisfiable, "bytes */10", ""},
@@ -2269,7 +2275,7 @@ TEST_F(StaticFileHandlerTest, IfModifiedSinceEqualToLastModifiedIsNotModified) {
   const std::string lastModified(handler(req).headerValueOrEmpty(http::LastModified));
   ASSERT_EQ(lastModified, "Thu, 01 Jan 2026 12:00:00 GMT");
 
-  buildReqWithHeaders(tmpFile.filename(), std::format("If-Modified-Since: {}", lastModified));
+  buildReqWithHeaders(tmpFile.filename(), Format("If-Modified-Since: {}", lastModified));
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   EXPECT_EQ(handler(req).status(), http::StatusCodeNotModified);
 
@@ -2318,7 +2324,7 @@ TEST_F(StaticFileHandlerTest, IfRangeDateOtherThanLastModifiedIsFalse) {
 
   for (std::string_view ifRange : {"Thu, 01 Jan 2026 13:00:00 GMT", "Thu, 01 Jan 2026 11:59:59 GMT", "W/\"x\""}) {
     SCOPED_TRACE(ifRange);
-    buildReqWithHeaders(tmpFile.filename(), std::format("Range: bytes=0-1\r\nIf-Range: {}", ifRange));
+    buildReqWithHeaders(tmpFile.filename(), Format("Range: bytes=0-1\r\nIf-Range: {}", ifRange));
     ASSERT_EQ(setHead(), http::StatusCodeOK);
     const HttpResponse resp = handler(req);
     EXPECT_EQ(resp.status(), http::StatusCodeOK);
@@ -2337,11 +2343,11 @@ TEST_F(StaticFileHandlerTest, IfNoneMatchUsesWeakComparison) {
   const std::string etag(handler(req).headerValueOrEmpty(http::ETag));
   ASSERT_TRUE(etag.starts_with('"'));
 
-  buildReqWithHeaders(tmpFile.filename(), std::format("If-None-Match: \"other\", W/{}", etag));
+  buildReqWithHeaders(tmpFile.filename(), Format("If-None-Match: \"other\", W/{}", etag));
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   EXPECT_EQ(handler(req).status(), http::StatusCodeNotModified);
 
-  buildReqWithHeaders(tmpFile.filename(), std::format("If-Match: W/{}", etag));
+  buildReqWithHeaders(tmpFile.filename(), Format("If-Match: W/{}", etag));
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   EXPECT_EQ(handler(req).status(), http::StatusCodePreconditionFailed);
 }
@@ -2351,8 +2357,12 @@ TEST_F(StaticFileHandlerTest, IfNoneMatchNotMatching) {
   test::ScopedTempFile tmpFile(tmpDir, "Hello");
   StaticFileHandler handler(tmpDir.dirPath());
 
-  for (std::string_view ifNoneMatch : {R"(If-None-Match: "other")", R"(If-None-Match: W/"other")",
-                                       R"(If-None-Match: "other",)", R"(If-None-Match: W/)"}) {
+  for (std::string_view ifNoneMatch : {
+           R"(If-None-Match: "other")",
+           R"(If-None-Match: W/"other")",
+           R"(If-None-Match: "other",)",
+           R"(If-None-Match: W/)",
+       }) {
     SCOPED_TRACE(ifNoneMatch);
     buildReqWithHeaders(tmpFile.filename(), ifNoneMatch);
     ASSERT_EQ(setHead(), http::StatusCodeOK);
@@ -2370,7 +2380,7 @@ TEST_F(StaticFileHandlerTest, IfUnmodifiedSinceIgnoredWhenIfMatchIsPresent) {
   const std::string etag(handler(req).headerValueOrEmpty(http::ETag));
 
   buildReqWithHeaders(tmpFile.filename(),
-                      std::format("If-Match: {}\r\nIf-Unmodified-Since: Sat, 01 Jan 2000 00:00:00 GMT", etag));
+                      Format("If-Match: {}\r\nIf-Unmodified-Since: Sat, 01 Jan 2000 00:00:00 GMT", etag));
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   EXPECT_EQ(handler(req).status(), http::StatusCodeOK);
 }
@@ -2385,7 +2395,7 @@ TEST_F(StaticFileHandlerTest, InvalidIfUnmodifiedSinceStillEvaluatesTheOtherPrec
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   const std::string etag(handler(req).headerValueOrEmpty(http::ETag));
 
-  buildReqWithHeaders(tmpFile.filename(), std::format("If-Unmodified-Since: not a date\r\nIf-None-Match: {}", etag));
+  buildReqWithHeaders(tmpFile.filename(), Format("If-Unmodified-Since: not a date\r\nIf-None-Match: {}", etag));
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   EXPECT_EQ(handler(req).status(), http::StatusCodeNotModified);
 
@@ -2405,7 +2415,7 @@ TEST_F(StaticFileHandlerTest, ObsoleteHttpDateFormatsAreAccepted) {
   for (std::string_view date :
        {"Fri, 01 Jan 2027 00:00:00 GMT", "Friday, 01-Jan-27 00:00:00 GMT", "Fri Jan  1 00:00:00 2027"}) {
     SCOPED_TRACE(date);
-    buildReqWithHeaders(tmpFile.filename(), std::format("If-Modified-Since: {}", date));
+    buildReqWithHeaders(tmpFile.filename(), Format("If-Modified-Since: {}", date));
     ASSERT_EQ(setHead(), http::StatusCodeOK);
     EXPECT_EQ(handler(req).status(), http::StatusCodeNotModified);
   }
@@ -2417,8 +2427,12 @@ TEST_F(StaticFileHandlerTest, RangeBoundsBeyond64BitsAreValid) {
   test::ScopedTempFile tmpFile(tmpDir, "0123456789");
   StaticFileHandler handler(tmpDir.dirPath());
 
-  for (std::string_view range : {"Range: bytes=0-18446744073709551615", "Range: bytes=0-99999999999999999999",
-                                 "Range: bytes=-99999999999999999999", "Range: bytes=4-18446744073709551614"}) {
+  for (std::string_view range : {
+           "Range: bytes=0-18446744073709551615",
+           "Range: bytes=0-99999999999999999999",
+           "Range: bytes=-99999999999999999999",
+           "Range: bytes=4-18446744073709551614",
+       }) {
     SCOPED_TRACE(range);
     buildReqWithHeaders(tmpFile.filename(), range);
     ASSERT_EQ(setHead(), http::StatusCodeOK);
@@ -2468,7 +2482,7 @@ TEST_F(StaticFileHandlerTest, TruncatedListingKeepsTheFirstEntriesAtLinearCost) 
   const auto dir = tmpDir.dirPath() / "big";
   std::filesystem::create_directory(dir);
   for (std::size_t fileIdx = 0; fileIdx < kNbFiles; ++fileIdx) {
-    std::ofstream{dir / std::format("f{:05}", fileIdx)};
+    std::ofstream{dir / Format("f{:05}", fileIdx)};
   }
   std::filesystem::create_directory(dir / "z-subdir");  // directories first
   const auto timeListing = [this](std::size_t maxEntries, std::string& body) {
@@ -2492,10 +2506,10 @@ TEST_F(StaticFileHandlerTest, TruncatedListingKeepsTheFirstEntriesAtLinearCost) 
   const auto truncatedListing = timeListing(kLimit, body);
   EXPECT_LT(truncatedListing, (2 * fullListing) + std::chrono::milliseconds{100});
 
-  EXPECT_TRUE(body.contains(std::format("Listing truncated after {} entries.", kLimit)));
+  EXPECT_TRUE(body.contains(Format("Listing truncated after {} entries.", kLimit)));
   EXPECT_LT(body.find("z-subdir"), body.find("f00000"));
-  EXPECT_TRUE(body.contains(std::format("f{:05}", kLimit - 2)));
-  EXPECT_FALSE(body.contains(std::format("f{:05}", kLimit - 1)));
+  EXPECT_TRUE(body.contains(Format("f{:05}", kLimit - 2)));
+  EXPECT_FALSE(body.contains(Format("f{:05}", kLimit - 1)));
   EXPECT_EQ(test::countOccurrences(body, "<tr><td class=\"name\">"), static_cast<int>(kLimit) + 1);  // with ".."
 }
 
@@ -2589,27 +2603,27 @@ TEST_F(StaticFileHandlerTest, RangesBeyond4GiB) {
   }
   StaticFileHandler handler(tmpDir.dirPath());
 
-  buildReqWithHeaders("sparse.bin", std::format("Range: bytes={}-{}", kMarkerOffset, kMarkerOffset + 2));
+  buildReqWithHeaders("sparse.bin", Format("Range: bytes={}-{}", kMarkerOffset, kMarkerOffset + 2));
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse resp = handler(req);
   EXPECT_EQ(resp.status(), http::StatusCodePartialContent);
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentRange),
-            std::format("bytes {}-{}/{}", kMarkerOffset, kMarkerOffset + 2, kFileSize));
+            Format("bytes {}-{}/{}", kMarkerOffset, kMarkerOffset + 2, kFileSize));
   ASSERT_NE(resp.file(), nullptr);
 
   buildReqWithHeaders("sparse.bin", "Range: bytes=-3");
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   resp = handler(req);
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentRange),
-            std::format("bytes {}-{}/{}", kFileSize - 3, kFileSize - 1, kFileSize));
+            Format("bytes {}-{}/{}", kFileSize - 3, kFileSize - 1, kFileSize));
 
-  buildReqWithHeaders("sparse.bin", std::format("Range: bytes=0-1,{}-{}", kMarkerOffset, kMarkerOffset + 2));
+  buildReqWithHeaders("sparse.bin", Format("Range: bytes=0-1,{}-{}", kMarkerOffset, kMarkerOffset + 2));
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   resp = handler(req);
   ASSERT_EQ(resp.status(), http::StatusCodePartialContent);
   const auto parts = ParseMultipartByteranges(resp.headerValueOrEmpty(http::ContentType), resp.bodyInMemory());
   ASSERT_EQ(parts.size(), 2U);
-  EXPECT_EQ(parts[1].contentRange, std::format("bytes {}-{}/{}", kMarkerOffset, kMarkerOffset + 2, kFileSize));
+  EXPECT_EQ(parts[1].contentRange, Format("bytes {}-{}/{}", kMarkerOffset, kMarkerOffset + 2, kFileSize));
   EXPECT_EQ(parts[1].body, "ABC");
 }
 
@@ -2693,27 +2707,26 @@ TEST_F(StaticFileHandlerTest, NotModifiedCarriesTheValidatorsOfTheCompressedResp
       {"page.bin", "gzip", false, false, false},
   };
   for (const Case& tc : kCases) {
-    SCOPED_TRACE(std::format("{} {} {}", tc.file, tc.acceptEncoding, tc.varyUncompressed));
+    SCOPED_TRACE(Format("{} {} {}", tc.file, tc.acceptEncoding, tc.varyUncompressed));
     compressionConfig.addVaryAcceptEncodingToUncompressed = tc.varyUncompressed;
     const std::string& fileEtag = tc.file == "page.html" ? etag : binEtag;
-    buildReqWithHeaders(tc.file,
-                        std::format("Accept-Encoding: {}\r\nIf-None-Match: W/{}", tc.acceptEncoding, fileEtag));
+    buildReqWithHeaders(tc.file, Format("Accept-Encoding: {}\r\nIf-None-Match: W/{}", tc.acceptEncoding, fileEtag));
     ASSERT_EQ(setHead(), http::StatusCodeOK);
     setNegotiatedEncoding(tc.acceptEncoding == "gzip" ? Encoding::gzip : Encoding::none);
     const HttpResponse resp = handler(req);
     EXPECT_EQ(resp.status(), http::StatusCodeNotModified);
-    EXPECT_EQ(resp.headerValueOrEmpty(http::ETag), tc.weak ? std::format("W/{}", fileEtag) : fileEtag);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ETag), tc.weak ? Format("W/{}", fileEtag) : fileEtag);
     EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), tc.vary ? "accept-encoding" : "");
   }
 
   // Without addVaryAcceptEncodingHeader: compressed, no Vary.
-  buildReqWithHeaders("page.html", std::format("Accept-Encoding: gzip\r\nIf-None-Match: {}", etag));
+  buildReqWithHeaders("page.html", Format("Accept-Encoding: gzip\r\nIf-None-Match: {}", etag));
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   setNegotiatedEncoding(Encoding::gzip, /*addVaryAcceptEncoding=*/false);
   {
     const HttpResponse resp = handler(req);
     EXPECT_EQ(resp.status(), http::StatusCodeNotModified);
-    EXPECT_EQ(resp.headerValueOrEmpty(http::ETag), std::format("W/{}", etag));
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ETag), Format("W/{}", etag));
     EXPECT_TRUE(resp.headerValueOrEmpty(http::Vary).empty());
   }
 
@@ -2721,7 +2734,7 @@ TEST_F(StaticFileHandlerTest, NotModifiedCarriesTheValidatorsOfTheCompressedResp
   compressionConfig.addVaryAcceptEncodingToUncompressed = false;
   cfg.withInlineFileThresholdBytes(16);
   StaticFileHandler fileHandler(tmpDir.dirPath(), cfg);
-  buildReqWithHeaders("page.html", std::format("Accept-Encoding: gzip\r\nIf-None-Match: {}", etag));
+  buildReqWithHeaders("page.html", Format("Accept-Encoding: gzip\r\nIf-None-Match: {}", etag));
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   setNegotiatedEncoding(Encoding::gzip);
   const HttpResponse resp = fileHandler(req);

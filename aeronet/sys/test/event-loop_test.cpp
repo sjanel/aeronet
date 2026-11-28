@@ -3,7 +3,6 @@
 #include <gtest/gtest.h>
 
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <new>
@@ -13,6 +12,7 @@
 
 #include "aeronet/adaptive-poll-timeout.hpp"
 #include "aeronet/base-fd.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/timedef.hpp"

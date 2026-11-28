@@ -5,15 +5,19 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
-#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <mutex>
+#include <new>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "../src/cors.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/cookie-jar.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
@@ -22,6 +26,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/web-session.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/test_server_fixture.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/test_server_tls_fixture.hpp"
 #endif
@@ -74,9 +79,12 @@ void AddCorsHeaders(const HttpRequestView& req, HttpResponse& resp) {
   if (!acao.empty()) {
     resp.headerAddLine("access-control-allow-origin", acao == "origin" ? req.headerValueOrEmpty("origin") : acao);
   }
-  for (const auto& [param, header] :
-       {std::pair{"acac", "access-control-allow-credentials"}, std::pair{"acam", "access-control-allow-methods"},
-        std::pair{"acah", "access-control-allow-headers"}, std::pair{"aceh", "access-control-expose-headers"}}) {
+  for (const auto& [param, header] : {
+           std::pair{"acac", "access-control-allow-credentials"},
+           std::pair{"acam", "access-control-allow-methods"},
+           std::pair{"acah", "access-control-allow-headers"},
+           std::pair{"aceh", "access-control-expose-headers"},
+       }) {
     if (const auto value = req.queryParamValue(param)) {
       resp.headerAddLine(LowerAsciiKey(std::string_view(header)), *value);
     }
@@ -259,8 +267,13 @@ TEST(WebNetworkTest, FetchHeaders) {
   EXPECT_TRUE(out.contains(R"("x-method-override":"PATCH")")) << out;
   EXPECT_TRUE(out.contains(R"("referer":")" + Url("/html?src=")));  // the document, without fragment
   EXPECT_TRUE(out.contains(R"("host":"127.0.0.1:)")) << out;
-  for (const std::string_view forbidden : {R"("cookie":)", R"("origin":)", R"("sec-fetch-mode":)",
-                                           R"("proxy-authorization":)", R"("x-http-method-override":)"}) {
+  for (const std::string_view forbidden : {
+           R"("cookie":)",
+           R"("origin":)",
+           R"("sec-fetch-mode":)",
+           R"("proxy-authorization":)",
+           R"("x-http-method-override":)",
+       }) {
     EXPECT_FALSE(out.contains(forbidden)) << forbidden << " in " << out;
   }
   // An Accept of the script replaces the default one.
@@ -561,9 +574,10 @@ TEST(WebNetworkTest, MemoryLimitDuringRequests) {
       auto page = client.navigate(url);
       return page && page->evaluate("out").value_or("") == "6" ? 1 : 0;
     } catch (const std::bad_alloc&) {
+      return -1;
     } catch (const std::runtime_error&) {  // too little memory for the setup of the page
+      return -1;
     }
-    return -1;
   };
   std::size_t limit = std::size_t{128} << 10U;
   for (std::size_t next = limit; completes(next) < 0; next += next / 16) {
@@ -1476,29 +1490,31 @@ TEST(WebNetworkTest, ChangedStringConversions) {
 
 TEST(WebNetworkTest, ForbiddenRequestHeaders) {
   using internal::IsForbiddenRequestHeader;
-  for (const std::string_view name : {"accept-charset",
-                                      "accept-encoding",
-                                      "access-control-request-headers",
-                                      "access-control-request-method",
-                                      "connection",
-                                      "content-length",
-                                      "cookie",
-                                      "cookie2",
-                                      "date",
-                                      "dnt",
-                                      "expect",
-                                      "host",
-                                      "keep-alive",
-                                      "origin",
-                                      "referer",
-                                      "set-cookie",
-                                      "te",
-                                      "trailer",
-                                      "transfer-encoding",
-                                      "upgrade",
-                                      "via",
-                                      "proxy-a",
-                                      "sec-ch-ua"}) {
+  for (const std::string_view name : {
+           "accept-charset",
+           "accept-encoding",
+           "access-control-request-headers",
+           "access-control-request-method",
+           "connection",
+           "content-length",
+           "cookie",
+           "cookie2",
+           "date",
+           "dnt",
+           "expect",
+           "host",
+           "keep-alive",
+           "origin",
+           "referer",
+           "set-cookie",
+           "te",
+           "trailer",
+           "transfer-encoding",
+           "upgrade",
+           "via",
+           "proxy-a",
+           "sec-ch-ua",
+       }) {
     EXPECT_TRUE(IsForbiddenRequestHeader(name, "x")) << name;
   }
   EXPECT_FALSE(IsForbiddenRequestHeader("accept", "x"));
@@ -1526,8 +1542,16 @@ TEST(WebNetworkTest, CorsSafelistedRequestHeaders) {
   for (const std::string_view range : {"bytes=0-", "bytes=5-10", "bytes=007-7", "bytes=0-0"}) {
     EXPECT_TRUE(IsCorsSafelistedRequestHeader("range", range)) << range;
   }
-  for (const std::string_view range : {"bytes=10-5", "bytes=21-12", "bytes=-5", "bytes=a-b", "bytes=5", "items=0-",
-                                       "bytes=1-2,3-4", "bytes=99-100x"}) {
+  for (const std::string_view range : {
+           "bytes=10-5",
+           "bytes=21-12",
+           "bytes=-5",
+           "bytes=a-b",
+           "bytes=5",
+           "items=0-",
+           "bytes=1-2,3-4",
+           "bytes=99-100x",
+       }) {
     EXPECT_FALSE(IsCorsSafelistedRequestHeader("range", range)) << range;
   }
   EXPECT_FALSE(IsCorsSafelistedRequestHeader("x-custom", "x"));

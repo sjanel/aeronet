@@ -12,7 +12,6 @@
 
 #include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -25,6 +24,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/tls-raii.hpp"
 
 #ifdef AERONET_LINUX

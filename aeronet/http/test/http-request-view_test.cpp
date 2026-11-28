@@ -5,11 +5,9 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <format>
 #include <initializer_list>
 #include <memory>
 #include <optional>
@@ -37,10 +35,12 @@
 #include "aeronet/async-resume-poster.hpp"
 #endif
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/connection-info.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-view.hpp"
@@ -411,7 +411,7 @@ TEST_F(HttpRequestViewTest, PrefinalizeDropsBodyOfStatusesWithoutContent) {
              http::StatusCode{199},
          }) {
       for (bool captured : {false, true}) {
-        SCOPED_TRACE(std::format("{} {} captured={}", method, status, captured));
+        SCOPED_TRACE(Format("{} {} captured={}", method, status, captured));
         HttpResponse resp(status);
         if (captured) {
           resp.body(std::string(kBigBody));

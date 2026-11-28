@@ -1,11 +1,11 @@
 #include "aeronet/errno-throw.hpp"
 
 #include <cstddef>
-#include <string>
 #include <string_view>
 #include <system_error>
 
 #include "aeronet/format-lite.hpp"
+#include "aeronet/raw-chars.hpp"
 
 namespace aeronet::detail {
 
@@ -15,9 +15,10 @@ void ThrowFormattedSystemError(int err, std::string_view fmt, const FormatArg* p
 #else
   const std::error_code ec(err, std::generic_category());
 #endif
-  std::string message;
+  RawChars message(fmt.size() + (16U * nbArgs) + 1U);  // + 1: the final null char
   VFormatTo(message, fmt, pArgs, nbArgs);
-  throw std::system_error(ec, message);
+  message.push_back('\0');
+  throw std::system_error(ec, message.data());
 }
 
 }  // namespace aeronet::detail

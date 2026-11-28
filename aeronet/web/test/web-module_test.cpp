@@ -4,7 +4,6 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <new>
 #include <stdexcept>
@@ -13,6 +12,7 @@
 #include <thread>
 
 #include "../src/js-module.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"

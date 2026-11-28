@@ -6,10 +6,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <format>
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
@@ -17,6 +17,7 @@
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
@@ -373,7 +374,7 @@ TEST(HttpCompression, StreamingBrotliLargeIncompressibleEnd) {
   cfg.compression.preferredFormats = {Encoding::br};
   cfg.compression.brotli.quality = 5;
   test::TestServer localTs(std::move(cfg));
-  const RawChars payload = test::MakeRandomPayload(128UL << 10);
+  const RawChars payload = test::MakeRandomPayload(128UL << 10U);
   localTs.router().setDefault([payload](const HttpRequestView&, HttpResponseWriter& writer) {
     for (std::size_t pos = 0; pos < payload.size(); pos += kPieceSize) {
       writer.writeBody(std::string_view(payload).substr(pos, kPieceSize));
@@ -402,7 +403,7 @@ TEST(HttpCompression, StreamingContentTypeAllowList) {
   const std::string part2(80, 'b');  // reaches minBytes: the writer decides
   const std::string part3(50, 'c');  // after the decision
   for (std::string_view contentType : {"text/html; charset=utf-8", "image/png"}) {
-    localTs.router().setPath(http::Method::GET, std::format("/{}", contentType.substr(0, 4)),
+    localTs.router().setPath(http::Method::GET, Format("/{}", contentType.substr(0, 4)),
                              [part1, part2, part3, contentType](const HttpRequestView&, HttpResponseWriter& writer) {
                                writer.contentType(contentType);
                                writer.writeBody(part1);
@@ -1443,9 +1444,9 @@ void ConfigureHeadCompression(bool useLeadingZeroes = true) {
 // parsed response, read until the server closes the connection.
 test::ParsedResponse Fetch(std::string_view method, std::string_view target, std::string_view acceptEncoding,
                            std::string_view version = "HTTP/1.1") {
-  std::string req = std::format("{} {} {}\r\nhost: x\r\nconnection: close\r\n", method, target, version);
+  std::string req = Format("{} {} {}\r\nhost: x\r\nconnection: close\r\n", method, target, version);
   if (!acceptEncoding.empty()) {
-    req += std::format("accept-encoding: {}\r\n", acceptEncoding);
+    req += Format("accept-encoding: {}\r\n", acceptEncoding);
   }
   req += http::CRLF;
   test::ClientConnection cnx(ts.port());
@@ -1575,8 +1576,8 @@ TEST(HttpCompression, HeadCarriesTheHeadersOfTheGet) {
     for (const HeadCase& headCase : kCases) {
       for (std::string_view version : {"HTTP/1.1", "HTTP/1.0"}) {
         for (std::string_view acceptEncoding : {"gzip", ""}) {
-          SCOPED_TRACE(std::format("{} {} accept-encoding '{}' leading zeroes {}", headCase.target, version,
-                                   acceptEncoding, useLeadingZeroes));
+          SCOPED_TRACE(Format("{} {} accept-encoding '{}' leading zeroes {}", headCase.target, version, acceptEncoding,
+                              useLeadingZeroes));
           const test::ParsedResponse get =
               ExpectHeadMatchesGet(headCase.target, acceptEncoding, version, useLeadingZeroes);
           const bool compressed = headCase.compression != GetCompression::None && !acceptEncoding.empty();
@@ -1611,11 +1612,10 @@ TEST(HttpCompression, CompressedBodyWithTrailersKeepsItsChunkedFraming) {
   for (bool useLeadingZeroes : {true, false}) {
     ConfigureHeadCompression(useLeadingZeroes);
     for (std::string_view target : {"/trailers-gz/inline", "/trailers-gz/captured", "/trailers-gz/prepared"}) {
-      SCOPED_TRACE(std::format("{} leading zeroes {}", target, useLeadingZeroes));
+      SCOPED_TRACE(Format("{} leading zeroes {}", target, useLeadingZeroes));
       test::ClientConnection cnx(ts.port());
-      test::sendAll(
-          cnx.fd(),
-          std::format("GET {} HTTP/1.1\r\nhost: x\r\nconnection: close\r\naccept-encoding: gzip\r\n\r\n", target));
+      test::sendAll(cnx.fd(),
+                    Format("GET {} HTTP/1.1\r\nhost: x\r\nconnection: close\r\naccept-encoding: gzip\r\n\r\n", target));
       const std::string raw = test::recvUntilClosed(cnx.fd());
       const test::ParsedResponse resp = test::parseResponseOrThrow(raw);
       ASSERT_TRUE(resp.chunked) << resp.headersRaw;
@@ -1624,7 +1624,7 @@ TEST(HttpCompression, CompressedBodyWithTrailersKeepsItsChunkedFraming) {
       // The first chunk size follows the head, its body is the whole compressed content, then the trailers.
       EXPECT_EQ(
           raw.substr(resp.headersRaw.size(), raw.find(http::CRLF, resp.headersRaw.size()) - resp.headersRaw.size()),
-          std::format("{:x}", resp.body.size()));
+          Format("{:x}", resp.body.size()));
       EXPECT_TRUE(raw.ends_with("\r\n0\r\nx-checksum: abc\r\n\r\n")) << raw.substr(raw.size() - 32);
       const RawChars decompressed = test::Decompress(Encoding::gzip, resp.body);
       EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), payload);
@@ -1882,8 +1882,14 @@ TEST(HttpCompression, PartialContentIsNotCompressed) {
   router.setPath(http::Method::GET, "/partial/control",
                  [payload](const HttpRequestView& req) { return req.makeResponse(std::string_view(payload)); });
 
-  for (std::string_view target : {"/partial/inline", "/partial/captured", "/partial/direct",
-                                  "/partial/direct-status-first", "/partial/streamed", "/partial/streamed-declared"}) {
+  for (std::string_view target : {
+           "/partial/inline",
+           "/partial/captured",
+           "/partial/direct",
+           "/partial/direct-status-first",
+           "/partial/streamed",
+           "/partial/streamed-declared",
+       }) {
     SCOPED_TRACE(target);
     const test::ParsedResponse resp = Fetch("GET", target, "gzip");
     EXPECT_EQ(resp.statusCode, http::StatusCodePartialContent);
@@ -1955,8 +1961,15 @@ TEST(HttpCompression, CompressionWeakensAStrongETag) {
     return resp;
   });
 
-  for (std::string_view target : {"/etag/finalized", "/etag/direct-before-body", "/etag/direct-after-body",
-                                  "/etag/made-with-body", "/etag/streamed", "/etag/streamed-declared", "/etag/weak"}) {
+  for (std::string_view target : {
+           "/etag/finalized",
+           "/etag/direct-before-body",
+           "/etag/direct-after-body",
+           "/etag/made-with-body",
+           "/etag/streamed",
+           "/etag/streamed-declared",
+           "/etag/weak",
+       }) {
     SCOPED_TRACE(target);
     for (std::string_view method : {"GET", "HEAD"}) {
       const test::ParsedResponse compressed = Fetch(method, target, "gzip");
@@ -2072,9 +2085,15 @@ TEST(HttpCompression, IdentityVariantOfACompressedResourceVariesToo) {
                    writer.end();
                  });
 
-  for (std::string_view target :
-       {"/identity/finalized", "/identity/made-with-body", "/identity/made-captured", "/identity/body-reserved",
-        "/identity/appended", "/identity/streamed", "/identity/streamed-declared"}) {
+  for (std::string_view target : {
+           "/identity/finalized",
+           "/identity/made-with-body",
+           "/identity/made-captured",
+           "/identity/body-reserved",
+           "/identity/appended",
+           "/identity/streamed",
+           "/identity/streamed-declared",
+       }) {
     SCOPED_TRACE(target);
     for (std::string_view method : {"GET", "HEAD"}) {
       const test::ParsedResponse compressed = Fetch(method, target, "gzip");
@@ -2166,7 +2185,8 @@ TEST(HttpCompression, IdentityVariantOfAnUncompressedResourceDoesNotVary) {
   static constexpr std::string_view kTargets[]{
       "/novary/small",   "/novary/small-streamed",   "/novary/not-allowed", "/novary/not-allowed-streamed",
       "/novary/partial", "/novary/partial-streamed", "/novary/encoded",     "/novary/encoded-streamed",
-      "/novary/file",    "/novary/file-streamed"};
+      "/novary/file",    "/novary/file-streamed",
+  };
   for (std::string_view target : kTargets) {
     for (std::string_view acceptEncoding : {"", "gzip"}) {
       const test::ParsedResponse resp = Fetch("GET", target, acceptEncoding);
@@ -2251,7 +2271,7 @@ struct AuditRawResponse {
 };
 
 std::string_view AuditHeader(const AuditRawResponse& resp, std::string_view name) {
-  const std::string needle = std::format("\r\n{}: ", name);
+  const std::string needle = Format("\r\n{}: ", name);
   const auto pos = resp.head.find(needle);
   if (pos == std::string::npos) {
     return {};
@@ -2303,8 +2323,7 @@ TEST(HttpCompressionAudit, TrailersWithCompressionAreFramedCorrectly) {
        {"/audit-trailers-final", "/audit-trailers-captured", "/audit-trailers-direct", "/audit-trailers-stream"}) {
     SCOPED_TRACE(target);
     const std::string raw = test::sendAndCollect(
-        ts.port(),
-        std::format("GET {} HTTP/1.1\r\nHost: h\r\nConnection: close\r\nAccept-Encoding: gzip\r\n\r\n", target));
+        ts.port(), Format("GET {} HTTP/1.1\r\nHost: h\r\nConnection: close\r\nAccept-Encoding: gzip\r\n\r\n", target));
     const auto resp = test::parseResponseOrThrow(raw);
     EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
     EXPECT_TRUE(resp.chunked) << resp.headersRaw;
@@ -2318,10 +2337,12 @@ TEST(HttpCompressionAudit, TrailersWithCompressionAreFramedCorrectly) {
     // HTTP/1.0: no chunked coding, the trailers are dropped and the length is the one of the bytes sent.
     const AuditRawResponse http10 = [target] {
       const std::string raw10 = test::sendAndCollect(
-          ts.port(), std::format("GET {} HTTP/1.0\r\nHost: h\r\nAccept-Encoding: gzip\r\n\r\n", target));
+          ts.port(), Format("GET {} HTTP/1.0\r\nHost: h\r\nAccept-Encoding: gzip\r\n\r\n", target));
       const auto headEnd = raw10.find(http::DoubleCRLF);
-      return AuditRawResponse{raw10.substr(0, headEnd + http::CRLF.size()),
-                              raw10.substr(headEnd + http::DoubleCRLF.size())};
+      return AuditRawResponse{
+          raw10.substr(0, headEnd + http::CRLF.size()),
+          raw10.substr(headEnd + http::DoubleCRLF.size()),
+      };
     }();
     EXPECT_EQ(AuditHeader(http10, http::TransferEncoding), "") << http10.head;
     EXPECT_EQ(AuditHeader(http10, http::ContentEncoding), "gzip") << http10.head;

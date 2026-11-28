@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -21,6 +20,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"

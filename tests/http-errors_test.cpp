@@ -6,11 +6,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <format>
 #include <initializer_list>
 #include <mutex>
 #include <random>
@@ -25,7 +23,9 @@
 #define AERONET_WANT_SENDFILE_PREAD_OVERRIDES
 
 #include "aeronet/char-hexadecimal-converter.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
@@ -1548,12 +1548,12 @@ TEST(HttpGardenRequestLine, ValidRequestTargetFormsAreAccepted) {
 TEST(HttpGardenRequestLine, AbsoluteFormTargetIsRoutedByItsPathAndHost) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/onlyget", [](const HttpRequestView& req) {
     return req.makeResponse(
-        std::format("host={};x={}", req.headerValueOrEmpty(http::Host), req.queryParamValueOrEmpty("x")));
+        Format("host={};x={}", req.headerValueOrEmpty(http::Host), req.queryParamValueOrEmpty("x")));
   });
 
   const auto exchange = [](std::string_view target, std::string_view method = "GET") {
-    return test::sendAndCollect(
-        port, std::format("{} {} HTTP/1.1\r\nHost: ignored\r\nConnection: close\r\n\r\n", method, target));
+    return test::sendAndCollect(port,
+                                Format("{} {} HTTP/1.1\r\nHost: ignored\r\nConnection: close\r\n\r\n", method, target));
   };
 
   std::string resp = exchange("http://h/onlyget");

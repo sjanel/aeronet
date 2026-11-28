@@ -24,7 +24,6 @@
 #include <algorithm>
 #include <cerrno>
 #include <charconv>
-#include <chrono>
 #include <cstddef>
 #include <span>
 #include <stdexcept>
@@ -33,6 +32,7 @@
 #include <system_error>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/log.hpp"

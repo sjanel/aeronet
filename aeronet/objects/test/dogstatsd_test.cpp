@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <stdexcept>
@@ -15,6 +14,7 @@
 
 #define AERONET_WANT_SOCKET_OVERRIDES
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/metric-label.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/system-error.hpp"

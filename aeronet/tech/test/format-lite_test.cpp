@@ -10,7 +10,11 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
 #include <vector>
+
+#include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 
@@ -84,6 +88,17 @@ std::size_t CheckAcceptedFields(const T& value, const std::vector<std::string>& 
       continue;
     }
     ++nbAccepted;
+    if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool> && !std::is_same_v<T, char>) {
+      // '{:c}' of an integer out of the range of char (a negative one where char is unsigned, as on ARM) throws at run
+      // time, as std::format.
+      using CharRange = std::conditional_t<std::is_signed_v<char>, signed char, unsigned char>;
+      if (field.ends_with("c}") && !std::in_range<CharRange>(value)) {
+        EXPECT_THROW(static_cast<void>(std::vformat(field, std::make_format_args(value))), std::format_error) << field;
+        std::string formatted;
+        EXPECT_THROW(VFormatTo(formatted, field, &arg, 1), std::format_error) << field;
+        continue;
+      }
+    }
     std::string expected;
     try {
       expected = std::vformat(field, std::make_format_args(value));
@@ -94,6 +109,9 @@ std::size_t CheckAcceptedFields(const T& value, const std::vector<std::string>& 
     std::string formatted;
     VFormatTo(formatted, field, &arg, 1);
     EXPECT_EQ(formatted, expected) << field;
+    RawChars rawFormatted;
+    VFormatTo(rawFormatted, field, &arg, 1);
+    EXPECT_EQ(std::string_view(rawFormatted), expected) << field;
   }
   return nbAccepted;
 }
@@ -145,9 +163,12 @@ TEST(FormatLiteTest, EscapedBracesAndLiteralText) {
 
 TEST(FormatLiteTest, AppendsToExistingContent) {
   std::string out = "prefix ";
-  const FormatArg args[]{FormatArg(42), FormatArg(std::string_view("text"))};
-  VFormatTo(out, "{} and {:>6}", args, 2);
+  FormatTo(out, "{} and {:>6}", 42, std::string_view("text"));
   EXPECT_EQ(out, "prefix 42 and   text");
+
+  RawChars rawOut(std::string_view("prefix "));
+  FormatTo(rawOut, "{} and {:>6} {} {}", -42, "text", true, 'c');
+  EXPECT_EQ(std::string_view(rawOut), "prefix -42 and   text true c");
 }
 
 TEST(FormatLiteTest, LargeArguments) {
@@ -203,10 +224,27 @@ TEST(FormatLiteTest, AcceptedSpecificationsFormatAsStdFormat) {
   EXPECT_GT(CheckAcceptedFields('a', fields), 100U);
   EXPECT_GT(CheckAcceptedFields(-42, fields), 500U);
   EXPECT_GT(CheckAcceptedFields(42U, fields), 500U);
+  EXPECT_GT(CheckAcceptedFields(1000, fields), 500U);
+  // Zero (no octal base prefix), the extreme values, and a char above 127 (converted to unsigned char as an integer).
+  EXPECT_GT(CheckAcceptedFields(0, fields), 500U);
+  EXPECT_GT(CheckAcceptedFields(std::numeric_limits<long long>::min(), fields), 500U);
+  EXPECT_GT(CheckAcceptedFields(std::numeric_limits<unsigned long long>::max(), fields), 500U);
+  EXPECT_GT(CheckAcceptedFields(false, fields), 100U);
+  EXPECT_GT(CheckAcceptedFields(static_cast<char>(200), fields), 100U);
   EXPECT_GT(CheckAcceptedFields(1.5F, fields), 1000U);
   EXPECT_GT(CheckAcceptedFields(-0.125, fields), 1000U);
   EXPECT_GT(CheckAcceptedFields(std::string_view("text"), fields), 40U);
   EXPECT_GT(CheckAcceptedFields(static_cast<const void*>(&pointee), fields), 10U);
+  EXPECT_GT(CheckAcceptedFields(nullptr, fields), 10U);
+}
+
+// The widest integer fields: 64 binary digits with sign and base prefix, and the largest width.
+TEST(FormatLiteTest, WidestIntegerFields) {
+  ExpectSameAsStdFormat<"{:#b} {:+#066B} {:#o} {:#X}">(std::numeric_limits<long long>::min(),
+                                                       std::numeric_limits<unsigned long long>::max(), -1, 255U);
+  ExpectSameAsStdFormat<"{:>65535} {:*<65535x} {:^65535} {:065535}">(42, 255U, -7, -3);
+  int value = 0;
+  ExpectSameAsStdFormat<"{:^65535p}">(static_cast<const void*>(&value));
 }
 
 }  // namespace aeronet

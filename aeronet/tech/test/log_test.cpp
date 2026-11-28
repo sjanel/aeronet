@@ -4,13 +4,13 @@
 
 #include <array>
 #include <cstddef>
-#include <format>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <unordered_set>
 #include <vector>
 
+#include "aeronet/format-lite.hpp"
 #include "aeronet/log-capture.hpp"
 
 #ifdef AERONET_ENABLE_SPDLOG
@@ -178,7 +178,7 @@ TEST(LogTest, LinesOfConcurrentThreadsDoNotInterleave) {
   std::unordered_set<std::string> expected;
   for (int threadIdx = 0; threadIdx < kNbThreads; ++threadIdx) {
     for (int lineIdx = 0; lineIdx < kNbLinesPerThread; ++lineIdx) {
-      expected.insert(std::format("thread {} line {} {}", threadIdx, lineIdx, padding));
+      expected.insert(Format("thread {} line {} {}", threadIdx, lineIdx, padding));
     }
   }
 

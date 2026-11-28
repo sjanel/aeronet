@@ -2,11 +2,9 @@
 
 #include <algorithm>
 #include <charconv>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <format>
 #include <ios>
 #include <iterator>
 #include <limits>
@@ -21,9 +19,11 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-request-view.hpp"
@@ -296,12 +296,12 @@ TEST(HttpRequestDecompression, UnknownCodingRejectedInChain) {
 namespace {
 // Posts 'body' with a chunked framing, in chunks of 3 bytes.
 std::string ChunkedPost(std::string_view contentEncoding, std::string_view body) {
-  std::string req = std::format(
+  std::string req = Format(
       "POST /e HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nContent-Encoding: {}\r\nConnection: close\r\n\r\n",
       contentEncoding);
   for (std::size_t pos = 0; pos < body.size(); pos += 3) {
     const std::string_view chunk = body.substr(pos, 3);
-    req.append(std::format("{:x}\r\n", chunk.size())).append(chunk).append("\r\n");
+    req.append(Format("{:x}\r\n", chunk.size())).append(chunk).append("\r\n");
   }
   req.append("0\r\n\r\n");
   return test::sendAndCollect(ts.port(), req);
@@ -316,7 +316,7 @@ TEST(HttpRequestDecompression, UnsupportedCodingAnswerListsTheSupportedOnes) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   ts.resetRouterAndGet().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
   const std::string acceptEncodingLine =
-      std::format("\r\n{}: {}\r\n", std::string_view(http::AcceptEncoding), internal::kSupportedAcceptEncoding);
+      Format("\r\n{}: {}\r\n", std::string_view(http::AcceptEncoding), internal::kSupportedAcceptEncoding);
 
   const auto expectListed = [&acceptEncodingLine](std::string_view contentEncoding, std::string_view body) {
     SCOPED_TRACE(contentEncoding);
@@ -332,9 +332,9 @@ TEST(HttpRequestDecompression, UnsupportedCodingAnswerListsTheSupportedOnes) {
   for (const Encoding enc : test::SupportedEncodings()) {
     const RawChars compressed = test::Compress(enc, "abc");
     // Refused after the decoding of the last coding applied.
-    expectListed(std::format("snappy, {}", GetEncodingStr(enc)), compressed);
+    expectListed(Format("snappy, {}", GetEncodingStr(enc)), compressed);
     // More codings than decoded.
-    expectListed(std::format("identity, identity, identity, identity, identity, {}", GetEncodingStr(enc)), compressed);
+    expectListed(Format("identity, identity, identity, identity, identity, {}", GetEncodingStr(enc)), compressed);
 
     // A body failing to decode is not a refused coding.
     const std::string_view corrupted = std::string_view(compressed).substr(0, compressed.size() / 2);
@@ -360,7 +360,7 @@ TEST(HttpRequestDecompression, EmptyElementsAreIgnored) {
   }
   for (const Encoding enc : test::SupportedEncodings()) {
     const RawChars compressed = test::Compress(enc, "decoded body");
-    const std::string contentEncoding = std::format(", {},,", GetEncodingStr(enc));
+    const std::string contentEncoding = Format(", {},,", GetEncodingStr(enc));
     SCOPED_TRACE(contentEncoding);
     auto resp = RawPost(ts.port(), "/e", {{"Content-Encoding", contentEncoding}}, compressed);
     EXPECT_EQ(resp.status, http::StatusCodeOK);
@@ -439,9 +439,9 @@ TEST(HttpRequestDecompression, MaxCompressedBytesOfAContentLengthBodyIsCheckedFr
     for (const std::string_view expect : {"", "Expect: 100-continue\r\n"}) {
       for (const std::string_view coding : {GetEncodingStr(enc), std::string_view("identity, gzip")}) {
         test::ClientConnection cnx(ts.port());
-        test::sendAll(cnx.fd(), std::format("POST /head HTTP/1.1\r\nHost: h\r\nContent-Encoding: {}\r\n{}"
-                                            "Content-Length: {}\r\n\r\n",
-                                            coding, expect, comp.size() + 1U));
+        test::sendAll(cnx.fd(), Format("POST /head HTTP/1.1\r\nHost: h\r\nContent-Encoding: {}\r\n{}"
+                                       "Content-Length: {}\r\n\r\n",
+                                       coding, expect, comp.size() + 1U));
         const std::string resp = test::recvWithTimeout(cnx.fd(), std::chrono::milliseconds{2000});
         EXPECT_TRUE(resp.starts_with("HTTP/1.1 413")) << coding << " '" << expect << "': " << resp;
       }
@@ -523,7 +523,7 @@ TEST(HttpRequestDecompression, ChunkedCompressedBodyReceivedInSeveralReads) {
 
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   ts.router().setDefault([](const HttpRequestView& req) {
-    return HttpResponse(std::format("{}|{}", req.trailerValueOrEmpty("x-checksum"), req.body()));
+    return HttpResponse(Format("{}|{}", req.trailerValueOrEmpty("x-checksum"), req.body()));
   });
 
   std::string plain;
@@ -545,7 +545,7 @@ TEST(HttpRequestDecompression, ChunkedCompressedBodyReceivedInSeveralReads) {
       static constexpr std::size_t kChunkSize = 1000;
       for (std::size_t pos = 0; pos < comp.size(); pos += kChunkSize) {
         const std::size_t chunkSize = std::min<std::size_t>(kChunkSize, comp.size() - pos);
-        req.append(std::format("{:x}\r\n", chunkSize));
+        req.append(Format("{:x}\r\n", chunkSize));
         req.append(comp.data() + pos, chunkSize);
         req.append("\r\n");
       }
@@ -562,7 +562,7 @@ TEST(HttpRequestDecompression, ChunkedCompressedBodyReceivedInSeveralReads) {
       }
       const std::string resp = test::recvUntilClosed(fd);
       ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp.substr(0, 100);
-      EXPECT_TRUE(resp.ends_with(std::format("{}|{}", withTrailer ? "abc123" : "", plain)));
+      EXPECT_TRUE(resp.ends_with(Format("{}|{}", withTrailer ? "abc123" : "", plain)));
     }
   }
 }
@@ -571,7 +571,7 @@ TEST(HttpRequestDecompression, ChunkedCompressedBodyReceivedInSeveralReads) {
 TEST(HttpRequestDecompression, ChunkedEmptyBodyWithContentEncoding) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   ts.router().setDefault([](const HttpRequestView& req) {
-    return HttpResponse(std::format("[{}|{}]", req.body(), req.trailerValueOrEmpty("x-checksum")));
+    return HttpResponse(Format("[{}|{}]", req.body(), req.trailerValueOrEmpty("x-checksum")));
   });
 
   for (const Encoding enc : test::SupportedEncodings()) {
@@ -596,8 +596,7 @@ TEST(HttpRequestDecompression, ChunkedEmptyBodyWithContentEncoding) {
 TEST(HttpRequestDecompression, DuplicateTrailersOfCompressedBody) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   ts.router().setDefault([](const HttpRequestView& req) {
-    return HttpResponse(
-        std::format("[{}|{}|{}]", req.body(), req.trailers().size(), req.trailerValueOrEmpty("accept")));
+    return HttpResponse(Format("[{}|{}|{}]", req.body(), req.trailers().size(), req.trailerValueOrEmpty("accept")));
   });
 
   for (const Encoding enc : test::SupportedEncodings()) {
@@ -609,15 +608,15 @@ TEST(HttpRequestDecompression, DuplicateTrailersOfCompressedBody) {
       const auto send = [&](std::string_view trailerLines) {
         std::string req = "POST /dup HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nContent-Encoding: ";
         req.append(GetEncodingStr(enc));
-        req.append(std::format("\r\nConnection: close\r\n\r\n{:x}\r\n", comp.size()));
+        req.append(Format("\r\nConnection: close\r\n\r\n{:x}\r\n", comp.size()));
         req.append(comp);
-        req.append(std::format("\r\n0\r\n{}\r\n", trailerLines));
+        req.append(Format("\r\n0\r\n{}\r\n", trailerLines));
         return test::sendAndCollect(ts.port(), req);
       };
 
       std::string resp = send("accept: text/html\r\naccept: application/json\r\n");
       ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
-      EXPECT_TRUE(resp.ends_with(std::format("[{}|1|text/html,application/json]", plain))) << resp;
+      EXPECT_TRUE(resp.ends_with(Format("[{}|1|text/html,application/json]", plain))) << resp;
 
       resp = send("from: a@example.com\r\nfrom: b@example.com\r\n");
       EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;

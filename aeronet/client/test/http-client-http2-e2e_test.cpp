@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -24,6 +23,7 @@
 #endif
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/compression-test-helpers.hpp"

@@ -3,10 +3,10 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
-#include <format>
 #include <string>
 #include <string_view>
 
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request-view-test-access.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -139,7 +139,7 @@ TEST(TraceEchoTest, MalformedLinesAreCopiedAsIs) {
 TEST(TraceEchoTest, StopsAtTheEndOfTheHead) {
   static constexpr std::string_view kHead = "TRACE /first HTTP/1.1\r\nHost: h\r\nContent-Length: 6\r\n\r\n";
   const auto [complete, echo] =
-      Copy(std::format("{}\r\n\r\nX\r\nTRACE /second HTTP/1.1\r\nHost: h\r\nX-Second: 1\r\n\r\n", kHead));
+      Copy(Format("{}\r\n\r\nX\r\nTRACE /second HTTP/1.1\r\nHost: h\r\nX-Second: 1\r\n\r\n", kHead));
   EXPECT_TRUE(complete);
   EXPECT_EQ(echo, kHead);
 }
@@ -231,9 +231,9 @@ TEST(TraceEchoTest, LargeHead) {
   for (int fieldPos = 0; head.size() < kLargeMaxHeaderBytes - 512; ++fieldPos) {
     const std::string value(static_cast<std::size_t>(fieldPos % 97), static_cast<char>('a' + (fieldPos % 26)));
     if (fieldPos % 3 == 0) {
-      head += std::format("{}: {}\r\n", fieldPos % 2 == 0 ? "Cookie" : "Authorization", value);
+      head += Format("{}: {}\r\n", fieldPos % 2 == 0 ? "Cookie" : "Authorization", value);
     } else {
-      const std::string line = std::format("X-Field-{}: {}\r\n", fieldPos, value);
+      const std::string line = Format("X-Field-{}: {}\r\n", fieldPos, value);
       head += line;
       expected += line;
     }

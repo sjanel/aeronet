@@ -12,7 +12,6 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -23,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"

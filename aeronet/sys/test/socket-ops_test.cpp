@@ -4,7 +4,6 @@
 
 #include <array>
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
@@ -15,6 +14,7 @@
 #define AERONET_WANT_SOCKET_OVERRIDES
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/close-native-handle.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/sys-test-support.hpp"

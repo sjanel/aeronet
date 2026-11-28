@@ -2,14 +2,14 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
-#include <format>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/compression-config.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -605,11 +605,11 @@ TEST_F(CorsPolicyTest, RequestHeadersCanonicalizationProducesCanonicalList) {
 TEST_F(CorsPolicyTest, AnyOriginWithCredentialsDoesNotGrantTheNullOrigin) {
   policy.allowAnyOrigin().allowCredentials(true);
   for (const std::string_view origin : {"null", "NULL"}) {
-    ASSERT_EQ(parse(BuildRawHttp11(http::GET, "/account", std::format("Origin: {}\r\n", origin))), http::StatusCodeOK);
+    ASSERT_EQ(parse(BuildRawHttp11(http::GET, "/account", Format("Origin: {}\r\n", origin))), http::StatusCodeOK);
     EXPECT_EQ(policy.wouldApply(request), CorsPolicy::ApplyStatus::OriginDenied) << origin;
 
     ASSERT_EQ(parse(BuildRawHttp11(http::OPTIONS, "/account",
-                                   std::format("Origin: {}\r\nAccess-Control-Request-Method: GET\r\n", origin))),
+                                   Format("Origin: {}\r\nAccess-Control-Request-Method: GET\r\n", origin))),
               http::StatusCodeOK);
     EXPECT_EQ(policy.handlePreflight(request).status, CorsPolicy::PreflightResult::Status::OriginDenied) << origin;
   }
@@ -732,9 +732,9 @@ TEST_F(CorsPolicyTest, AnyRequestHeadersListsAuthorization) {
   };
   for (const HeadersCase& headersCase : kCases) {
     ASSERT_EQ(parse(BuildRawHttp11(http::OPTIONS, "/api",
-                                   std::format("Origin: https://app.example\r\nAccess-Control-Request-Method: GET\r\n"
-                                               "Access-Control-Request-Headers: {}\r\n",
-                                               headersCase.requested))),
+                                   Format("Origin: https://app.example\r\nAccess-Control-Request-Method: GET\r\n"
+                                          "Access-Control-Request-Headers: {}\r\n",
+                                          headersCase.requested))),
               http::StatusCodeOK);
 
     const auto result = policy.handlePreflight(request);
@@ -776,9 +776,9 @@ TEST_F(CorsPolicyTest, AnyRequestHeadersDeniesNamesThatAreNotTokens) {
     anyHeaders.allowOrigin("https://app.example").allowCredentials(credentials).allowAnyRequestHeaders();
     for (std::string_view requested : {"x-ok, x bad", "x-ok, (x)", "x-ok, x@y"}) {
       ASSERT_EQ(parse(BuildRawHttp11(http::OPTIONS, "/api",
-                                     std::format("Origin: https://app.example\r\nAccess-Control-Request-Method: GET\r\n"
-                                                 "Access-Control-Request-Headers: {}\r\n",
-                                                 requested))),
+                                     Format("Origin: https://app.example\r\nAccess-Control-Request-Method: GET\r\n"
+                                            "Access-Control-Request-Headers: {}\r\n",
+                                            requested))),
                 http::StatusCodeOK);
       EXPECT_EQ(anyHeaders.handlePreflight(request).status, CorsPolicy::PreflightResult::Status::HeadersDenied)
           << requested;

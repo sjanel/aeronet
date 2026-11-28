@@ -3,10 +3,10 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdio>
-#include <string>
 #include <string_view>
 
 #include "aeronet/format-lite.hpp"
+#include "aeronet/raw-chars.hpp"
 
 #ifdef AERONET_ENABLE_SPDLOG
 // spdlog is compiled into this source only, header-only: the aeronet headers do not include it, and the aeronet
@@ -18,6 +18,7 @@
 #include <spdlog/logger.h>
 #include <spdlog/spdlog.h>
 #else
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
@@ -58,32 +59,34 @@ constexpr std::string_view kLevelNames[]{
 };
 
 // A line '[time] [level] ', with room for the message of 'messageSize' bytes and the final new line.
-std::string StartLine(level::level_enum lvl, std::size_t messageSize) {
+RawChars StartLine(level::level_enum lvl, std::size_t messageSize) {
   static constexpr std::string_view kTimeLevelSeparator = "] [";
   static constexpr std::string_view kLevelMessageSeparator = "] ";
   const std::string_view levelName = kLevelNames[lvl];
 
-  std::string line;
-  line.reserve(1U + ISO8601UTCWithMsStrLen + kTimeLevelSeparator.size() + levelName.size() +
-               kLevelMessageSeparator.size() + messageSize + 1U);
-  line.push_back('[');
-  char timeBuf[ISO8601UTCWithMsStrLen];
-  line.append(timeBuf, TimeToStringISO8601UTCWithMs(SysClock::now(), timeBuf));
-  line.append(kTimeLevelSeparator);
-  line.append(levelName);
-  line.append(kLevelMessageSeparator);
+  RawChars line(1U + ISO8601UTCWithMsStrLen + kTimeLevelSeparator.size() + levelName.size() +
+                kLevelMessageSeparator.size() + messageSize + 1U);
+  char* ptr = line.data();
+  *ptr++ = '[';
+  ptr = TimeToStringISO8601UTCWithMs(SysClock::now(), ptr);
+  ptr = Append(kTimeLevelSeparator, ptr);
+  ptr = Append(levelName, ptr);
+  line.setEnd(Append(kLevelMessageSeparator, ptr));
   return line;
 }
 
 // Writes the line with a single call, which the C library serializes with the other writes to stdout: the lines logged
 // by concurrent threads do not interleave.
-void EndLine(std::string& line) {
+void EndLine(RawChars& line) {
   line.push_back('\n');
   // A line that cannot be written (stdout closed or full) has nowhere else to go.
   static_cast<void>(std::fwrite(line.data(), 1, line.size(), stdout));
 }
 
 #endif
+
+// Room reserved for each formatted argument, so that most messages are written without reallocation.
+constexpr std::size_t kArgSizeEstimate = 16;
 
 // Writes 'text' formatted with the 'nbArgs' arguments of 'pArgs', or as is without arguments (null 'pArgs').
 void Emit(level::level_enum lvl, std::string_view text, const FormatArg* pArgs, std::size_t nbArgs) noexcept {
@@ -93,11 +96,11 @@ void Emit(level::level_enum lvl, std::string_view text, const FormatArg* pArgs, 
       WriteLine(lvl, text);
       return;
     }
-    std::string message;
+    RawChars message(text.size() + (kArgSizeEstimate * nbArgs));
     VFormatTo(message, text, pArgs, nbArgs);
     WriteLine(lvl, message);
 #else
-    std::string line = StartLine(lvl, text.size());
+    RawChars line = StartLine(lvl, text.size() + (kArgSizeEstimate * nbArgs));
     if (pArgs == nullptr) {
       line.append(text);
     } else {

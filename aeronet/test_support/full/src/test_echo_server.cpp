@@ -13,7 +13,6 @@
 
 #include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -25,6 +24,7 @@
 #include <utility>
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"

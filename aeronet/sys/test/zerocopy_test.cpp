@@ -6,7 +6,6 @@
 #include <sys/socket.h>
 
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -19,6 +18,7 @@
 #define AERONET_WANT_SOCKET_OVERRIDES
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/transport.hpp"

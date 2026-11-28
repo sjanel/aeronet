@@ -2,8 +2,7 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
-
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/native-handle.hpp"
 
