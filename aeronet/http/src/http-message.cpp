@@ -95,6 +95,20 @@ AERONET_ALWAYS_INLINE void CheckSettableHeader(LowerAsciiKey headerName, bool is
   }
 }
 
+// Refuses the header names that cannot be added to a message: an invalid or upper-case name, a reserved request header
+// (http::IsReservedOrForbiddenRequestHeader) and the ones of CheckSettableHeader(). Throws std::invalid_argument for
+// them, and std::logic_error for a change of content-encoding once a body is set.
+AERONET_ALWAYS_INLINE void CheckAddableHeader(LowerAsciiKey headerName, bool isRequest, bool hasBody) {
+  // In lower case too: an upper-case name, only asserted by LowerAsciiKey, would escape the reserved names checks.
+  if (!http::IsValidLowerCaseHeaderName(headerName)) [[unlikely]] {
+    throw std::invalid_argument("HTTP header name is invalid (a token, in lower case)");
+  }
+  if (isRequest && http::IsReservedOrForbiddenRequestHeader(headerName)) [[unlikely]] {
+    throw std::invalid_argument("Cannot add reserved or forbidden header to HTTP request");
+  }
+  CheckSettableHeader(headerName, isRequest, hasBody);
+}
+
 }  // namespace
 
 std::size_t HttpMessage::bodyLength() const noexcept {
@@ -235,10 +249,12 @@ void HttpMessage::headerImpl(LowerAsciiKey key, std::string_view value) {
     return;
   }
 
-  value = TrimmedValidHeaderValue(value);
-  CheckSettableHeader(key, _opts.isHttpRequest(), hasBodyHeaders());
+  // The same checks as headerAddLineImpl(), but for the Host of a request, which may be replaced (another authority).
+  if (!_opts.isHttpRequest() || key != http::Host) {
+    CheckAddableHeader(key, _opts.isHttpRequest(), hasBodyHeaders());
+  }
 
-  overrideHeaderUnchecked(first, last, value);
+  overrideHeaderUnchecked(first, last, TrimmedValidHeaderValue(value));
 }
 
 void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t newBodySize, BodySetContext context) {
@@ -609,25 +625,49 @@ std::optional<std::string_view> HttpMessage::headerValue(LowerAsciiKey key) cons
 
 void HttpMessage::reserve(std::size_t capacity) {
   const std::size_t currentSize = wireDataSize();
-  if (capacity > currentSize) {
+  if (currentSize < capacity) {
     HeadGrowthManager headGrowthManager(*this, SafeCast<int64_t>(capacity - currentSize),
                                         HeadGrowthManager::GrowthStrategy::Exact);
   }
 }
 
 void HttpMessage::headerAddLineImpl(LowerAsciiKey key, std::string_view value) {
-  assert(!_opts.isHttpRequest() || key != http::Server);
-  // In lower case too: an upper-case name, only asserted by LowerAsciiKey, would escape the reserved names checks.
-  if (!http::IsValidLowerCaseHeaderName(key)) [[unlikely]] {
-    throw std::invalid_argument("HTTP header name is invalid (a token, in lower case)");
-  }
-  if (_opts.isHttpRequest() && http::IsReservedOrForbiddenRequestHeader(key)) [[unlikely]] {
-    throw std::invalid_argument("Cannot add reserved or forbidden header to HTTP request");
-  }
-  value = TrimmedValidHeaderValue(value);
-  CheckSettableHeader(key, _opts.isHttpRequest(), hasBodyHeaders());
+  CheckAddableHeader(key, _opts.isHttpRequest(), hasBodyHeaders());
 
-  headerAddLineUnchecked(key, value);
+  headerAddLineUnchecked(key, TrimmedValidHeaderValue(value));
+
+  if (key == http::ContentEncoding) {
+    _opts.setHasContentEncoding();
+  }
+}
+
+void HttpMessage::headerInlineAddLineErased(LowerAsciiKey key, std::size_t maxValueLen, HttpPayload::WriterRef writer) {
+  if (hasBodyHeaders()) [[unlikely]] {
+    throw std::logic_error("headerInlineAddLine cannot be called once a body is set");
+  }
+  CheckAddableHeader(key, _opts.isHttpRequest(), false);
+
+  // Without body headers, there is no body, trailers nor embedded payload: the head ends the buffer. The name replaces
+  // its final CRLF, the CRLF before it starting the new line.
+  assert(!_opts.hasEmbeddedPayload() && _data.size() == bodyStartPos());
+  _data.ensureAvailableCapacityExponential(http::HeaderSize(key.size(), maxValueLen));
+
+  // Past the end of the buffer: the message is only modified once the value is written and validated.
+  char* pValue = _data.end() + key.size();
+  const std::size_t written = writer(pValue);
+  assert(written <= maxValueLen);
+
+  const std::string_view value = TrimmedValidHeaderValue(std::string_view(pValue, written));
+  if (value.data() != pValue) [[unlikely]] {
+    std::memmove(pValue, value.data(), value.size());  // written with leading whitespace
+  }
+
+  CopyFixed<http::HeaderSep>(Append(key, _data.end() - http::CRLF.size()));
+  CopyFixed<http::DoubleCRLF>(pValue + value.size());
+
+  const std::size_t lineSize = http::HeaderSize(key.size(), value.size());
+  _data.addSize(lineSize);
+  adjustBodyStart(static_cast<int64_t>(lineSize));
 
   if (key == http::ContentEncoding) {
     _opts.setHasContentEncoding();
@@ -688,7 +728,8 @@ void HttpMessage::headerAppendValueImpl(LowerAsciiKey key, std::string_view valu
     return;
   }
 
-  CheckSettableHeader(key, _opts.isHttpRequest(), hasBodyHeaders());
+  // The same checks as headerAddLineImpl(): the Host of a request, which holds a single value, refuses one more.
+  CheckAddableHeader(key, _opts.isHttpRequest(), hasBodyHeaders());
 
   value = TrimOws(value);
   if (value.empty()) {
@@ -708,8 +749,8 @@ void HttpMessage::headerAppendValueImpl(LowerAsciiKey key, std::string_view valu
 }
 
 void HttpMessage::headerAppendValueIfAbsentImpl(LowerAsciiKey key, std::string_view value) {
-  // A reserved header throws even when it already has the value.
-  CheckSettableHeader(key, _opts.isHttpRequest(), hasBodyHeaders());
+  // A reserved or invalid header name throws even when the header already has the value.
+  CheckAddableHeader(key, _opts.isHttpRequest(), hasBodyHeaders());
   value = TrimOws(value);
   // A list split over several lines is a single list (RFC 9110 §5.3).
   const bool wildcardMatches = key == http::Vary;

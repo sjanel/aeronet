@@ -61,9 +61,10 @@ if(AERONET_PRECOMPILED_HEADERS AND AERONET_BUILD_TESTS AND CMAKE_CXX_COMPILER_FR
     endif()
     # ccache caches a compilation using a precompiled header only with this sloppiness, as it sees neither the macros
     # nor the time macros that the header depends on (no test uses __DATE__ / __TIME__ / __TIMESTAMP__). On the test
-    # targets only: the libraries keep all the checks of ccache.
+    # targets only: the libraries keep all the checks of ccache. The launcher is inserted as is in the build commands:
+    # its paths are quoted, as they may hold spaces ("C:/Program Files/CMake/bin/cmake.exe").
     set_property(TARGET aeronet_test_pch PROPERTY RULE_LAUNCH_COMPILE
-      "${CMAKE_COMMAND} -E env CCACHE_SLOPPINESS=pch_defines,time_macros ${CCACHE_PROGRAM}")
+      "\"${CMAKE_COMMAND}\" -E env CCACHE_SLOPPINESS=pch_defines,time_macros \"${CCACHE_PROGRAM}\"")
   endif()
 endif()
 

@@ -225,7 +225,7 @@ char* WriteListingRow(const DirectoryListingEntry& entry, char* pData) {
   if (entry.lastModified == kInvalidTimePoint) {
     *pData++ = '-';
   } else {
-    pData = TimeToStringRFC7231(entry.lastModified, pData);
+    pData = TimeToStringRFC7231(entry.lastModified, pData);  // years up to 9999 only: see buildHeaderMeta()
   }
   return Append(kEntryRowEnd, pData);
 }
@@ -790,22 +790,9 @@ constexpr std::string_view kUnsatisfiedRangePrefixStr = "bytes */";
 constexpr std::size_t kMaxUnsatisfiedRangeHeaderLen =
     kUnsatisfiedRangePrefixStr.size() + std::numeric_limits<std::uint64_t>::digits10 + 1;
 
-struct UnsatisfiedRangeHeaderBuf {
-  static_assert(kMaxUnsatisfiedRangeHeaderLen <= std::numeric_limits<std::uint8_t>::max());
-
-  char buf[kMaxUnsatisfiedRangeHeaderLen];
-  std::uint8_t len;
-};
-
-UnsatisfiedRangeHeaderBuf BuildUnsatisfiedRangeHeader(std::uint64_t total) {
-  UnsatisfiedRangeHeaderBuf result;
-  char* buf = AppendFixed<kUnsatisfiedRangePrefixStr>(result.buf);
-
-  buf = WriteUInt(buf, total, ndigits(total));
-  assert(buf <= result.buf + kMaxUnsatisfiedRangeHeaderLen);
-  result.len = static_cast<std::uint8_t>(buf - result.buf);
-
-  return result;
+char* BuildUnsatisfiedRangeHeader(std::uint64_t total, char* pData) {
+  pData = AppendFixed<kUnsatisfiedRangePrefixStr>(pData);
+  return WriteUInt(pData, total, ndigits(total));
 }
 
 constexpr uint32_t kBoundarySize = 24;
@@ -1080,7 +1067,7 @@ void StaticFileHandler::buildHeaderMeta(std::string_view filePath, const File& f
   out.lastModified = file.lastModified();
   file.appendIdentityData(out.identity);
   // A successfully opened File always carries a valid mtime from its fstat(); operator() returns 503 before
-  // reaching this point otherwise. So the modification time (and the derived ETag/date) are always well-formed.
+  // reaching this point otherwise. So the modification time (and the derived ETag) are always well-formed.
   assert(out.lastModified != kInvalidTimePoint);
 
   out.etagLen = 0;
@@ -1088,6 +1075,9 @@ void StaticFileHandler::buildHeaderMeta(std::string_view filePath, const File& f
     out.etagLen = MakeStrongEtag(out.fileSize, out.lastModified, out.etag);
   }
 
+  // Known limitation, not checked: TimeToStringRFC7231() writes years up to 9999 only. NTFS and 64-bit timestamps
+  // can date a file later, which the clocks of MSVC and libc++ represent (that of libstdc++ stops in 2262): its date
+  // then asserts in Debug, and is wrong or read past the digit table in Release.
   [[maybe_unused]] auto* end = TimeToStringRFC7231(out.lastModified, out.lastModifiedStr);
   assert(std::cmp_equal(end - out.lastModifiedStr, RFC7231DateStrLen));
 
@@ -1304,9 +1294,10 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
   if (_config.addEtag) {
     // ETag is always formatted when addEtag is set (a valid File guarantees a valid modification time).
     if (notModifiedOutlook.compressed) {
-      char weakEtag[http::WeakETagPrefix.size() + kMaxEtagSize];
-      char* pEnd = Append(etagView, Append(http::WeakETagPrefix, weakEtag));
-      resp.headerAddLine(http::ETag, std::string_view(weakEtag, pEnd));
+      resp.headerInlineAddLine(
+          http::ETag, http::WeakETagPrefix.size() + etagView.size(), [etagView](char* out) -> std::size_t {
+            return static_cast<std::size_t>(Append(etagView, Append(http::WeakETagPrefix, out)) - out);
+          });
     } else {
       resp.headerAddLine(http::ETag, etagView);
     }
@@ -1340,20 +1331,21 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
         if (rangeResult.kind == MultiRangeResult::Kind::Invalid ||
             rangeResult.kind == MultiRangeResult::Kind::Unsatisfiable ||
             rangeResult.kind == MultiRangeResult::Kind::Rejected) {
-          const auto unsatHeader = BuildUnsatisfiedRangeHeader(fileSize);
           resp.status(http::StatusCodeRangeNotSatisfiable);
-          resp.headerAddLine(http::ContentRange, std::string_view(unsatHeader.buf, unsatHeader.len));
+          resp.headerInlineAddLine(http::ContentRange, kMaxUnsatisfiedRangeHeaderLen,
+                                   [fileSize](char* out) -> std::size_t {
+                                     return static_cast<std::size_t>(BuildUnsatisfiedRangeHeader(fileSize, out) - out);
+                                   });
           resp.body(rangeResult.kind == MultiRangeResult::Kind::Invalid ? "Invalid Range\n"
                                                                         : "Range Not Satisfiable\n");
           return resp;
         }
         if (rangeResult.kind == MultiRangeResult::Kind::SingleValid) {
           const auto& sel = rangeResult.ranges[0];
-          char buf[kMaxRangeHeaderLen];
-          char* pEndRangeHeader = BuildRangeHeader(sel.offset, sel.length, fileSize, buf);
-
           resp.status(http::StatusCodePartialContent);
-          resp.headerAddLine(http::ContentRange, std::string_view(buf, pEndRangeHeader));
+          resp.headerInlineAddLine(http::ContentRange, kMaxRangeHeaderLen, [&sel, fileSize](char* out) -> std::size_t {
+            return static_cast<std::size_t>(BuildRangeHeader(sel.offset, sel.length, fileSize, out) - out);
+          });
           resp.file(std::move(file), sel.offset, sel.length, contentTypeForFile);
           return resp;
         }

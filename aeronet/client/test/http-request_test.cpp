@@ -631,6 +631,43 @@ TEST_F(HttpRequestTest, HostHeaderShouldBeReserved) {
   EXPECT_THROW(req.headerAddLine("host", "newhost"), std::invalid_argument);
   EXPECT_THROW(req.headerRemoveLine("host"), std::invalid_argument);
   EXPECT_THROW(req.headerRemoveValue("host", req.headerValueOrEmpty("host")), std::invalid_argument);
+  // The Host header is present: appending to it would make a list of hosts, even when it already has the value.
+  EXPECT_THROW(req.headerAppendValue("host", "other"), std::invalid_argument);
+  EXPECT_THROW(req.headerAppendValueIfAbsent("host", "other"), std::invalid_argument);
+  EXPECT_THROW(req.headerAppendValueIfAbsent("host", "host"), std::invalid_argument);
+  EXPECT_EQ(req.headerValueOrEmpty("host"), "host");
+  EXPECT_FALSE(req.headersFlatView().contains("other"));
+}
+
+// Server is a response field, but a request may carry it: the Fetch Standard lets a script send it.
+TEST_F(HttpRequestTest, ServerHeaderIsAllowed) {
+  auto req = makeRequest(http::Method::GET, "http://h/p");
+  req.headerAddLine(http::Server, "custom-agent").headerAppendValueIfAbsent(http::Server, "other");
+  EXPECT_EQ(req.headerValueOrEmpty(http::Server), "custom-agent, other");
+}
+
+TEST_F(HttpRequestTest, HeaderInlineAddLine) {
+  const auto writeValue = [](char* out) -> std::size_t {
+    static constexpr std::string_view kInplace = "in place";
+    std::memcpy(out, kInplace.data(), kInplace.size());
+    return kInplace.size();
+  };
+  auto req = makeRequest(http::Method::POST, "http://h/p");
+  req.headerInlineAddLine("x-inline", 16, writeValue);
+  req = std::move(req).headerInlineAddLine("x-empty", 4, [](char*) -> std::size_t { return 0; });
+  EXPECT_EQ(req.headerValueOrEmpty("x-inline"), "in place");
+  EXPECT_EQ(req.headerValue("x-empty"), std::string_view{});
+
+  // The reserved request headers are refused, as by headerAddLine().
+  EXPECT_THROW(req.headerInlineAddLine("host", 16, writeValue), std::invalid_argument);
+  EXPECT_THROW(req.headerInlineAddLine("te", 16, writeValue), std::invalid_argument);
+  EXPECT_THROW(req.headerInlineAddLine(http::ContentType, 16, writeValue), std::invalid_argument);
+
+  req.body("payload");
+  EXPECT_THROW(req.headerInlineAddLine("x-after-body", 16, writeValue), std::logic_error);
+  EXPECT_FALSE(req.hasHeader("x-after-body"));
+  EXPECT_EQ(req.headerValueOrEmpty("host"), "h");
+  EXPECT_EQ(req.bodyInMemory(), "payload");
 }
 
 TEST_F(HttpRequestTest, LvalueFluentSetters) {

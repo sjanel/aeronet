@@ -412,7 +412,7 @@ class WebSocketClient {
 
   // Open a WebSocket connection with 'upgradeRequest', made by makeUpgradeRequest(), like connect(url, ...). The client
   // adds Sec-WebSocket-Key, Sec-WebSocket-Version and the permessage-deflate offer. Also throws std::invalid_argument
-  // if the request has a file body or trailers.
+  // if the request is not a GET or has a body: the handshake is a GET, without content.
   WebSocketConnectResult connect(HttpRequest&& upgradeRequest, const WebSocketClientCallbacks& callbacks,
                                  void* pUserData = nullptr);
 
@@ -427,7 +427,7 @@ class WebSocketClient {
   }
 
   // Open a WebSocket connection with 'upgradeRequest', made by makeUpgradeRequest(), like connectAsync(url, ...). Also
-  // throws std::invalid_argument if the request has a file body or trailers.
+  // throws std::invalid_argument if the request is not a GET or has a body.
   WebSocketConnection& connectAsync(HttpRequest&& upgradeRequest, const WebSocketClientCallbacks& callbacks,
                                     void* pUserData = nullptr);
 

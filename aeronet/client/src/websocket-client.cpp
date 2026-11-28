@@ -27,6 +27,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-view.hpp"
 #include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -682,7 +683,14 @@ WebSocketClient::~WebSocketClient() = default;
 
 WebSocketConnection& WebSocketClient::addConnection(HttpRequest&& upgradeRequest,
                                                     const WebSocketClientCallbacks& callbacks, void* pUserData) {
-  internal::UpgradeHandshake::CheckRequest(upgradeRequest);
+  // The opening handshake is a GET (RFC 6455 §4.1), in which a client should not send content (RFC 9110 §9.3.1). A
+  // request without body has no trailers either, as required by UpgradeHandshake.
+  if (upgradeRequest.method() != http::Method::GET) {
+    throw std::invalid_argument("a WebSocket upgrade request must be a GET");
+  }
+  if (upgradeRequest.hasBody()) {
+    throw std::invalid_argument("a WebSocket upgrade request cannot have a body");
+  }
   if (upgradeRequest.isTlsRequest()) {
 #ifdef AERONET_ENABLE_OPENSSL
     // Built (and validated) once: an invalid TLS configuration throws here rather than in poll().
@@ -694,9 +702,10 @@ WebSocketConnection& WebSocketClient::addConnection(HttpRequest&& upgradeRequest
   upgradeRequest.headerAddLine(websocket::SecWebSocketVersion, websocket::kWebSocketVersion);
 #ifdef AERONET_ENABLE_ZLIB
   if (_config.deflateConfig.enabled) {
-    std::array<char, websocket::kMaxDeflateOfferSize> offer;
-    const char* offerEnd = websocket::BuildDeflateOffer(_config.deflateConfig, offer.data());
-    upgradeRequest.headerAddLine(websocket::SecWebSocketExtensions, std::string_view(offer.data(), offerEnd));
+    upgradeRequest.headerInlineAddLine(
+        websocket::SecWebSocketExtensions, websocket::kMaxDeflateOfferSize, [this](char* out) -> std::size_t {
+          return static_cast<std::size_t>(websocket::BuildDeflateOffer(_config.deflateConfig, out) - out);
+        });
   }
 #endif
   // Room in both vectors first: the connection is added to both (at the same index) or to none.

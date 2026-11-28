@@ -4,7 +4,8 @@
 if(AERONET_ENABLE_CCACHE)
   find_program(CCACHE_PROGRAM ccache)
   if(CCACHE_PROGRAM)
-    set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_PROGRAM}")
+    # Inserted as is in the build commands: quoted, as the path may hold spaces ("C:/Program Files/ccache/ccache.exe").
+    set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "\"${CCACHE_PROGRAM}\"")
   else()
     message(WARNING "ccache wanted but not found in PATH")
   endif()

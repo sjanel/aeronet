@@ -352,6 +352,20 @@ class HttpMessage {
     headerAddLineImpl(key, IntegralCharBuffer<decltype(value)>(value));
   }
 
+  // Same as headerAddLineImpl(), with the value written in place by 'writer' instead of copied: 'writer' is called with
+  // the start of the value, and returns the number of bytes it wrote, at most 'maxValueLen' (writing more is undefined
+  // behavior). It must not access this HttpMessage. Writing 0 bytes adds the header with an empty value.
+  // The written value is checked as a given one: its surrounding whitespace is trimmed, and an invalid value throws
+  // std::invalid_argument. The header name is checked before 'writer' is called. If anything throws (including
+  // 'writer'), the HttpMessage is left unchanged.
+  // Only before the body: throws std::logic_error once a body is set.
+  template <class Writer>
+    requires std::is_invocable_r_v<std::size_t, Writer, char*>
+  void headerInlineAddLineImpl(LowerAsciiKey key, std::size_t maxValueLen, Writer&& writer) {
+    auto valueWriter = [&writer](char* out) -> std::size_t { return std::invoke(std::forward<Writer>(writer), out); };
+    headerInlineAddLineErased(key, maxValueLen, HttpPayload::WriterRef(valueWriter));
+  }
+
   // Append 'value' to an existing header value, separated with 'sep', or call headerAddLine(key, value) if header
   // is missing. Example, from an empty HttpMessage, calling successively
   //   headerAppendValueImpl("accept", "text/html", ", ")
@@ -359,8 +373,8 @@ class HttpMessage {
   // will produce:
   //   "accept: text/html"
   //   "accept: text/html, application/json"
-  // Same rules as headerAddLineImpl() for 'Content-Type', 'Content-Length', 'Content-Encoding' and the reserved
-  // response headers.
+  // Same rules as headerAddLineImpl() for the header name (invalid, or reserved for a request or a response, also when
+  // present, such as the Host of a request) and 'Content-Encoding'.
   void headerAppendValueImpl(LowerAsciiKey key, std::string_view value, std::string_view sep = ", ");
 
   // Convenient overload appending a numeric value.
@@ -377,7 +391,8 @@ class HttpMessage {
   // Add or replace first header 'key' with 'value'.
   // Performs a case-sensitive linear scan (slower than headerAddLine()) over normalized lower-case header names.
   // The header name and value must be valid per HTTP specifications.
-  // As for 'headerAddLine()', a reserved response header throws std::invalid_argument.
+  // As for 'headerAddLine()', an invalid or reserved header name throws std::invalid_argument, but for the Host of a
+  // request, which is replaced.
   void headerImpl(LowerAsciiKey key, std::string_view value);
 
   // Convenient overload setting a header to a numeric value.
@@ -789,6 +804,9 @@ class HttpMessage {
   // Adds the header line 'key: value' without any check: at the end of the headers, or just before the body headers
   // (Content-Type and Content-Length) when they are present.
   void headerAddLineUnchecked(LowerAsciiKey key, std::string_view value);
+
+  // headerInlineAddLineImpl() with a type-erased writer, so that it is compiled once.
+  void headerInlineAddLineErased(LowerAsciiKey key, std::size_t maxValueLen, HttpPayload::WriterRef writer);
 
   // Warning: this method should only be called if the header already exists.
   void overrideHeaderUnchecked(const char* oldValueFirst, const char* oldValueLast, std::string_view newValue);

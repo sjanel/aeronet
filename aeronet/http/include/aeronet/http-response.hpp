@@ -369,6 +369,23 @@ class HttpResponse final : public HttpMessage {
     return std::move(headerAddLine(key, value));
   }
 
+  // Same as headerAddLine(), with the value written in place by 'writer', without copy: 'writer' receives a pointer
+  // to at least 'maxValueLen' bytes and returns the number of bytes it wrote (at most 'maxValueLen'). It must not
+  // access this response. Writing 0 bytes adds the header with an empty value. The written value is trimmed and checked
+  // as a given one (std::invalid_argument), and the response is left unchanged if anything throws.
+  // Only before the body: throws std::logic_error once a body is set.
+  template <class Writer>
+  HttpResponse& headerInlineAddLine(LowerAsciiKey key, std::size_t maxValueLen, Writer&& writer) & {
+    headerInlineAddLineImpl(key, maxValueLen, std::forward<Writer>(writer));
+    return *this;
+  }
+
+  // Rvalue overload of headerInlineAddLine.
+  template <class Writer>
+  HttpResponse&& headerInlineAddLine(LowerAsciiKey key, std::size_t maxValueLen, Writer&& writer) && {
+    return std::move(headerInlineAddLine(key, maxValueLen, std::forward<Writer>(writer)));
+  }
+
   // Append 'value' to an existing header value, separated with 'sep', or call headerAddLine(key, value) if header
   // is missing. Example, from an empty HttpMessage, calling successively
   //   headerAppendValue("accept", "text/html", ", ")

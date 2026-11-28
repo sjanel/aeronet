@@ -338,17 +338,38 @@ TEST_F(WebSocketClientTest, InvalidUrlThrows) {
   EXPECT_THROW(static_cast<void>(client.connect("ws:/127.0.0.1/echo", {})), std::invalid_argument);
 }
 
-TEST_F(WebSocketClientTest, UpgradeRequestWithTrailersThrows) {
+// The opening handshake is a GET, sent without content (RFC 9110 §9.3.1): a body is refused, with or without trailers.
+TEST_F(WebSocketClientTest, UpgradeRequestWithBodyThrows) {
+  WebSocketClient client;  // permessage-deflate offered by default
+  for (const bool withTrailers : {false, true}) {
+    const auto makeRequest = [&client, withTrailers] {
+      HttpRequest req = client.makeUpgradeRequest(url("/echo"));
+      req.body("body");
+      if (withTrailers) {
+        req.trailerAddLine("x-checksum", "1");
+      }
+      return req;
+    };
+    EXPECT_THROW(static_cast<void>(client.connect(makeRequest(), WebSocketClientCallbacks{})), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(client.connectAsync(makeRequest(), WebSocketClientCallbacks{})),
+                 std::invalid_argument);
+  }
+  EXPECT_EQ(WebSocketConnectionTest::NbConnectionObjects(client), 0U);
+}
+
+// The opening handshake is a GET (RFC 6455 §4.1): another method is refused, also without body.
+TEST_F(WebSocketClientTest, UpgradeRequestOtherThanGetThrows) {
   WebSocketClient client(PlainConfig());
-  const auto makeRequest = [&client] {
-    HttpRequest req = client.makeUpgradeRequest(url("/echo"));
-    req.body("body");
-    req.trailerAddLine("x-checksum", "1");
-    return req;
-  };
-  EXPECT_THROW(static_cast<void>(client.connect(makeRequest(), WebSocketClientCallbacks{})), std::invalid_argument);
-  EXPECT_THROW(static_cast<void>(client.connectAsync(makeRequest(), WebSocketClientCallbacks{})),
-               std::invalid_argument);
+  for (const http::Method method : {http::Method::POST, http::Method::HEAD, http::Method::PUT}) {
+    const auto makeRequest = [&client, method] {
+      HttpRequest req = client.makeUpgradeRequest(url("/echo"));
+      req.method(method);
+      return req;
+    };
+    EXPECT_THROW(static_cast<void>(client.connect(makeRequest(), WebSocketClientCallbacks{})), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(client.connectAsync(makeRequest(), WebSocketClientCallbacks{})),
+                 std::invalid_argument);
+  }
   EXPECT_EQ(WebSocketConnectionTest::NbConnectionObjects(client), 0U);
 }
 
@@ -804,6 +825,39 @@ TEST(WebSocketClientScripted, ServerClosingTheConnectionIsAnAbnormalClosure) {
   EXPECT_EQ(events.closeCode, CloseCode::AbnormalClosure);
   EXPECT_EQ(events.closeReason, "connection closed by the server");
 }
+
+#ifdef AERONET_ENABLE_ZLIB
+// The permessage-deflate offer of the configuration is written in place in the upgrade request, after the headers of
+// the caller and Sec-WebSocket-Version.
+TEST(WebSocketClientScripted, UpgradeRequestCarriesTheDeflateOffer) {
+  struct Captured {
+    std::string head;
+    std::atomic<bool> ready{false};
+  };
+  auto captured = std::make_shared<Captured>();
+  auto hold = std::make_shared<Hold>();
+  test::RawServer server([captured, hold](NativeHandle fd, int /*connIndex*/) {
+    captured->head = test::RecvHead(fd);
+    captured->ready.store(true);  // before the 101, which connect() waits for
+    AnswerUpgradeOf(fd, captured->head);
+    hold->wait();
+  });
+  const ReleaseAtExit releaseAtExit(hold);
+  websocket::WebSocketConfig config;
+  config.deflateConfig.serverNoContextTakeover = true;
+  config.deflateConfig.clientMaxWindowBits = 10;
+  WebSocketClient client(config);
+  HttpRequest request = client.makeUpgradeRequest(RawUrl(server));
+  request.headerAddLine(websocket::SecWebSocketProtocol, "chat");
+  ASSERT_TRUE(client.connect(std::move(request), WebSocketClientCallbacks{}));
+  ASSERT_TRUE(captured->ready.load());
+  const std::string head = test::toLower(captured->head);
+  EXPECT_TRUE(head.contains(
+      "\r\nsec-websocket-protocol: chat\r\nsec-websocket-version: 13\r\n"
+      "sec-websocket-extensions: permessage-deflate; server_no_context_takeover; client_max_window_bits=10\r\n"))
+      << head;
+}
+#endif
 
 TEST(WebSocketClientScripted, MaskedServerFrameFailsTheConnection) {
   // Received with the 101 response, then in a later read.

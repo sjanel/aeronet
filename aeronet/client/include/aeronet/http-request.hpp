@@ -180,10 +180,9 @@ class HttpRequest final : public HttpMessage {
   // Append a header line (duplicates allowed, fastest path). The name must be lower-case; literals are checked at
   // compile time through LowerAsciiKey.
   // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
-  // Header name and value must be valid per HTTP specifications.
-  // Do not insert any reserved header (for which IsReservedOrForbiddenRequestHeader is true), doing so is undefined
-  // behavior. Attempting to set 'Content-Type' and 'Content-Length' headers with this method will throw
-  // std::invalid_argument.
+  // Header name and value must be valid per HTTP specifications, otherwise std::invalid_argument is thrown.
+  // A reserved header (for which IsReservedOrForbiddenRequestHeader is true) throws std::invalid_argument too, such as
+  // 'Content-Type' and 'Content-Length':
   //  - Content-Type should be set along with the body methods
   //  - Content-Length is managed by the library and should not be set manually.
   // Similarly, 'Content-Encoding' header cannot be changed while a body is already set. Doing so will throw
@@ -210,6 +209,23 @@ class HttpRequest final : public HttpMessage {
     return std::move(headerAddLine(key, value));
   }
 
+  // Same as headerAddLine(), with the value written in place by 'writer', without copy: 'writer' receives a pointer
+  // to at least 'maxValueLen' bytes and returns the number of bytes it wrote (at most 'maxValueLen'). It must not
+  // access this request. Writing 0 bytes adds the header with an empty value. The written value is trimmed and checked
+  // as a given one (std::invalid_argument), and the request is left unchanged if anything throws.
+  // Only before the body: throws std::logic_error once a body is set.
+  template <class Writer>
+  HttpRequest& headerInlineAddLine(LowerAsciiKey key, std::size_t maxValueLen, Writer&& writer) & {
+    headerInlineAddLineImpl(key, maxValueLen, std::forward<Writer>(writer));
+    return *this;
+  }
+
+  // Rvalue overload of headerInlineAddLine.
+  template <class Writer>
+  HttpRequest&& headerInlineAddLine(LowerAsciiKey key, std::size_t maxValueLen, Writer&& writer) && {
+    return std::move(headerInlineAddLine(key, maxValueLen, std::forward<Writer>(writer)));
+  }
+
   // Append 'value' to an existing header value, separated with 'sep', or call headerAddLine(key, value) if header
   // is missing. Example, from an empty HttpMessage, calling successively
   //   headerAppendValue("accept", "text/html", ", ")
@@ -217,7 +233,7 @@ class HttpRequest final : public HttpMessage {
   // will produce:
   //   "accept: text/html"
   //   "accept: text/html, application/json"
-  // Same rules as headerAddLine() for 'Content-Type', 'Content-Length' and 'Content-Encoding'.
+  // Same rules as headerAddLine() for the reserved headers (also when present, such as 'Host') and 'Content-Encoding'.
   HttpRequest& headerAppendValue(LowerAsciiKey key, std::string_view value, std::string_view sep = ", ") & {
     headerAppendValueImpl(key, value, sep);
     return *this;
@@ -243,8 +259,8 @@ class HttpRequest final : public HttpMessage {
   // has the element 'value', compared case-insensitively - it is meant for lists of tokens and field names
   // (Connection, Cache-Control, Accept-Encoding...).
   // Example: on 'cache-control: No-Cache, no-store', headerAppendValueIfAbsent("cache-control", "no-cache") does
-  // nothing. 'value' is a single element. Same rules as headerAppendValue() for 'Content-Type', 'Content-Length' and
-  // 'Content-Encoding'.
+  // nothing. 'value' is a single element. Same rules as headerAppendValue() for the reserved headers and
+  // 'Content-Encoding', even when the list already has 'value'.
   HttpRequest& headerAppendValueIfAbsent(LowerAsciiKey key, std::string_view value) & {
     headerAppendValueIfAbsentImpl(key, value);
     return *this;
@@ -258,7 +274,8 @@ class HttpRequest final : public HttpMessage {
   // Add or replace first header 'key' with 'value'.
   // Performs a case-sensitive linear scan (slower than headerAddLine()) over normalized lower-case header names.
   // The header name and value must be valid per HTTP specifications, otherwise std::invalid_argument is thrown.
-  // As for 'headerAddLine()', do not insert any reserved header.
+  // As for 'headerAddLine()', a reserved header throws std::invalid_argument, but 'Host', which is replaced (another
+  // authority).
   HttpRequest& header(LowerAsciiKey key, std::string_view value) & {
     headerImpl(key, value);
     return *this;

@@ -5416,6 +5416,19 @@ TEST(HttpClientUpgrade, RefusesAnInvalidProtocol) {
   }
 }
 
+// The Upgrade header written by makeUpgradeRequest() cannot be replaced nor appended to, as it cannot be added, while
+// the Host header can be replaced (another authority).
+TEST(HttpClientUpgrade, ReservedHeadersOfTheRequestCannotBeReplaced) {
+  HttpClient client;
+  HttpRequest req = client.makeUpgradeRequest("ws://example.com/feed", "websocket");
+  EXPECT_THROW(req.header(http::Upgrade, "h2c"), std::invalid_argument);
+  EXPECT_THROW(req.headerAppendValue(http::Upgrade, "h2c"), std::invalid_argument);
+  EXPECT_THROW(req.headerAppendValueIfAbsent(http::Upgrade, "websocket"), std::invalid_argument);
+  EXPECT_EQ(req.headerValueOrEmpty(http::Upgrade), "websocket");
+  req.header(http::Host, "other.example");
+  EXPECT_EQ(req.headerValueOrEmpty(http::Host), "other.example");
+}
+
 TEST(HttpClientUpgrade, KeepsTheBytesReceivedWithThe101AndTheCookies) {
   RawServer server([](NativeHandle fd, int /*connIndex*/) {
     test::RecvHead(fd);

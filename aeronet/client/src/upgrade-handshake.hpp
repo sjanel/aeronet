@@ -63,8 +63,9 @@ class UpgradeHandshake {
   // head and its inline body.
   static void CheckRequest(const HttpRequest& request);
 
-  // A handshake sending 'request', made by HttpClient::makeUpgradeRequest() and accepted by CheckRequest(). The request
-  // is kept for the next attempts.
+  // A handshake sending 'request', made by HttpClient::makeUpgradeRequest(), without file body nor trailers: accepted
+  // by CheckRequest() for HttpClient::upgrade(), WebSocketClient refusing any body. The request is kept for the next
+  // attempts.
   explicit UpgradeHandshake(HttpRequest request) noexcept : _request(std::move(request)) {}
 
   // The parser refers to a buffer of this object.

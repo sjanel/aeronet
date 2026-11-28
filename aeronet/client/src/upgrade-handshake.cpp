@@ -77,7 +77,8 @@ void UpgradeHandshake::start(HttpClient& client, std::string_view extraLines) {
   _response = HttpResponse();
   _parser.reset(false, false, true);  // a 101 ends the response, the bytes after its head belong to the new protocol
   _request.HttpMessage::finalizeHeadersAndBody();
-  assert(!_request.hasBodyFile() && _request.trailersSize() == 0);  // see CheckRequest()
+  // See CheckRequest(), and WebSocketClient::addConnection(), which refuses any body.
+  assert(!_request.hasBodyFile() && _request.trailersSize() == 0);
 
   // The CONNECT request first when the server is reached through a forward proxy: an upgraded connection carries
   // another protocol than HTTP, which a proxy would not relay, so a cleartext server is reached through a tunnel too
