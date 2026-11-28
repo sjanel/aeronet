@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
-#include <glaze/glaze.hpp>
+#include <glaze/json/generic.hpp>
+#include <glaze/json/read.hpp>
+#include <glaze/json/write.hpp>
 #include <limits>
 #include <string>
 

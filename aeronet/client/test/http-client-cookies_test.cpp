@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -13,6 +12,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/cookie-jar.hpp"

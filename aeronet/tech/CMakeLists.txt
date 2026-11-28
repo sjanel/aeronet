@@ -100,6 +100,13 @@ AeronetAddUnitTest(
     aeronet_basic_test_support
 )
 
+AeronetAddUnitTest(
+    format-lite_test
+    test/format-lite_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
 if(AERONET_ENABLE_GLAZE)
     AeronetAddUnitTest(
         glaze-adapters_test

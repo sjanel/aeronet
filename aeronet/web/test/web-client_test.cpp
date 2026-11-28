@@ -5,7 +5,6 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
@@ -14,6 +13,7 @@
 
 #include "../src/js-module.hpp"
 #include "../src/web-url.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/cookie-jar.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client.hpp"

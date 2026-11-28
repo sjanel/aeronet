@@ -9,9 +9,9 @@
 #include <openssl/types.h>
 #include <openssl/x509.h>
 
-#include <chrono>
 #include <cstring>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-handshake-callback.hpp"
 #include "aeronet/tls-info.hpp"

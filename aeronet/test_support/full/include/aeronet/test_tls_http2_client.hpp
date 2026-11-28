@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -12,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-test-helpers.hpp"

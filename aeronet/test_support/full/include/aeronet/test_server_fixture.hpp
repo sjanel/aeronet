@@ -1,12 +1,12 @@
 #pragma once
 
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <thread>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/router-config.hpp"

@@ -2,9 +2,10 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <stdexcept>
 #include <string_view>
+
+#include "aeronet/chrono-lite.hpp"
 
 namespace aeronet {
 

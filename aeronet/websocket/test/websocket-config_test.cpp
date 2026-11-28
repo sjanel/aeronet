@@ -2,10 +2,11 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
+
+#include "aeronet/chrono-lite.hpp"
 
 namespace aeronet::websocket {
 

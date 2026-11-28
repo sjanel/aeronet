@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <string>
 #include <string_view>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/jwt-algorithm.hpp"
 #include "aeronet/jwt-error.hpp"
 #include "aeronet/jwt-key.hpp"

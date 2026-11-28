@@ -65,6 +65,34 @@ class Http2ProtocolHandler;
 }  // namespace http2
 #endif
 
+#ifdef AERONET_ENABLE_GLAZE
+namespace detail {
+// <aeronet/http-json.hpp> specializes it to true for any T.
+template <class T, class = void>
+inline constexpr bool kHttpJsonIncluded = false;
+}  // namespace detail
+
+/// Satisfied in the files that include <aeronet/http-json.hpp>, which defines the JSON / YAML body helpers that the
+/// core headers only declare: calling one without it is a compile error, instead of an undefined reference at link
+/// time.
+template <class T>
+concept HttpJsonIncluded = detail::kHttpJsonIncluded<T>;
+#endif
+
+#ifdef AERONET_ENABLE_PROTOBUF
+namespace detail {
+// <aeronet/http-protobuf.hpp> specializes it to true for any T.
+template <class T, class = void>
+inline constexpr bool kHttpProtobufIncluded = false;
+}  // namespace detail
+
+/// Satisfied in the files that include <aeronet/http-protobuf.hpp>, which defines the protobuf body helpers that the
+/// core headers only declare: calling one without it is a compile error, instead of an undefined reference at link
+/// time.
+template <class T>
+concept HttpProtobufIncluded = detail::kHttpProtobufIncluded<T>;
+#endif
+
 // Internal base class for HttpResponse and HttpRequest, providing common functionality for both request and response
 // messages.
 class HttpMessage {
@@ -697,6 +725,7 @@ class HttpMessage {
 
 #ifdef AERONET_ENABLE_GLAZE
   template <class T>
+    requires HttpJsonIncluded<T>  // #include <aeronet/http-json.hpp>
   void bodyJson(const T& obj);
 
   /// Serialize 'obj' as YAML directly into the response body (Content-Type: text/yaml).
@@ -704,6 +733,7 @@ class HttpMessage {
   /// Throws std::runtime_error on serialization failure (e.g. from a faulty custom Glaze serializer).
   /// Definition lives in <aeronet/http-json.hpp> (include it to use this method).
   template <class T>
+    requires HttpJsonIncluded<T>  // #include <aeronet/http-json.hpp>
   void bodyYaml(const T& obj);
 #endif
 
@@ -711,12 +741,14 @@ class HttpMessage {
   // Serializes the protobuf message 'msg' in its binary encoding directly into the inline body.
   // Definition lives in <aeronet/http-protobuf.hpp> (include it to use this method).
   template <class T>
+    requires HttpProtobufIncluded<T>  // #include <aeronet/http-protobuf.hpp>
   void bodyProto(const T& msg, std::string_view contentType);
 
 #ifndef AERONET_PROTOBUF_LITE
   // Serializes the protobuf message 'msg' as ProtoJSON into a captured body.
   // Definition lives in <aeronet/http-protobuf.hpp> (include it to use this method).
   template <class T>
+    requires HttpProtobufIncluded<T>  // #include <aeronet/http-protobuf.hpp>
   void bodyProtoJson(const T& msg, std::string_view contentType);
 #endif
 #endif

@@ -2,7 +2,6 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <ios>
@@ -11,6 +10,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/config-file.hpp"
 #include "aeronet/glaze-round-trip.hpp"

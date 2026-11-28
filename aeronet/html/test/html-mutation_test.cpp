@@ -2,12 +2,12 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <format>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 
 #include "../src/html-parse.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/html-document.hpp"
 #include "aeronet/html-element.hpp"
 #include "aeronet/sys-test-support.hpp"
@@ -130,9 +130,17 @@ TEST(HtmlMutationAttributes, RemovedWhileTheAttributesAreIterated) {
 TEST(HtmlMutationAttributes, InvalidNamesThrow) {
   HtmlDocument doc("<p>x</p>");
   HtmlElement paragraph = doc.querySelector("p");
-  for (std::string_view name : {std::string_view{}, std::string_view{"a b"}, std::string_view{"a\tb"},
-                                std::string_view{"a\fb"}, std::string_view{"a\rb"}, std::string_view{"a/b"},
-                                std::string_view{"a=b"}, std::string_view{"a>b"}, std::string_view{"a\0b", 3}}) {
+  for (std::string_view name : {
+           std::string_view{},
+           std::string_view{"a b"},
+           std::string_view{"a\tb"},
+           std::string_view{"a\fb"},
+           std::string_view{"a\rb"},
+           std::string_view{"a/b"},
+           std::string_view{"a=b"},
+           std::string_view{"a>b"},
+           std::string_view{"a\0b", 3},
+       }) {
     EXPECT_FALSE(HtmlElement::IsValidAttributeName(name)) << name;
     EXPECT_THROW(paragraph.setAttribute(name, "v"), std::invalid_argument) << name;
   }
@@ -293,7 +301,7 @@ TEST(HtmlMutationInnerHtml, MisnestedFormattingElementsLimit) {
   static constexpr std::size_t kOpened = kMaxActiveFormattingElements + 4;
   std::string html = "<p>";
   for (std::size_t idx = 0; idx < kOpened; ++idx) {
-    html += std::format("<b id={}>", idx);
+    html += Format("<b id={}>", idx);
   }
   HtmlDocument doc("<div></div>");
   HtmlElement div = doc.querySelector("div");
@@ -309,7 +317,7 @@ TEST(HtmlMutationInnerHtml, AttributesLimit) {
   div.setInnerHtml("<p" + Attributes("a", kMaxAttributes + 1) + ">x</p>");
   HtmlElement para = div.querySelector("p");
   EXPECT_EQ(AttributeCount(para), kMaxAttributes);
-  EXPECT_FALSE(para.hasAttribute(std::format("a{}", kMaxAttributes)));
+  EXPECT_FALSE(para.hasAttribute(Format("a{}", kMaxAttributes)));
   // The limit is the one of the parsing only.
   para.setAttribute("b", "1");
   EXPECT_EQ(AttributeCount(para), kMaxAttributes + 1);
@@ -411,10 +419,18 @@ TEST(HtmlMutationElements, ElementNames) {
     EXPECT_EQ(doc.createElement(name).tagName(), name);
   }
   EXPECT_EQ(doc.createElement("My-Widget").tagName(), "my-widget");
-  for (std::string_view name :
-       {std::string_view{}, std::string_view{"1a"}, std::string_view{"-a"}, std::string_view{"a b"},
-        std::string_view{"a/b"}, std::string_view{"a>b"}, std::string_view{"a\nb"}, std::string_view{":a b"},
-        std::string_view{"_a!"}, std::string_view{"a\0b", 3}}) {
+  for (std::string_view name : {
+           std::string_view{},
+           std::string_view{"1a"},
+           std::string_view{"-a"},
+           std::string_view{"a b"},
+           std::string_view{"a/b"},
+           std::string_view{"a>b"},
+           std::string_view{"a\nb"},
+           std::string_view{":a b"},
+           std::string_view{"_a!"},
+           std::string_view{"a\0b", 3},
+       }) {
     EXPECT_FALSE(HtmlDocument::IsValidElementName(name)) << name;
     EXPECT_THROW(static_cast<void>(doc.createElement(name)), std::invalid_argument) << name;
   }

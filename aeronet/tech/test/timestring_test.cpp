@@ -6,12 +6,13 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <format>
 #include <limits>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 #include "aeronet/cctype.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/vector.hpp"
@@ -19,6 +20,62 @@
 namespace aeronet {
 
 using namespace std::chrono;
+
+namespace {
+
+constexpr bool IsDate(CivilDate date, int yearValue, unsigned monthValue, unsigned dayValue) {
+  return date.year == yearValue && date.month == monthValue && date.day == dayValue;
+}
+
+// Known days, and the limits of the ranges of CivilDateOfDays() and DaysOfCivilDate(), beyond the years of
+// std::chrono::year.
+static_assert(IsDate(CivilDateOfDays(0), 1970, 1, 1) && DaysOfCivilDate({1970, 1, 1}) == 0 && WeekdayOfDays(0) == 4);
+static_assert(IsDate(CivilDateOfDays(-1), 1969, 12, 31) && IsDate(CivilDateOfDays(11016), 2000, 2, 29));
+static_assert(IsDate(CivilDateOfDays(-536895458), -1468000, 3, 1) && IsDate(CivilDateOfDays(536846365), 1471805, 6, 5));
+static_assert(DaysOfCivilDate({-1468000, 3, 1}) == -536895458 && DaysOfCivilDate({1471745, 2, 28}) == 536824354);
+
+}  // namespace
+
+// The calendar of timestring.hpp against the one of <chrono>, for each day of the years 0 to 9999.
+TEST(CivilDateTest, SameAsStdChronoForEachDay) {
+  const std::int32_t firstDay = sys_days{year{0} / 1 / 1}.time_since_epoch().count();
+  const std::int32_t endDay = sys_days{year{10000} / 1 / 1}.time_since_epoch().count();
+  std::int64_t nbMismatches = 0;
+  for (std::int32_t epochDay = firstDay; epochDay < endDay; ++epochDay) {
+    const sys_days dayPoint{days{epochDay}};
+    const year_month_day expected{dayPoint};
+    const CivilDate date = CivilDateOfDays(epochDay);
+    if (date.year != static_cast<int>(expected.year()) || date.month != static_cast<unsigned>(expected.month()) ||
+        date.day != static_cast<unsigned>(expected.day()) || DaysOfCivilDate(date) != epochDay ||
+        !IsValidCivilDate(date) || WeekdayOfDays(epochDay) != weekday{dayPoint}.c_encoding()) {
+      ADD_FAILURE() << "day " << epochDay;
+      if (++nbMismatches == 10) {
+        break;
+      }
+    }
+  }
+}
+
+TEST(CivilDateTest, ValidityAndLeapYearsAsStdChrono) {
+  for (int yearValue = -1000; yearValue <= 10000; ++yearValue) {
+    ASSERT_EQ(IsLeapYear(yearValue), year{yearValue}.is_leap()) << yearValue;
+  }
+  for (const int yearValue : {0, 1900, 2000, 2023, 2024, 2100, 9999}) {
+    for (unsigned monthValue = 0; monthValue <= 13; ++monthValue) {
+      for (unsigned dayValue = 0; dayValue <= 32; ++dayValue) {
+        EXPECT_EQ(IsValidCivilDate({yearValue, monthValue, dayValue}),
+                  (year_month_day{year{yearValue}, month{monthValue}, day{dayValue}}.ok()))
+            << yearValue << '-' << monthValue << '-' << dayValue;
+      }
+    }
+  }
+}
+
+TEST(CivilDateTest, WeekdayOfDaysBeforeTheEpoch) {
+  EXPECT_EQ(WeekdayOfDays(-1), 3U);  // 1969-12-31, a Wednesday
+  EXPECT_EQ(WeekdayOfDays(-4), 0U);  // 1969-12-28, a Sunday
+  EXPECT_EQ(WeekdayOfDays(-5), 6U);  // 1969-12-27, a Saturday
+}
 
 TEST(TimeStringIso8601UTCTest, BasicIso8601Format) {
   char buf[ISO8601UTCWithMsStrLen];
@@ -328,6 +385,33 @@ TEST(TimeToStringRFC7231Test, MondayWeekdayShiftLogic) {
   EXPECT_EQ(std::string_view(buf, end), "Mon, 04 Aug 2025 12:00:00 GMT");
 }
 
+TEST(TimeToStringRFC7231Test, RoundsDownBeforeTheEpoch) {
+  // As the ISO 8601 formatters: 500 ms before 1970 is the last second of 1969, not 1970-01-01.
+  char buf[RFC7231DateStrLen];
+  char* end = TimeToStringRFC7231(SysTimePoint{-milliseconds{500}}, buf);
+  EXPECT_EQ(std::string_view(buf, end), "Wed, 31 Dec 1969 23:59:59 GMT");
+  // Rounded toward 0, the second would be in the next day.
+  end = TimeToStringRFC7231(SysTimePoint{-days{1} - milliseconds{1}}, buf);
+  EXPECT_EQ(std::string_view(buf, end), "Tue, 30 Dec 1969 23:59:59 GMT");
+}
+
+// The extreme time points of the nanosecond SysTimePoint of libstdc++: the day floor of SysTimePoint::min() does not
+// fit nanoseconds.
+TEST(TimeToStringTest, ExtremeNanosecondTimePoints) {
+  if constexpr (std::is_same_v<SysDuration, nanoseconds>) {
+    char rfc[RFC7231DateStrLen];
+    char iso[ISO8601UTCWithMsStrLen];
+    EXPECT_EQ(std::string_view(rfc, TimeToStringRFC7231(SysTimePoint::min(), rfc)), "Tue, 21 Sep 1677 00:12:43 GMT");
+    EXPECT_EQ(std::string_view(iso, TimeToStringISO8601UTCWithMs(SysTimePoint::min(), iso)),
+              "1677-09-21T00:12:43.145Z");
+    EXPECT_EQ(std::string_view(rfc, TimeToStringRFC7231(SysTimePoint::max(), rfc)), "Fri, 11 Apr 2262 23:47:16 GMT");
+    EXPECT_EQ(std::string_view(iso, TimeToStringISO8601UTCWithMs(SysTimePoint::max(), iso)),
+              "2262-04-11T23:47:16.854Z");
+  } else {
+    GTEST_SKIP() << "SysTimePoint does not count nanoseconds: its extreme years have more than 4 digits";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // More negative RFC7231 parsing tests covering explicit invalid ranges
 // ---------------------------------------------------------------------------
@@ -495,7 +579,7 @@ TEST(TimeStringRFC7231Test, Rfc850TwoDigitYear) {
     const int expectedYear = currentYear + yearOffset - (yearOffset > 50 ? 100 : 0);
     const sys_days day{year{expectedYear} / 3 / 1};
     const std::string date =
-        std::format("{}, 01-Mar-{:02} 00:00:00 GMT", kDayNames[weekday{day}.c_encoding()], expectedYear % 100);
+        Format("{}, 01-Mar-{:02} 00:00:00 GMT", kDayNames[weekday{day}.c_encoding()], expectedYear % 100);
     SCOPED_TRACE(date);
     EXPECT_EQ(TryParseTimeRFC7231(date), SysTimePoint{day});
   }
@@ -537,7 +621,7 @@ TEST(TimeStringRFC7231Test, RejectsEachMalformedCharOfObsoleteFormats) {
     ASSERT_NE(TryParseTimeRFC7231(valid), kInvalidTimePoint);
     for (std::size_t pos = 0; pos < valid.size(); ++pos) {
       const char orig = valid[pos];
-      if (orig != ',' && orig != ' ' && orig != '-' && orig != ':' && isdigit(orig) == 0) {
+      if (orig != ',' && orig != ' ' && orig != '-' && orig != ':' && static_cast<int>(isdigit(orig)) == 0) {
         continue;  // letters: day names, months and GMT are covered by RejectsMalformedObsoleteFormats
       }
       std::string mutated(valid);

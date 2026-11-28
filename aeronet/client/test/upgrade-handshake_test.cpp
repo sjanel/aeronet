@@ -10,7 +10,6 @@
 
 #include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -22,6 +21,8 @@
 #include <utility>
 
 #include "aeronet/adaptive-poll-timeout.hpp"
+#include "aeronet/chrono-lite.hpp"
+#include "aeronet/client-connection.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/file.hpp"
@@ -40,6 +41,10 @@
 #include "raw-test-server.hpp"
 
 #ifdef AERONET_LINUX
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 // The send() override: blocked and failed writes.
 #define AERONET_WANT_SOCKET_OVERRIDES
 #include "aeronet/sys-test-support.hpp"
@@ -300,12 +305,13 @@ TEST(UpgradeHandshake, RequestWithAFileBodyOrTrailersThrows) {
     const test::ScopedTempFile tmp(tmpDir, "file body");
     HttpRequest req = client.makeUpgradeRequest(Url(ClosedPort()), "tcp");
     req.file(File(tmp.filePath().string()));
-    EXPECT_THROW(static_cast<void>(client.upgrade(std::move(req))), std::invalid_argument);
+    EXPECT_THROW([[maybe_unused]] const HttpUpgradeResult result = client.upgrade(std::move(req)),
+                 std::invalid_argument);
   }
   HttpRequest req = client.makeUpgradeRequest(Url(ClosedPort()), "tcp");
   req.body("body");
   req.trailerAddLine("x-checksum", "1");
-  EXPECT_THROW(static_cast<void>(client.upgrade(std::move(req))), std::invalid_argument);
+  EXPECT_THROW([[maybe_unused]] const HttpUpgradeResult result = client.upgrade(std::move(req)), std::invalid_argument);
 }
 
 TEST(UpgradeHandshake, ProxyRefusingTheTunnel) {
@@ -423,6 +429,7 @@ TEST(UpgradeHandshake, ConnectNotCompletingFailsAtTheConnectTimeout) {
   ASSERT_EQ(::getsockname(listenFd, reinterpret_cast<sockaddr*>(&addr), &len), 0);
   ASSERT_EQ(::listen(listenFd, 0), 0);
   const NativeHandle filler = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(filler, 0);
   ASSERT_EQ(::connect(filler, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)), 0);
 
   HttpClient client(ShortTimeouts());

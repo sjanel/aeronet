@@ -69,6 +69,23 @@ TEST(ErrnoThrow, ThrowsSystemErrorWithGivenError) {
     FAIL() << "Expected std::system_error, but caught different exception";
   }
 }
+
+// Without arguments, the message is still a format string: its braces are escaped.
+TEST(ErrnoThrow, MessageWithoutArgumentsAndSpecifications) {
+  try {
+    errno = EBADF;
+    ThrowSystemError("no argument {{}}");
+  } catch (const std::system_error& e) {
+    EXPECT_EQ(e.code().value(), EBADF);
+    EXPECT_EQ(e.what(), std::string("no argument {}: Bad file descriptor"));
+  }
+  try {
+    ThrowSystemError(ENOENT, "fd # {}, events=0x{:x}, '{:>4}'", 3, 255U, "ab");
+  } catch (const std::system_error& e) {
+    EXPECT_EQ(e.code().value(), ENOENT);
+    EXPECT_EQ(e.what(), std::string("fd # 3, events=0xff, '  ab': No such file or directory"));
+  }
+}
 #endif
 
 }  // namespace aeronet

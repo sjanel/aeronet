@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -11,6 +10,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/vector.hpp"

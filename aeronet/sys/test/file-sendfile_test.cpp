@@ -7,7 +7,6 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -19,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/connection.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/socket.hpp"

@@ -3,8 +3,8 @@
 #include <gtest/gtest.h>
 
 #include <bit>
-#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <initializer_list>
 #include <iterator>
 #include <limits>
@@ -14,10 +14,12 @@
 #include <type_traits>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-server-config.hpp"
 
 #ifdef AERONET_ENABLE_GLAZE
-#include <glaze/glaze.hpp>
+#include <glaze/json/read.hpp>
+#include <glaze/json/write.hpp>
 
 #include "aeronet/tls-config-glaze.hpp"  // IWYU pragma: keep (glz::meta of TLSConfig and its members)
 

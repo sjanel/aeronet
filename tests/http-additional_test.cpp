@@ -13,11 +13,9 @@
 #include <atomic>
 #include <cerrno>
 #include <charconv>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <format>
 #include <initializer_list>
 #include <limits>
 #include <stdexcept>
@@ -28,8 +26,10 @@
 #include <vector>
 
 #include "aeronet/access-log-config.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -247,7 +247,7 @@ bool WaitForPeerClosedNonBlocking(int fd, std::chrono::milliseconds timeout) {
 TEST(Http10, AnsweredWithHttp11StatusLine) {
   ts.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse("A"); });
   for (std::string_view method : {"GET", "HEAD"}) {
-    const std::string resp = test::sendAndCollect(ts.port(), std::format("{} /x HTTP/1.0\r\nhost: h\r\n\r\n", method));
+    const std::string resp = test::sendAndCollect(ts.port(), Format("{} /x HTTP/1.0\r\nhost: h\r\n\r\n", method));
     EXPECT_TRUE(resp.starts_with("HTTP/1.1 200 ")) << resp;
     EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
     EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "1"))) << resp;
@@ -331,7 +331,7 @@ TEST(Http10, StreamedResponseOfKnownLengthKeepsConnectionAlive) {
 TEST(Http10, No100ContinueEvenIfHeaderPresent) {
   ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
   for (std::string_view body : {std::string_view{}, std::string_view{"HELLO"}}) {
-    const std::string req = std::format(
+    const std::string req = Format(
         "POST /p HTTP/1.0\r\nhost: h\r\ncontent-length: {}\r\nexpect: 100-continue\r\nconnection: close\r\n\r\n{}",
         body.size(), body);
     const std::string resp = test::sendAndCollect(ts.port(), req);
@@ -352,8 +352,7 @@ TEST(Http10, TrailersAreDroppedAndBodyKeepsItsContentLength) {
       return resp;
     });
     for (std::string_view method : {"GET", "HEAD"}) {
-      const std::string resp =
-          test::sendAndCollect(ts.port(), std::format("{} /t HTTP/1.0\r\nhost: h\r\n\r\n", method));
+      const std::string resp = test::sendAndCollect(ts.port(), Format("{} /t HTTP/1.0\r\nhost: h\r\n\r\n", method));
       EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
       EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(bodySize)))) << resp;
       EXPECT_FALSE(resp.contains(http::TransferEncoding)) << resp;
@@ -467,21 +466,20 @@ std::string BracketedFragments(std::string_view raw) {
 TEST(HttpPipeline, ManyRequestsWithBodiesInOneWrite) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
   ts.router().setDefault(
-      [](const HttpRequestView& req) { return HttpResponse(std::format("[{}={}]", req.path(), req.body())); });
+      [](const HttpRequestView& req) { return HttpResponse(Format("[{}={}]", req.path(), req.body())); });
   static constexpr int kNbRequests = 2000;
   std::string requests;
   std::string expected;
   for (int requestPos = 0; requestPos < kNbRequests; ++requestPos) {
-    const std::string body = std::format("body-{}", requestPos);
+    const std::string body = Format("body-{}", requestPos);
     if (requestPos % 2 == 0) {
       requests +=
-          std::format("POST /p{} HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n{}", requestPos, body.size(), body);
+          Format("POST /p{} HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n{}", requestPos, body.size(), body);
     } else {
-      requests +=
-          std::format("POST /p{} HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
-                      requestPos, body.size(), body);
+      requests += Format("POST /p{} HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+                         requestPos, body.size(), body);
     }
-    expected += std::format("[/p{}={}]", requestPos, body);
+    expected += Format("[/p{}={}]", requestPos, body);
   }
   requests += "GET /last HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
   expected += "[/last=]";
@@ -500,7 +498,7 @@ TEST(HttpPipeline, ManyRequestsWithBodiesInOneWrite) {
 TEST(HttpPipeline, IncompleteRequestBehindServedOnesIsCompletedLater) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
   ts.router().setDefault([](const HttpRequestView& req) {
-    return HttpResponse(std::format("[{}|{}|{}]", req.path(), req.headerValueOrEmpty("x-dup"), req.body()));
+    return HttpResponse(Format("[{}|{}|{}]", req.path(), req.headerValueOrEmpty("x-dup"), req.body()));
   });
   const auto serve = [](std::initializer_list<std::string_view> parts) {
     test::ClientConnection clientConnection(ts.port());
@@ -533,13 +531,13 @@ TEST(HttpPipeline, IncompleteRequestBehindServedOnesIsCompletedLater) {
 // response nor, with Nagle's algorithm, a wait for the acknowledgment of the first one.
 TEST(HttpPipeline, ResponsesToRequestsReceivedTogetherAreWrittenTogether) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
-  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(std::format("[{}]", req.path())); });
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(Format("[{}]", req.path())); });
   static constexpr int kNbRequests = 16;
   std::string requests;
   std::string expected;
   for (int requestPos = 0; requestPos < kNbRequests; ++requestPos) {
-    requests += std::format("GET /r{} HTTP/1.1\r\nhost: x\r\n\r\n", requestPos);
-    expected += std::format("[/r{}]", requestPos);
+    requests += Format("GET /r{} HTTP/1.1\r\nhost: x\r\n\r\n", requestPos);
+    expected += Format("[/r{}]", requestPos);
   }
 
   test::ClientConnection clientConnection(ts.port());
@@ -582,7 +580,7 @@ TEST(HttpPipeline, BatchedResponsesAreWrittenInOrderWithTheOthers) {
   });
   router.setPath(http::Method::POST, "/echo", [](const HttpRequestView& req) { return HttpResponse(req.body()); });
   for (std::size_t filePos = 0; filePos < std::size(files); ++filePos) {
-    router.setPath(http::Method::GET, std::format("/file/{}", filePos),
+    router.setPath(http::Method::GET, Format("/file/{}", filePos),
                    [path = files[filePos].filePath().string()](const HttpRequestView&) {
                      return HttpResponse(http::StatusCodeOK).file(File(path));
                    });
@@ -601,7 +599,7 @@ TEST(HttpPipeline, BatchedResponsesAreWrittenInOrderWithTheOthers) {
   std::string requests;
   std::string expected;
   for (const std::string_view target : targets) {
-    requests += std::format("GET {} HTTP/1.1\r\nhost: x\r\n\r\n", target);
+    requests += Format("GET {} HTTP/1.1\r\nhost: x\r\n\r\n", target);
   }
   for (const std::size_t size : {1UL, 30000UL, 30000UL, 30000UL, 2UL, 100000UL, 3UL}) {
     expected += "[" + std::string(size, 's') + "]";
@@ -626,8 +624,8 @@ TEST(HttpPipeline, BatchedResponsesAreWrittenInOrderWithTheOthers) {
 // (decoded request-target, merged duplicate headers), and parsing it again would read something else.
 TEST(HttpSplitRequest, HeadReceivedInTwoReadsIsParsedOnce) {
   ts.router().setDefault([](const HttpRequestView& req) {
-    return HttpResponse(std::format("{}|{}|{}|{}", req.path(), req.queryParamValueOrEmpty("a"),
-                                    req.queryParamValueOrEmpty("b"), req.headerValueOrEmpty("x-dup")));
+    return HttpResponse(Format("{}|{}|{}|{}", req.path(), req.queryParamValueOrEmpty("a"),
+                               req.queryParamValueOrEmpty("b"), req.headerValueOrEmpty("x-dup")));
   });
   static constexpr std::string_view kHead =
       "GET /p%2561th?a=1&b=x+y HTTP/1.1\r\nhost: x\r\nx-dup: v1\r\nuser-agent: t\r\nx-dup: v2\r\n\r\n";
@@ -649,13 +647,13 @@ TEST(HttpSplitRequest, HeadReceivedInTwoReadsIsParsedOnce) {
 // again, and counted once.
 TEST(HttpSplitRequest, BodyReceivedInSeveralReadsIsServedAndCountedOnce) {
   ts.router().setDefault([](const HttpRequestView& req) {
-    return HttpResponse(std::format("{}|{}|{}|{}", req.path(), req.queryParamValueOrEmpty("name"),
-                                    req.headerValueOrEmpty("x-dup"), req.body().size()));
+    return HttpResponse(Format("{}|{}|{}|{}", req.path(), req.queryParamValueOrEmpty("name"),
+                               req.headerValueOrEmpty("x-dup"), req.body().size()));
   });
   static constexpr std::size_t kBodyPartSize = 1000;
-  const std::string head = std::format(
-      "POST /upload?id=7&name=a+b HTTP/1.1\r\nhost: x\r\nx-dup: v1\r\nx-dup: v2\r\ncontent-length: {}\r\n\r\n",
-      3 * kBodyPartSize);
+  const std::string head =
+      Format("POST /upload?id=7&name=a+b HTTP/1.1\r\nhost: x\r\nx-dup: v1\r\nx-dup: v2\r\ncontent-length: {}\r\n\r\n",
+             3 * kBodyPartSize);
   const std::string bodyPart(kBodyPartSize, 'b');
   test::ClientConnection clientConnection(ts.port());
   const NativeHandle fd = clientConnection.fd();
@@ -676,7 +674,7 @@ TEST(HttpSplitRequest, BodyReceivedInSeveralReadsIsServedAndCountedOnce) {
 
 TEST(HttpSplitRequest, ChunkedBodyReceivedInSeveralReads) {
   ts.router().setDefault([](const HttpRequestView& req) {
-    return HttpResponse(std::format("{}|{}|{}", req.path(), req.queryParamValueOrEmpty("k"), req.body()));
+    return HttpResponse(Format("{}|{}|{}", req.path(), req.queryParamValueOrEmpty("k"), req.body()));
   });
   test::ClientConnection clientConnection(ts.port());
   const NativeHandle fd = clientConnection.fd();
@@ -952,7 +950,7 @@ TEST(HttpContentLength, PerRouteTimeoutIsNotPushedBackByTheBody) {
       .setPath(http::Method::POST, "/trickle", [](const HttpRequestView&) { return HttpResponse("OK"); })
       .timeout(std::chrono::milliseconds{100});
   test::ClientConnection cc(ts.port());
-  test::sendAll(cc.fd(), std::format("POST /trickle HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n", kBodySize));
+  test::sendAll(cc.fd(), Format("POST /trickle HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n", kBodySize));
   // One body byte every 40 ms: the whole body would take 2 s.
   std::string resp;
   int nbSent = 0;
@@ -1326,7 +1324,7 @@ TEST(HttpExpectation, ExpectationHandlerErrors) {
            "bad-interim3",
            "expectation-failure",
        }) {
-    auto req = std::format(
+    auto req = Format(
         "POST /x HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: {}\r\nconnection: close\r\n\r\nHELLO", token);
 
     test::ClientConnection clientConnection(ts.port());
@@ -1387,7 +1385,7 @@ void InstallAuthCheckExpectationHandler() {
     }
     return res;
   });
-  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(std::format("[{}]", req.path())); });
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(Format("[{}]", req.path())); });
 }
 
 }  // namespace
@@ -1411,10 +1409,10 @@ TEST(HttpExpectation, HandlerFinalResponseToRequestAnnouncingBodyClosesConnectio
   for (const std::string_view framing : {"content-length: 5", "transfer-encoding: chunked"}) {
     SCOPED_TRACE(framing);
     const std::string resp =
-        test::sendAndCollect(ts.port(), std::format("GET /a HTTP/1.1\r\nhost: x\r\n\r\n"
-                                                    "POST /x HTTP/1.1\r\nhost: x\r\n{}\r\nexpect: auth-check\r\n\r\n"
-                                                    "GET /b HTTP/1.1\r\nhost: x\r\n\r\n",
-                                                    framing));
+        test::sendAndCollect(ts.port(), Format("GET /a HTTP/1.1\r\nhost: x\r\n\r\n"
+                                               "POST /x HTTP/1.1\r\nhost: x\r\n{}\r\nexpect: auth-check\r\n\r\n"
+                                               "GET /b HTTP/1.1\r\nhost: x\r\n\r\n",
+                                               framing));
     EXPECT_EQ(BracketedFragments(resp), "[/a][denied]");
     EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 2) << resp;
     EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
@@ -1501,15 +1499,15 @@ namespace {
 // The head of a request announcing a body of 5 bytes, whose client waits for 100 Continue before sending it. Without
 // 'connection: close' among extraHeaders, the client keeps its connection alive.
 std::string ExpectContinueHead(std::string_view method, std::string_view target, std::string_view extraHeaders = {}) {
-  return std::format("{} {} HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: 100-continue\r\n{}\r\n", method, target,
-                     extraHeaders);
+  return Format("{} {} HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: 100-continue\r\n{}\r\n", method, target,
+                extraHeaders);
 }
 
 // Checks the response to a request, keeping its connection alive, answered from its head with 'statusCode' (RFC 9110
 // §10.1.1): without 100 Continue, the client not sending its body, and announcing the close of the connection (as
 // returned by SendExpectingContinue()), since the client may send its body anyway.
 void ExpectAnsweredWithout100Continue(std::string_view resp, http::StatusCode statusCode) {
-  EXPECT_TRUE(resp.starts_with(std::format("HTTP/1.1 {} ", statusCode))) << resp;
+  EXPECT_TRUE(resp.starts_with(Format("HTTP/1.1 {} ", statusCode))) << resp;
   EXPECT_FALSE(resp.contains("100 Continue")) << resp;
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
 }
@@ -1652,8 +1650,8 @@ TEST(HttpExpectContinue, RequestMiddlewareRunsOnceBefore100Continue) {
   router
       .setPath(http::Method::POST, "/items/{id}",
                [](const HttpRequestView& req) {
-                 return HttpResponse(std::format("{}|{}|{}", req.pathParamValueOrEmpty("id"),
-                                                 req.queryParamValueOrEmpty("q"), req.body()));
+                 return HttpResponse(
+                     Format("{}|{}|{}", req.pathParamValueOrEmpty("id"), req.queryParamValueOrEmpty("q"), req.body()));
                })
       .before([&routeCalls](HttpRequestView&) {
         ++routeCalls;
@@ -1712,17 +1710,17 @@ TEST(HttpExpectContinue, EachRequestOfAKeepAliveConnectionIsServedFromItsStart) 
     return MiddlewareResult::Continue();
   });
   router.setPath(http::Method::POST, "/items/{id}", [](const HttpRequestView& req) {
-    return HttpResponse(std::format("{}|{}", req.pathParamValueOrEmpty("id"), req.body()));
+    return HttpResponse(Format("{}|{}", req.pathParamValueOrEmpty("id"), req.body()));
   });
 
   test::ClientConnection cnx(ts.port());
   for (int requestPos = 1; requestPos <= 4; ++requestPos) {
     SCOPED_TRACE(requestPos);
-    const std::string target = std::format("/items/{}", requestPos);
+    const std::string target = Format("/items/{}", requestPos);
     const bool expectsContinue = requestPos % 2 == 1;
     test::sendAll(cnx.fd(), expectsContinue
                                 ? ExpectContinueHead("POST", target)
-                                : std::format("POST {} HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\n\r\n", target));
+                                : Format("POST {} HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\n\r\n", target));
     if (expectsContinue) {
       ASSERT_EQ(test::RecvHead(cnx.fd()), http::HTTP11_100_CONTINUE);
     }
@@ -1732,7 +1730,7 @@ TEST(HttpExpectContinue, EachRequestOfAKeepAliveConnectionIsServedFromItsStart) 
     test::sendAll(cnx.fd(), "lo");
     const std::string resp = test::recvWithTimeout(cnx.fd(), 2s);
     EXPECT_TRUE(resp.starts_with("HTTP/1.1 200 ")) << resp;
-    EXPECT_TRUE(resp.ends_with(std::format("\r\n\r\n{}|hello", requestPos))) << resp;
+    EXPECT_TRUE(resp.ends_with(Format("\r\n\r\n{}|hello", requestPos))) << resp;
     EXPECT_EQ(middlewareCalls.load(), requestPos);
   }
   ts.resetRouterAndGet();
@@ -2574,9 +2572,9 @@ TEST(HttpKeepAlive, StalledReaderIsClosedAfterKeepAliveTimeout) {
   for (test::TestServer* pServer : {&keepAliveServer, &closeServer}) {
     AddBufferedAndFileRoutes(*pServer, body, file.filePath().string());
     for (const std::string_view target : {"/buffered", "/file"}) {
-      clients.emplace_back(std::format("keep-alive {}, {}", pServer == &keepAliveServer, target),
+      clients.emplace_back(Format("keep-alive {}, {}", pServer == &keepAliveServer, target),
                            test::ClientConnection(pServer->port(), 500ms, kMinimalReceiveBufferSize));
-      test::sendAll(clients.back().cnx.fd(), std::format("GET {} HTTP/1.1\r\nHost: x\r\n\r\n", target));
+      test::sendAll(clients.back().cnx.fd(), Format("GET {} HTTP/1.1\r\nHost: x\r\n\r\n", target));
     }
   }
   // They all read nothing for 10 keepAliveTimeouts.
@@ -2604,7 +2602,7 @@ struct SlowReader {
 
   void run() {
     test::ClientConnection cnx(port, 500ms, static_cast<int>(readSize));
-    test::sendAll(cnx.fd(), std::format("GET {} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", target));
+    test::sendAll(cnx.fd(), Format("GET {} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", target));
     test::setRecvTimeout(cnx.fd(), 2s);
     while (test::RecvAppend(cnx.fd(), received, readSize) > 0) {
       const auto pauseStart = std::chrono::steady_clock::now();
@@ -2650,9 +2648,9 @@ TEST(HttpKeepAlive, SteadySlowReaderIsNotClosedAsIdle) {
     std::vector<SlowReader> readers;
     for (const std::string_view target : {"/buffered", "/file"}) {
       // About 400 KB/s: ~2.5 s for the whole response.
-      readers.emplace_back(std::format("{}, polling every ms", target), target, 8UL << 10U, 20ms, server.port());
+      readers.emplace_back(Format("{}, polling every ms", target), target, 8UL << 10U, 20ms, server.port());
       // 10 KiB per tick: ~2 s for the whole response at the first attempt.
-      readers.emplace_back(std::format("{}, polling once per keepAliveTimeout", target), target, 2UL << 10U,
+      readers.emplace_back(Format("{}, polling once per keepAliveTimeout", target), target, 2UL << 10U,
                            keepAliveTimeout / 5, slowTickServer.port());
     }
     {
@@ -2670,7 +2668,7 @@ TEST(HttpKeepAlive, SteadySlowReaderIsNotClosedAsIdle) {
         outcome.ok = false;
         // Paused for about keepAliveTimeout: the server may legitimately have closed the connection.
         outcome.stalled = outcome.stalled || reader.maxPause > keepAliveTimeout * 4 / 5;
-        outcome.detail += std::format(
+        outcome.detail += Format(
             "{}: received {} bytes (longest pause {} ms, timeout {} ms)\n", reader.name, reader.received.size(),
             std::chrono::duration_cast<std::chrono::milliseconds>(reader.maxPause).count(), keepAliveTimeout.count());
       }

@@ -18,7 +18,6 @@
 
 #include <array>
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -35,6 +34,7 @@
 #include <utility>
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/system-error.hpp"

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -10,6 +9,7 @@
 #include <utility>
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/native-handle.hpp"

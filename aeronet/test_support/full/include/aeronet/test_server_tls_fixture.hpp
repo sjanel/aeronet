@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
@@ -8,6 +7,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/router-config.hpp"

@@ -3,11 +3,11 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
-#include <format>
 #include <limits>
 #include <string>
 #include <string_view>
 
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-status-code.hpp"
 
 namespace aeronet::http {
@@ -144,7 +144,7 @@ TEST(ChunkSizeLineTest, MaxChunkSize) {
     for (const std::size_t maxChunkSize : {std::size_t{0}, std::size_t{0x10}, std::size_t{0x1F}, std::size_t{0xABC}}) {
       SCOPED_TRACE(maxChunkSize);
       for (std::size_t chunkSize = 0; chunkSize <= maxChunkSize + 0x20; ++chunkSize) {
-        const std::string line = std::format("{:x}\r\n", chunkSize);
+        const std::string line = Format("{:x}\r\n", chunkSize);
         const ChunkSizeLine parsed = Parse(line, syntax, kNoChunkSizeLineLimit, maxChunkSize);
         if (chunkSize <= maxChunkSize) {
           ASSERT_EQ(parsed.state, State::Complete) << line;

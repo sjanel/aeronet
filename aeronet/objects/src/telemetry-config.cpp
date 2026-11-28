@@ -3,12 +3,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
-#include <format>
 #include <span>
 #include <stdexcept>
 #include <string_view>
 
 #include "aeronet/chrono-lite.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
@@ -40,10 +40,9 @@ void TelemetryConfig::validate() {
     throw std::invalid_argument("Invalid sample rate");
   }
   if (exportTimeout >= exportInterval) {
-    throw std::invalid_argument(
-        std::format("Export timeout {}ms must be less than export interval {}ms",
-                    std::chrono::duration_cast<std::chrono::milliseconds>(exportTimeout).count(),
-                    std::chrono::duration_cast<std::chrono::milliseconds>(exportInterval).count()));
+    throw std::invalid_argument(Format("Export timeout {}ms must be less than export interval {}ms",
+                                       std::chrono::duration_cast<std::chrono::milliseconds>(exportTimeout).count(),
+                                       std::chrono::duration_cast<std::chrono::milliseconds>(exportInterval).count()));
   }
 
   std::string_view svcName = serviceName();
@@ -100,14 +99,14 @@ TelemetryConfig& TelemetryConfig::addHistogramBuckets(std::string_view name, std
   }
   if (boundaries.size() < 2UL) {
     throw std::invalid_argument(
-        std::format("Histogram '{}' bucket boundaries must contain at least two elements", std::string_view(name)));
+        Format("Histogram '{}' bucket boundaries must contain at least two elements", std::string_view(name)));
   }
   if (!std::ranges::all_of(boundaries, [](double val) { return std::isfinite(val); })) {
-    throw std::invalid_argument(std::format("Histogram '{}' has non-finite bucket boundary", std::string_view(name)));
+    throw std::invalid_argument(Format("Histogram '{}' has non-finite bucket boundary", std::string_view(name)));
   }
   if (std::ranges::adjacent_find(boundaries, [](double lhs, double rhs) { return lhs >= rhs; }) != boundaries.end()) {
     throw std::invalid_argument(
-        std::format("Histogram '{}' bucket boundaries not strictly increasing", std::string_view(name)));
+        Format("Histogram '{}' bucket boundaries not strictly increasing", std::string_view(name)));
   }
   const auto [it, inserted] =
       _histogramBuckets.emplace(RawChars32{name}, vector<double>{boundaries.begin(), boundaries.end()});

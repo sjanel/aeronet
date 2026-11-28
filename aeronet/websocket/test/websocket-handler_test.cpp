@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -20,6 +19,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-bytes.hpp"
@@ -3676,7 +3676,7 @@ std::string AsString(std::span<const std::byte> payload) {
 }
 
 std::string RandomBytes(std::size_t size) {
-  std::mt19937 rng(7);
+  std::mt19937 rng(7);  // NOLINT(bugprone-random-generator-seed) the same bytes on each run
   std::string bytes(size, '\0');
   for (char& byte : bytes) {
     byte = static_cast<char>(rng());

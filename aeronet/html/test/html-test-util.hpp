@@ -3,12 +3,12 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
-#include <format>
 #include <iterator>
 #include <new>
 #include <string>
 #include <string_view>
 
+#include "aeronet/format-lite.hpp"
 #include "aeronet/html-document.hpp"
 #include "aeronet/html-element.hpp"
 #include "aeronet/sys-test-support.hpp"
@@ -45,7 +45,7 @@ inline std::size_t AttributeCount(HtmlElement element) {
 inline std::string Attributes(std::string_view prefix, std::size_t count) {
   std::string ret;
   for (std::size_t idx = 0; idx < count; ++idx) {
-    std::format_to(std::back_inserter(ret), " {}{}={}", prefix, idx, idx);
+    FormatTo(ret, " {}{}={}", prefix, idx, idx);
   }
   return ret;
 }

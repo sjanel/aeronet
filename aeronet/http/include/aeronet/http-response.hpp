@@ -618,6 +618,7 @@ class HttpResponse final : public HttpMessage {
   /// Definition lives in <aeronet/http-json.hpp> (include it to use this method) so that translation
   /// units that do not serialize JSON/YAML do not pay the (heavy) Glaze compilation cost.
   template <class T>
+    requires HttpJsonIncluded<T>  // #include <aeronet/http-json.hpp>
   HttpResponse& bodyJson(const T& obj) & {
     HttpMessage::bodyJson(obj);
     return *this;
@@ -625,6 +626,7 @@ class HttpResponse final : public HttpMessage {
 
   /// Rvalue overload of bodyJson. See bodyJson(const T&) & and include <aeronet/http-json.hpp>.
   template <class T>
+    requires HttpJsonIncluded<T>  // #include <aeronet/http-json.hpp>
   HttpResponse&& bodyJson(const T& obj) && {
     return std::move(bodyJson(obj));
   }
@@ -634,6 +636,7 @@ class HttpResponse final : public HttpMessage {
   /// Throws std::runtime_error on serialization failure (e.g. from a faulty custom Glaze serializer).
   /// Definition lives in <aeronet/http-json.hpp> (include it to use this method).
   template <class T>
+    requires HttpJsonIncluded<T>  // #include <aeronet/http-json.hpp>
   HttpResponse& bodyYaml(const T& obj) & {
     HttpMessage::bodyYaml(obj);
     return *this;
@@ -641,6 +644,7 @@ class HttpResponse final : public HttpMessage {
 
   /// Rvalue overload of bodyYaml. See bodyYaml(const T&) & and include <aeronet/http-json.hpp>.
   template <class T>
+    requires HttpJsonIncluded<T>  // #include <aeronet/http-json.hpp>
   HttpResponse&& bodyYaml(const T& obj) && {
     return std::move(bodyYaml(obj));
   }
@@ -652,6 +656,7 @@ class HttpResponse final : public HttpMessage {
   /// Throws std::length_error if the encoding would exceed kProtoMaxBodySize (2 GiB - 1).
   /// Definition lives in <aeronet/http-protobuf.hpp> (include it to use this method), which includes protobuf.
   template <class T>
+    requires HttpProtobufIncluded<T>  // #include <aeronet/http-protobuf.hpp>
   HttpResponse& bodyProto(const T& msg, std::string_view contentType = http::ContentTypeApplicationProtobuf) & {
     HttpMessage::bodyProto(msg, contentType);
     return *this;
@@ -659,6 +664,7 @@ class HttpResponse final : public HttpMessage {
 
   /// Rvalue overload of bodyProto. See bodyProto(const T&, std::string_view) & and include <aeronet/http-protobuf.hpp>.
   template <class T>
+    requires HttpProtobufIncluded<T>  // #include <aeronet/http-protobuf.hpp>
   HttpResponse&& bodyProto(const T& msg, std::string_view contentType = http::ContentTypeApplicationProtobuf) && {
     return std::move(bodyProto(msg, contentType));
   }
@@ -669,6 +675,7 @@ class HttpResponse final : public HttpMessage {
   /// Throws std::runtime_error if the serialization fails (for instance, an Any of an unknown type).
   /// Definition lives in <aeronet/http-protobuf.hpp> (include it to use this method).
   template <class T>
+    requires HttpProtobufIncluded<T>  // #include <aeronet/http-protobuf.hpp>
   HttpResponse& bodyProtoJson(const T& msg, std::string_view contentType = http::ContentTypeApplicationProtobufJson) & {
     HttpMessage::bodyProtoJson(msg, contentType);
     return *this;
@@ -676,6 +683,7 @@ class HttpResponse final : public HttpMessage {
 
   /// Rvalue overload of bodyProtoJson. See bodyProtoJson(const T&, std::string_view) &.
   template <class T>
+    requires HttpProtobufIncluded<T>  // #include <aeronet/http-protobuf.hpp>
   HttpResponse&& bodyProtoJson(const T& msg,
                                std::string_view contentType = http::ContentTypeApplicationProtobufJson) && {
     return std::move(bodyProtoJson(msg, contentType));
@@ -687,10 +695,12 @@ class HttpResponse final : public HttpMessage {
   /// all its fields at their default value.
   /// Definition lives in <aeronet/http-protobuf.hpp> (include it to use this method).
   template <class T>
+    requires HttpProtobufIncluded<T>  // #include <aeronet/http-protobuf.hpp>
   [[nodiscard]] std::expected<T, ProtoParseError> bodyAsProto() const;
 
   /// Same as bodyAsProto<T>(), but parses into 'msg' (for instance allocated on an Arena), which is replaced.
   template <class T>
+    requires HttpProtobufIncluded<T>  // #include <aeronet/http-protobuf.hpp>
   [[nodiscard]] std::expected<void, ProtoParseError> bodyAsProto(T& msg) const;
 #endif
 

@@ -3,13 +3,13 @@
 // streaming, keep-alive reuse, query/headers) over real sockets.
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <thread>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-method.hpp"

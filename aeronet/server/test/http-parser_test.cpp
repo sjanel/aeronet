@@ -1,18 +1,19 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <format>
 #include <string>
 #include <string_view>
 #include <thread>
 
 #include "aeronet/char-hexadecimal-converter.hpp"
+#include "aeronet/chrono-lite.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -741,7 +742,7 @@ TEST(HttpParserChunkedResume, BodyAndTrailersReceivedByteByByte) {
   ts.resetConfig();
   ts.router().setDefault([](const HttpRequestView& req) {
     return req.makeResponse(
-        std::format("{}|{}|{}", req.body(), req.trailerValueOrEmpty("x-sum"), req.trailerValueOrEmpty("x-note")));
+        Format("{}|{}|{}", req.body(), req.trailerValueOrEmpty("x-sum"), req.trailerValueOrEmpty("x-note")));
   });
   static constexpr std::string_view kBody =
       "3\r\nfoo\r\n"
@@ -769,7 +770,7 @@ TEST(HttpParserChunkedResume, LargeBodyReceivedChunkByChunk) {
   ts.resetConfig();
   ts.router().setDefault([](const HttpRequestView& req) {
     return req.makeResponse(
-        std::format("{}:{:x}:{}", req.body().size(), Fnv1a(req.body()), req.trailerValueOrEmpty("x-end")));
+        Format("{}:{:x}:{}", req.body().size(), Fnv1a(req.body()), req.trailerValueOrEmpty("x-end")));
   });
   static constexpr std::size_t kNbChunks = 512;
   static constexpr std::size_t kChunkSize = 2048;
@@ -779,8 +780,8 @@ TEST(HttpParserChunkedResume, LargeBodyReceivedChunkByChunk) {
   for (std::size_t chunkPos = 0; chunkPos < kNbChunks; ++chunkPos) {
     // Distinct contents: a chunk copied twice, or lost, changes the checksum.
     std::string chunk(kChunkSize, static_cast<char>('a' + (chunkPos % 26)));
-    chunk.replace(0, 8, std::format("{:08d}", chunkPos));
-    chunkedBody += std::format("{:x}\r\n", kChunkSize);
+    chunk.replace(0, 8, Format("{:08d}", chunkPos));
+    chunkedBody += Format("{:x}\r\n", kChunkSize);
     chunkedBody += chunk;
     chunkedBody += "\r\n";
     expectedBody += chunk;
@@ -790,23 +791,23 @@ TEST(HttpParserChunkedResume, LargeBodyReceivedChunkByChunk) {
   // One chunk framing (size line, data and CRLF) per write, a little more than one per read.
   const std::string resp = SendInParts(port, kChunkedHead, chunkedBody, (kChunkSize / 2) + 100, 100us);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
-  EXPECT_TRUE(resp.ends_with(std::format("{}:{:x}:done", expectedBody.size(), Fnv1a(expectedBody)))) << resp;
+  EXPECT_TRUE(resp.ends_with(Format("{}:{:x}:done", expectedBody.size(), Fnv1a(expectedBody)))) << resp;
 }
 
 // A single chunk larger than the reads: its size line is the only part decoded again by each of them.
 TEST(HttpParserChunkedResume, SingleLargeChunkReceivedInManyReads) {
   ts.resetConfig();
   ts.router().setDefault([](const HttpRequestView& req) {
-    return req.makeResponse(std::format("{}:{:x}", req.body().size(), Fnv1a(req.body())));
+    return req.makeResponse(Format("{}:{:x}", req.body().size(), Fnv1a(req.body())));
   });
   std::string body(512UL * 1024UL, 'x');
   for (std::size_t bodyPos = 0; bodyPos < body.size(); bodyPos += 997) {
     body[bodyPos] = static_cast<char>('a' + (bodyPos % 26));
   }
-  const std::string chunked = std::format("{:x}\r\n", body.size()) + body + "\r\n0\r\n\r\n";
+  const std::string chunked = Format("{:x}\r\n", body.size()) + body + "\r\n0\r\n\r\n";
   const std::string resp = SendInParts(port, kChunkedHead, chunked, 8192, 50us);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
-  EXPECT_TRUE(resp.ends_with(std::format("{}:{:x}", body.size(), Fnv1a(body)))) << resp;
+  EXPECT_TRUE(resp.ends_with(Format("{}:{:x}", body.size(), Fnv1a(body)))) << resp;
 }
 
 // The requests following a chunked body received in several reads are served: its end is found at the right place.
@@ -948,7 +949,7 @@ std::string_view BodyOf(std::string_view resp) {
 TEST(HttpParserAudit, ChunkedBodyDecodingDoesNotDependOnReads) {
   ts.router().setDefault([](const HttpRequestView& req) {
     return req.makeResponse(
-        std::format("b=[{}];x=[{}];y=[{}]", req.body(), req.trailerValueOrEmpty("x"), req.trailerValueOrEmpty("y")));
+        Format("b=[{}];x=[{}];y=[{}]", req.body(), req.trailerValueOrEmpty("x"), req.trailerValueOrEmpty("y")));
   });
   using namespace std::string_view_literals;
   static constexpr std::string_view kBodies[]{
@@ -1045,9 +1046,9 @@ TEST(HttpParserAudit, TrailerSizeLimitIgnoresThePipelinedRequests) {
 
   const std::string pipelinedBody(2 * kMaxHeaderBytes, 'p');
   const std::string resp = test::sendAndCollect(
-      port, std::format("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nfoo\r\n0\r\nX: v\r\n\r\n"
-                        "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        pipelinedBody.size(), pipelinedBody));
+      port, Format("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nfoo\r\n0\r\nX: v\r\n\r\n"
+                   "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                   pipelinedBody.size(), pipelinedBody));
   EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), 2) << resp;
   EXPECT_TRUE(resp.ends_with(pipelinedBody)) << resp;
   ts.resetConfig();
@@ -1080,7 +1081,7 @@ TEST(HttpParserAudit, HeadSizeLimitDoesNotDependOnReads) {
 // HttpRequestViewTest.MergeKeepsValueOfFieldWhoseFirstOccurrenceWasEmpty.
 TEST(HttpParserAudit, RepeatedTrailersAreCombinedInOrder) {
   ts.router().setDefault([](const HttpRequestView& req) {
-    return req.makeResponse(std::format("x=[{}];y=[{}]", req.trailerValueOrEmpty("x"), req.trailerValueOrEmpty("y")));
+    return req.makeResponse(Format("x=[{}];y=[{}]", req.trailerValueOrEmpty("x"), req.trailerValueOrEmpty("y")));
   });
   const std::string resp =
       test::sendAndCollect(port, std::string(kChunkedHead) + "3\r\nabc\r\n0\r\nX:\r\nY: w\r\nX: z\r\nY: q\r\n\r\n");

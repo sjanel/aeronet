@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <chrono>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "aeronet/adaptive-poll-timeout.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/http-client-config.hpp"
@@ -359,7 +360,8 @@ TEST_F(WebSocketClientTest, ServerStartsTheClosingHandshake) {
   EXPECT_TRUE(result.pConnection->sendText("close:4000"));
   ASSERT_TRUE(PollUntil(client, [&client] { return client.nbConnections() == 0; }));
   EXPECT_EQ(events.nbClose, 1);
-  EXPECT_EQ(events.closeCode, static_cast<CloseCode>(4000));
+  EXPECT_EQ(events.closeCode,
+            static_cast<CloseCode>(4000));  // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange) private use code
   EXPECT_EQ(events.closeReason, "server bye");
 }
 
@@ -712,7 +714,8 @@ std::string ServerFrame(websocket::Opcode opcode, std::string_view payload) {
 // A masked frame of the server, which the client must reject (RFC 6455 §5.1).
 std::string MaskedServerFrame() {
   std::string masked = ServerFrame(websocket::Opcode::Text, "abcd");
-  masked[1] = static_cast<char>(masked[1] | 0x80);  // mask bit, then the masking key and the payload
+  masked[1] = static_cast<char>(static_cast<unsigned char>(masked[1]) |
+                                0x80U);  // mask bit, then the masking key and the payload
   masked.insert(2, std::string(4, '\0'));
   return masked;
 }

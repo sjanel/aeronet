@@ -2,9 +2,10 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <stdexcept>
 #include <utility>
+
+#include "aeronet/chrono-lite.hpp"
 
 namespace {
 
@@ -220,8 +221,12 @@ TEST(Http2Config, ValidateZeroMaxStreamsPerConnection) {
 // std::chrono::milliseconds::max() never expires.
 TEST(Http2Config, ValidateTimersArePositive) {
   using SetTimer = Http2Config& (Http2Config::*)(std::chrono::milliseconds);
-  for (const SetTimer setTimer : {&Http2Config::withSettingsTimeout, &Http2Config::withPingInterval,
-                                  &Http2Config::withPingTimeout, &Http2Config::withStreamIdleTimeout}) {
+  for (const SetTimer setTimer : {
+           &Http2Config::withSettingsTimeout,
+           &Http2Config::withPingInterval,
+           &Http2Config::withPingTimeout,
+           &Http2Config::withStreamIdleTimeout,
+       }) {
     for (const std::chrono::milliseconds invalid :
          {std::chrono::milliseconds{0}, std::chrono::milliseconds{-1}, std::chrono::milliseconds::min()}) {
       Http2Config config;

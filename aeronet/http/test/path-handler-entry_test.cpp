@@ -2,13 +2,13 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"

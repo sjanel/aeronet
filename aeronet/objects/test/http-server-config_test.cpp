@@ -2,7 +2,6 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -11,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"

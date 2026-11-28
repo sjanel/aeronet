@@ -4,38 +4,19 @@
 
 #include <array>
 #include <cstddef>
-#include <format>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <unordered_set>
 #include <vector>
 
+#include "aeronet/format-lite.hpp"
 #include "aeronet/log-capture.hpp"
 
 #ifdef AERONET_ENABLE_SPDLOG
 #include <spdlog/common.h>
 #include <spdlog/spdlog.h>
 #endif
-
-namespace aeronet {
-namespace {
-
-// An argument whose formatting throws.
-struct ThrowingFormatArg {};
-
-}  // namespace
-}  // namespace aeronet
-
-template <>
-struct std::formatter<aeronet::ThrowingFormatArg> {
-  static constexpr std::format_parse_context::iterator parse(std::format_parse_context& ctx) { return ctx.begin(); }
-
-  static std::format_context::iterator format(const aeronet::ThrowingFormatArg& /*arg*/, std::format_context& /*ctx*/) {
-    throw std::runtime_error("formatter failure");
-  }
-};
 
 namespace aeronet {
 
@@ -143,6 +124,18 @@ TEST(LogTest, EveryCallWritesAtOrAboveTheCurrentLevel) {
   EXPECT_FALSE(logs.contains("filtered")) << logs;
 }
 
+TEST(LogTest, FormatSpecifications) {
+  if (!test::LogCapture::kCapturesLogs) {
+    GTEST_SKIP() << "the logs are not captured on this platform";
+  }
+  ScopedLogLevel level(log::level::info);
+  test::LogCapture capture;
+  log::info("{:#06x} [{:>5}] {:.2f} {{escaped}} {}", 255, "ab", 1.5, true);
+
+  const std::string logs = capture.take();
+  EXPECT_TRUE(logs.contains("0x00ff [   ab] 1.50 {escaped} true\n")) << logs;
+}
+
 // A message that cannot be formatted is dropped with a line on stderr: the call does not throw.
 TEST(LogTest, MessageThatCannotBeFormattedIsDropped) {
   ScopedLogLevel level(log::level::info);
@@ -150,7 +143,7 @@ TEST(LogTest, MessageThatCannotBeFormattedIsDropped) {
   testing::internal::CaptureStderr();
   {
     test::LogCapture capture;
-    log::error("dropped {}", ThrowingFormatArg{});
+    log::error("dropped {:c}", 1000000);  // not a char: std::format_error
     log::info("written after the failure {}", 1);
     logs = capture.take();
   }
@@ -185,7 +178,7 @@ TEST(LogTest, LinesOfConcurrentThreadsDoNotInterleave) {
   std::unordered_set<std::string> expected;
   for (int threadIdx = 0; threadIdx < kNbThreads; ++threadIdx) {
     for (int lineIdx = 0; lineIdx < kNbLinesPerThread; ++lineIdx) {
-      expected.insert(std::format("thread {} line {} {}", threadIdx, lineIdx, padding));
+      expected.insert(Format("thread {} line {} {}", threadIdx, lineIdx, padding));
     }
   }
 

@@ -17,7 +17,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstring>
-#include <glaze/glaze.hpp>
+#include <glaze/json/read.hpp>
 #include <memory>
 #include <span>
 #include <string_view>

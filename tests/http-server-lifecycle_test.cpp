@@ -2,7 +2,6 @@
 
 #include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <exception>
@@ -19,6 +18,7 @@
 #include <utility>
 
 #include "aeronet/builtin-probes-config.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"

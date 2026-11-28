@@ -38,6 +38,38 @@
 
 namespace aeronet {
 
+#if defined(AERONET_ENABLE_GLAZE) || defined(AERONET_ENABLE_PROTOBUF)
+namespace {
+// This file includes neither <aeronet/http-json.hpp> nor <aeronet/http-protobuf.hpp>: their body helpers, which the
+// core headers only declare, are not callable here (a compile error instead of an undefined reference at link time).
+struct NotSerialized {};
+
+#ifdef AERONET_ENABLE_GLAZE
+template <class T>
+constexpr bool kHttpRequestBodyJsonCallable =
+    requires(HttpRequest& request, const T& value) { request.bodyJson(value); };
+static_assert(!kHttpRequestBodyJsonCallable<NotSerialized>);
+template <class T>
+constexpr bool kHttpRequestBodyYamlCallable =
+    requires(HttpRequest& request, const T& value) { std::move(request).bodyYaml(value); };
+static_assert(!kHttpRequestBodyYamlCallable<NotSerialized>);
+#endif
+
+#ifdef AERONET_ENABLE_PROTOBUF
+template <class T>
+constexpr bool kHttpRequestBodyProtoCallable =
+    requires(HttpRequest& request, const T& msg) { std::move(request).bodyProto(msg); };
+static_assert(!kHttpRequestBodyProtoCallable<NotSerialized>);
+#ifndef AERONET_PROTOBUF_LITE
+template <class T>
+constexpr bool kHttpRequestBodyProtoJsonCallable =
+    requires(HttpRequest& request, const T& msg) { request.bodyProtoJson(msg); };
+static_assert(!kHttpRequestBodyProtoJsonCallable<NotSerialized>);
+#endif
+#endif
+}  // namespace
+#endif
+
 class HttpRequestTest : public ::testing::Test {
  protected:
   HttpRequest makeRequest(http::Method method, std::string_view url) {

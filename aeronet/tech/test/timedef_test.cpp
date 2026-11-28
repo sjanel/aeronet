@@ -2,7 +2,7 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
+#include "aeronet/chrono-lite.hpp"
 
 namespace aeronet {
 

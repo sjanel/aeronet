@@ -5,8 +5,6 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <format>
-#include <iterator>
 #include <memory>
 #include <new>
 #include <string>
@@ -14,6 +12,7 @@
 #include <utility>
 
 #include "../src/html-parse.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/heap-usage.hpp"
 #include "aeronet/html-element.hpp"
 #include "aeronet/sys-test-support.hpp"
@@ -204,7 +203,7 @@ TEST(HtmlDocumentLimits, AtMostTheLimitOfMisnestedFormattingElementsAreRecreated
   static constexpr std::size_t kOpened = kMaxActiveFormattingElements + 4;
   std::string html = "<p>";
   for (std::size_t idx = 0; idx < kOpened; ++idx) {
-    html += std::format("<b id={}>", idx);
+    html += Format("<b id={}>", idx);
   }
   const HtmlDocument doc(html + "</p>x");
   EXPECT_EQ(doc.querySelector("p").querySelectorAll("b").size(), kOpened);
@@ -221,11 +220,11 @@ TEST(HtmlDocumentLimits, FormattingElementsLimitIsPerTableCell) {
   static constexpr std::size_t kInCell = kMaxActiveFormattingElements + 4;
   std::string html = "<p>";
   for (std::size_t idx = 0; idx < kOutside; ++idx) {
-    html += std::format("<b id=b{}>", idx);
+    html += Format("<b id=b{}>", idx);
   }
   html += "</p><table><tr><td><p>";
   for (std::size_t idx = 0; idx < kInCell; ++idx) {
-    html += std::format("<i id=i{}>", idx);
+    html += Format("<i id=i{}>", idx);
   }
   const HtmlDocument doc(html + "</p>x</td></tr></table>y");
   const HtmlElement inCell = doc.querySelector("td").lastChild();
@@ -245,8 +244,8 @@ TEST(HtmlDocumentLimits, ElementKeepsItsFirstAttributesUpToTheLimit) {
     const std::size_t kept = std::min(count, kMaxAttributes);
     ASSERT_EQ(AttributeCount(para), kept) << count;
     EXPECT_EQ((*para.attributes().begin()).name, "a0");
-    EXPECT_EQ(para.attribute(std::format("a{}", kept - 1)), std::format("{}", kept - 1));
-    EXPECT_FALSE(para.hasAttribute(std::format("a{}", kMaxAttributes)));
+    EXPECT_EQ(para.attribute(Format("a{}", kept - 1)), Format("{}", kept - 1));
+    EXPECT_FALSE(para.hasAttribute(Format("a{}", kMaxAttributes)));
     EXPECT_EQ(para.textContent(), "x");
     // The tags after it get their attributes.
     EXPECT_EQ(doc.querySelector("span#after").attribute("class"), "c");
@@ -273,14 +272,14 @@ TEST(HtmlDocumentLimits, HtmlAndBodyTagsAddAttributesUpToTheLimit) {
   const HtmlElement body = doc.body();
   ASSERT_EQ(AttributeCount(html), kMaxAttributes);
   ASSERT_EQ(AttributeCount(body), kMaxAttributes);
-  const std::string lastAdded = std::format("{}", kMaxAttributes - kFirst - 1);
+  const std::string lastAdded = Format("{}", kMaxAttributes - kFirst - 1);
   EXPECT_EQ(html.attribute("a99"), "99");
   EXPECT_EQ(html.attribute("c" + lastAdded), lastAdded);
-  EXPECT_FALSE(html.hasAttribute(std::format("c{}", kMaxAttributes - kFirst)));
+  EXPECT_FALSE(html.hasAttribute(Format("c{}", kMaxAttributes - kFirst)));
   EXPECT_FALSE(html.hasAttribute("e"));
   EXPECT_EQ(body.attribute("b99"), "99");
   EXPECT_EQ(body.attribute("d" + lastAdded), lastAdded);
-  EXPECT_FALSE(body.hasAttribute(std::format("d{}", kMaxAttributes - kFirst)));
+  EXPECT_FALSE(body.hasAttribute(Format("d{}", kMaxAttributes - kFirst)));
   EXPECT_FALSE(body.hasAttribute("f"));
   EXPECT_EQ(BodyText(doc), "x");
 }
@@ -328,7 +327,7 @@ TEST(HtmlDocumentLimits, ManyAttributesParseInLinearTime) {
   static constexpr std::size_t kCount = 65536;
   std::string html = "<p" + Attributes("a", kCount) + ">";
   for (std::size_t idx = 0; idx < kCount; ++idx) {
-    std::format_to(std::back_inserter(html), "<html h{}><body b{}>", idx, idx);
+    FormatTo(html, "<html h{}><body b{}>", idx, idx);
   }
   const HtmlDocument doc(html);
   EXPECT_EQ(AttributeCount(doc.querySelector("p")), kMaxAttributes);
@@ -342,16 +341,16 @@ TEST(HtmlDocumentLimits, NamesInternedBeforeTheGrowthOfTheirTableAreFoundAfterIt
   static constexpr std::size_t kCount = 2 * kMaxNamesPerBucket * 128;
   std::string html;
   for (std::size_t idx = 0; idx < kCount; ++idx) {
-    std::format_to(std::back_inserter(html), "<x-{} a{}></x-{}>", idx, idx, idx);
+    FormatTo(html, "<x-{} a{}></x-{}>", idx, idx, idx);
   }
   ASSERT_LT(html.size(), 128 * kHtmlBytesPerNameBucket);
   HtmlDocument doc(html);
   HtmlElement first = doc.querySelector("x-0");
-  first.setInnerHtml(std::format("<x-1 a1></x-1><x-{} a{}></x-{}>", kCount - 1, kCount - 1, kCount - 1));
+  first.setInnerHtml(Format("<x-1 a1></x-1><x-{} a{}></x-{}>", kCount - 1, kCount - 1, kCount - 1));
   EXPECT_EQ(doc.querySelectorAll("x-1").size(), 2U);
   EXPECT_EQ(doc.querySelectorAll("[a1]").size(), 2U);
-  EXPECT_EQ(doc.querySelectorAll(std::format("x-{}", kCount - 1)).size(), 2U);
-  EXPECT_EQ(doc.querySelectorAll(std::format("[a{}]", kCount - 1)).size(), 2U);
+  EXPECT_EQ(doc.querySelectorAll(Format("x-{}", kCount - 1)).size(), 2U);
+  EXPECT_EQ(doc.querySelectorAll(Format("[a{}]", kCount - 1)).size(), 2U);
 }
 
 TEST(HtmlDocumentLimits, TextAppendedBetweenMarkupTakesLinearMemory) {

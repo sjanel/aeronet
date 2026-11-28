@@ -223,6 +223,8 @@ endif()
 AeronetAddUnitTest(
     server-lifecycle-tracker_test
     test/server-lifecycle-tracker_test.cpp
+    LIBRARIES
+    aeronet_tech
 )
 
 AeronetAddUnitTest(

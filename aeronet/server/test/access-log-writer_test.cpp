@@ -3,7 +3,6 @@
 #include <gtest/gtest.h>
 
 #include <cerrno>
-#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -18,6 +17,7 @@
 #endif
 
 #include "aeronet/access-log-config.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/request-metrics.hpp"

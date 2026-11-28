@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
@@ -23,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/file.hpp"
@@ -7965,6 +7965,8 @@ TEST(Http2ProtocolHandler, EarlyAnswersDoNotCountTowardMaxResetStreams) {
 
 // ============== Streams waiting for the client (Http2Config::streamIdleTimeout) ==============
 
+namespace {
+
 // Sends the headers of a POST to /upload on stream 1, and the start of its body, which never ends.
 void StartUploadThatStalls(Http2ProtocolLoopback& loop) {
   RawChars headers;
@@ -7998,6 +8000,8 @@ void StartUploadThatStalls(Http2ProtocolLoopback& loop) {
 }
 
 constexpr std::chrono::milliseconds kDefaultStreamIdleTimeout = std::chrono::seconds{60};
+
+}  // namespace
 
 // A stream whose request body never completes was kept, with the part of the body received, as long as the connection
 // lived: the connection is not idle (keepAliveTimeout does not apply to it), HttpServerConfig::bodyReadTimeout only

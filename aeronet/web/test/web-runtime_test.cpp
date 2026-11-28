@@ -3,7 +3,6 @@
 #include <gtest/gtest.h>
 
 #include <bit>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -15,6 +14,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -24,7 +24,8 @@
 #include "web-test-util.hpp"
 
 #ifdef AERONET_ENABLE_GLAZE
-#include <glaze/glaze.hpp>
+#include <glaze/json/read.hpp>
+#include <glaze/json/write.hpp>
 
 #include "aeronet/address-space.hpp"
 #include "aeronet/glaze-round-trip.hpp"

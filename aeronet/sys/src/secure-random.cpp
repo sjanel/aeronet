@@ -17,9 +17,10 @@
 // clang-format on
 
 #include <algorithm>
-#include <format>
 #include <limits>
 #include <system_error>
+
+#include "aeronet/format-lite.hpp"
 #else
 #include <cstdlib>  // arc4random_buf
 #endif
@@ -49,8 +50,8 @@ void FillSecureRandomBytes(std::span<std::byte> out) {
     if (!BCRYPT_SUCCESS(status)) {
       // An NTSTATUS is not a Win32 error code: std::system_category() cannot describe it, hence its value in the text.
       throw std::system_error(static_cast<int>(status), std::system_category(),
-                              std::format("BCryptGenRandom() failed for {} bytes with NTSTATUS {:#010x}", nbBytes,
-                                          static_cast<unsigned long>(status)));
+                              Format("BCryptGenRandom() failed for {} bytes with NTSTATUS {:#010x}", nbBytes,
+                                     static_cast<unsigned long>(status)));
     }
     out = out.subspan(nbBytes);
   }

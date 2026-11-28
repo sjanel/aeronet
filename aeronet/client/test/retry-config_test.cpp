@@ -3,10 +3,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <chrono>
 #include <limits>
 #include <stdexcept>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-status-code.hpp"
 
 namespace aeronet {

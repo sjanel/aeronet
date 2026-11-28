@@ -15,7 +15,6 @@
 
 #include <cerrno>
 #include <charconv>
-#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <exception>
@@ -28,6 +27,7 @@
 #include <utility>
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/log.hpp"

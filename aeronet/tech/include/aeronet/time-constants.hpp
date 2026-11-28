@@ -13,8 +13,8 @@ inline constexpr std::size_t RFC7231DateStrLen = 29;       // "Sun, 23 Aug 2026 
 inline constexpr SysTimePoint kInvalidTimePoint = SysTimePoint::max();
 
 /// The time point 'secondsSinceEpoch' seconds plus 'nanoseconds' (0 to 999,999,999) after the Unix epoch, clamped to
-/// the range of SysTimePoint (years 1678 to 2262 with the nanosecond ticks of libstdc++ and libc++): a file time or a
-/// date beyond it does not overflow. Never kInvalidTimePoint.
+/// the range of SysTimePoint (years 1678 to 2262 with the nanosecond ticks of libstdc++, far more with the microseconds
+/// of libc++ and the 100 ns of MSVC): a file time or a date beyond it does not overflow. Never kInvalidTimePoint.
 [[nodiscard]] constexpr SysTimePoint SaturatedSysTimePoint(std::int64_t secondsSinceEpoch,
                                                            std::int64_t nanoseconds = 0) noexcept {
   using std::chrono::seconds;

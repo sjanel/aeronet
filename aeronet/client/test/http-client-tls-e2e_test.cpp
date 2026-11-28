@@ -20,7 +20,6 @@
 #include <openssl/x509v3.h>
 
 #include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -39,6 +38,7 @@
 #include <vector>
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-client-config.hpp"

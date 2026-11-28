@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -32,6 +31,7 @@
 #endif
 
 #include "aeronet/char-hexadecimal-converter.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/close-native-handle.hpp"

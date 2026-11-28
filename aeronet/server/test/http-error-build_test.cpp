@@ -3,11 +3,11 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
-#include <format>
 #include <string>
 #include <string_view>
 
 #include "aeronet/concatenated-headers.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -124,7 +124,7 @@ TEST(HttpErrorBuildTest, UnsupportedMediaTypeListsTheDecodedCodings) {
   for (const bool isHeadMethod : {false, true}) {
     const auto data =
         BuildSimpleError(http::StatusCodeUnsupportedMediaType, gh, "Unsupported", pDateHeader, isHeadMethod);
-    const std::string expected = std::format(
+    const std::string expected = Format(
         "HTTP/1.1 415 Unsupported Media Type\r\ndate: {}\r\nconnection: close\r\naccept-encoding: {}\r\n"
         "X-Test: foo\r\ncontent-type: text/plain\r\ncontent-length: 11\r\n\r\n{}",
         pDateHeader, internal::kSupportedAcceptEncoding, isHeadMethod ? "" : "Unsupported");

@@ -15,7 +15,8 @@
 #ifdef AERONET_ENABLE_GLAZE
 
 #include <expected>
-#include <glaze/glaze.hpp>
+#include <glaze/json/read.hpp>
+#include <glaze/json/write.hpp>
 #include <glaze/yaml.hpp>  // IWYU pragma: keep
 #include <stdexcept>
 #include <string>
@@ -28,7 +29,13 @@
 
 namespace aeronet {
 
+namespace detail {
 template <class T>
+inline constexpr bool kHttpJsonIncluded<T, void> = true;
+}  // namespace detail
+
+template <class T>
+  requires HttpJsonIncluded<T>
 void HttpMessage::bodyJson(const T& obj) {
   std::string buf;
   if (const auto ec = glz::write<glz::opts{}>(obj, buf)) [[unlikely]] {
@@ -38,6 +45,7 @@ void HttpMessage::bodyJson(const T& obj) {
 }
 
 template <class T>
+  requires HttpJsonIncluded<T>
 void HttpMessage::bodyYaml(const T& obj) {
   std::string buf;
   if (const auto ec = glz::write<glz::opts{.format = glz::YAML}>(obj, buf)) [[unlikely]] {
@@ -47,6 +55,7 @@ void HttpMessage::bodyYaml(const T& obj) {
 }
 
 template <class T>
+  requires HttpJsonIncluded<T>
 std::expected<T, HttpResponse> HttpRequestView::bodyAs() const {
   T obj{};
   // body() views the receive buffer and is NOT null-terminated, so glaze must honour the end
@@ -59,6 +68,7 @@ std::expected<T, HttpResponse> HttpRequestView::bodyAs() const {
 }
 
 template <class T>
+  requires HttpJsonIncluded<T>
 std::expected<T, HttpResponse> HttpRequestView::bodyAsYaml() const {
   T obj{};
   if (const auto ec = glz::read<glz::opts{.format = glz::YAML, .null_terminated = false}>(obj, body())) [[unlikely]] {

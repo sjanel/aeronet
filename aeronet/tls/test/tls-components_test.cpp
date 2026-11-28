@@ -25,7 +25,6 @@
 #include <array>
 #include <bit>
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -48,6 +47,7 @@
 #include <vector>
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/sys-test-support.hpp"
@@ -2781,9 +2781,12 @@ SniHandshakeResult HandshakeWithSni(TLSConfig cfg, const char* serverName, int m
 
 TEST(TlsContextTest, StrictSniServesTheNamesOfTheRoutesAndOfTheDefaultCertificate) {
   for (int maxVersion : {TLS1_2_VERSION, TLS1_3_VERSION}) {
-    for (const auto& [serverName, commonName] :
-         {std::pair{"api.example.com", "server-a"}, std::pair{"API.example.com.", "server-a"},
-          std::pair{"localhost", "localhost"}, std::pair{"LOCALHOST.", "localhost"}}) {
+    for (const auto& [serverName, commonName] : {
+             std::pair{"api.example.com", "server-a"},
+             std::pair{"API.example.com.", "server-a"},
+             std::pair{"localhost", "localhost"},
+             std::pair{"LOCALHOST.", "localhost"},
+         }) {
       const auto result = HandshakeWithSni(MakeStrictSniConfig(), serverName, maxVersion);
       EXPECT_TRUE(result.ok) << serverName << ' ' << maxVersion;
       EXPECT_FALSE(result.strictMismatch) << serverName;
@@ -2814,8 +2817,10 @@ TEST(TlsContextTest, StrictSniRejectsAnUnknownNameWithAnUnrecognizedNameAlert) {
 
 TEST(TlsContextTest, StrictSniRejectsAClientSendingNoServerName) {
   // missing_extension only exists in TLS 1.3: OpenSSL sends handshake_failure below (RFC 8446 §9.2).
-  for (const auto& [maxVersion, alertReason] : {std::pair{TLS1_3_VERSION, SSL_R_TLSV13_ALERT_MISSING_EXTENSION},
-                                                std::pair{TLS1_2_VERSION, SSL_R_SSLV3_ALERT_HANDSHAKE_FAILURE}}) {
+  for (const auto& [maxVersion, alertReason] : {
+           std::pair{TLS1_3_VERSION, SSL_R_TLSV13_ALERT_MISSING_EXTENSION},
+           std::pair{TLS1_2_VERSION, SSL_R_SSLV3_ALERT_HANDSHAKE_FAILURE},
+       }) {
     const auto result = HandshakeWithSni(MakeStrictSniConfig(), nullptr, maxVersion);
     EXPECT_FALSE(result.ok) << maxVersion;
     EXPECT_TRUE(result.strictMismatch) << maxVersion;

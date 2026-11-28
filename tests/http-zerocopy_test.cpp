@@ -14,7 +14,6 @@
 
 #include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -26,6 +25,7 @@
 #include <utility>
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"

@@ -3,7 +3,8 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <glaze/glaze.hpp>
+#include <glaze/json/generic.hpp>
+#include <glaze/json/read.hpp>
 #include <string>
 #include <string_view>
 #include <utility>

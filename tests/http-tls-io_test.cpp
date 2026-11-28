@@ -8,11 +8,10 @@
 #include <atomic>
 #include <cerrno>
 #include <charconv>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <format>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <ranges>
@@ -33,10 +32,12 @@
 #include <sys/socket.h>
 #endif
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
@@ -45,6 +46,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/static-file-config.hpp"
 #include "aeronet/static-file-handler.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
@@ -158,8 +160,8 @@ TEST(HttpTlsLingeringClose, EarlyResponseIsFollowedByCloseNotify) {
     ASSERT_TRUE(client.handshakeOk());
     // 413 right after the head: the server discards the rest of the body.
     static constexpr std::size_t kBodySize = 256UL << 10U;
-    ASSERT_TRUE(client.writeAll(std::format("POST /upload HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n{}",
-                                            2 * kBodySize, std::string(kBodySize, 'b'))));
+    ASSERT_TRUE(client.writeAll(Format("POST /upload HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n{}",
+                                       2 * kBodySize, std::string(kBodySize, 'b'))));
     std::string response = client.drainedDuringWrite() + client.readAll();
     response += client.readAll();  // up to the close_notify alert
     EXPECT_TRUE(response.starts_with("HTTP/1.1 413")) << response;
@@ -475,7 +477,7 @@ TEST(HttpTlsFairness, PipelinedRequestsYieldToOtherConnectionsOnceResponsesReach
   }
   std::string pipelinedRequests;
   for (int requestPos = 0; requestPos < kNbPipelinedRequests; ++requestPos) {
-    pipelinedRequests += std::format("GET /p{} HTTP/1.1\r\nHost: x\r\n\r\n", requestPos);
+    pipelinedRequests += Format("GET /p{} HTTP/1.1\r\nHost: x\r\n\r\n", requestPos);
   }
   ASSERT_TRUE(pipelining.writeAll(pipelinedRequests));
   ASSERT_TRUE(other.writeAll("GET /other HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"));
@@ -520,7 +522,7 @@ TEST(HttpTlsBackpressure, PipelinedRequestsBufferedBehindBlockedOutputAreAllServ
   ASSERT_TRUE(client.handshakeOk());
   std::string requests;
   for (int requestPos = 0; requestPos < kNbRequests; ++requestPos) {
-    requests += std::format("GET /p{} HTTP/1.1\r\nHost: x\r\n\r\n", requestPos);
+    requests += Format("GET /p{} HTTP/1.1\r\nHost: x\r\n\r\n", requestPos);
   }
   ASSERT_TRUE(client.writeAll(requests));
   std::this_thread::sleep_for(200ms);  // the responses fill the socket buffers: the output blocks
@@ -1003,7 +1005,7 @@ TEST(HttpTlsStaticFile, FileTruncatedAfterItsSizeWasReadClosesTheConnection) {
                               [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Disabled); });
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, std::string(kFileSize, 'f'));
-  const std::filesystem::path filePath = tmp.filePath();
+  const std::filesystem::path& filePath = tmp.filePath();
 
   StaticFileConfig staticConfig;
   staticConfig.contentTypeResolver = [filePath](std::string_view) {
@@ -1015,7 +1017,7 @@ TEST(HttpTlsStaticFile, FileTruncatedAfterItsSizeWasReadClosesTheConnection) {
 
   test::TlsClient client(localTs.port());
   ASSERT_TRUE(client.handshakeOk());
-  ASSERT_TRUE(client.writeAll(std::format("GET /{} HTTP/1.1\r\nHost: x\r\n\r\n", tmp.filename())));
+  ASSERT_TRUE(client.writeAll(Format("GET /{} HTTP/1.1\r\nHost: x\r\n\r\n", tmp.filename())));
 
   // Another connection to the same server.
   std::atomic<bool> pinged{false};
@@ -1121,13 +1123,12 @@ TEST(HttpTlsReadAhead, LargeBodyOverTls12IsReadWhole) {
   for (const auto ktlsMode : {TLSConfig::KtlsMode::Disabled, TLSConfig::KtlsMode::Opportunistic}) {
     test::TlsTestServer localTs(
         {"http/1.1"}, [ktlsMode](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(ktlsMode).withTlsMaxVersion("TLS1.2"); });
-    localTs.setDefault(
-        [](const HttpRequestView& req) { return HttpResponse(std::format("size={}", req.body().size())); });
+    localTs.setDefault([](const HttpRequestView& req) { return HttpResponse(Format("size={}", req.body().size())); });
     test::TlsClient client(localTs.port());
     ASSERT_TRUE(client.handshakeOk());
-    std::string request = std::format("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n", kBodySize);
+    std::string request = Format("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n", kBodySize);
     request.append(kBodySize, 'b');
-    const std::string expectedBody = std::format("size={}", kBodySize);
+    const std::string expectedBody = Format("size={}", kBodySize);
     for (int requestIdx = 0; requestIdx < 3; ++requestIdx) {
       const std::string response = KeepAliveExchange(client, request, expectedBody);
       EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << requestIdx << ": " << response.substr(0, 64);

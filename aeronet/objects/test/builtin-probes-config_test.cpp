@@ -2,9 +2,10 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <stdexcept>
 #include <string>
+
+#include "aeronet/chrono-lite.hpp"
 
 using namespace std::chrono_literals;
 

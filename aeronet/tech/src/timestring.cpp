@@ -1,10 +1,11 @@
 #include "aeronet/timestring.hpp"
 
-#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 
 #include "aeronet/cctype.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/compiler-config.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/time-constants.hpp"
@@ -38,13 +39,11 @@ constexpr bool AreDigits(const char* ptr, std::size_t nbDigits) {
 AERONET_NOINLINE unsigned ObsoleteMonthOfAbbreviation(const char* ptr) { return MonthOfAbbreviation(ptr); }
 AERONET_NOINLINE unsigned ObsoleteWeekdayOfAbbreviation(const char* ptr) { return WeekdayOfAbbreviation(ptr); }
 
-// The time point of a date from its fields, whatever their range: years 0 to 9999 fit in seconds, while SysTimePoint
-// (nanoseconds) only covers 1678 to 2262 (see SaturatedSysTimePoint()). The sum starts from sys_seconds: days, hours
-// and minutes have an int representation on MSVC, and a count of minutes overflows it past the year 6053.
-SysTimePoint SaturatedDate(std::chrono::sys_days dayPoint, int hourValue, int minuteValue, int secondValue) {
-  const std::chrono::sys_seconds date = std::chrono::sys_seconds{dayPoint} + std::chrono::hours{hourValue} +
-                                        std::chrono::minutes{minuteValue} + std::chrono::seconds{secondValue};
-  return SaturatedSysTimePoint(date.time_since_epoch().count());
+// The time point of a date from its fields, whatever their range: years 0 to 9999 fit in 64-bit seconds, while
+// SysTimePoint (nanoseconds) only covers 1678 to 2262 (see SaturatedSysTimePoint()).
+SysTimePoint SaturatedDate(std::int64_t epochDay, int hourValue, int minuteValue, int secondValue) {
+  return SaturatedSysTimePoint((epochDay * 86400) + (std::int64_t{hourValue} * 3600) +
+                               (std::int64_t{minuteValue} * 60) + secondValue);
 }
 
 // Reads "hh:mm:ss" at 'timeOfDay' (separators and digits checked by the caller) and makes the date of an obsolete
@@ -58,16 +57,16 @@ SysTimePoint MakeObsoleteDate(int year, unsigned month, unsigned day, const char
     return kInvalidTimePoint;
   }
 
-  const std::chrono::year_month_day ymd{std::chrono::year{year}, std::chrono::month{month}, std::chrono::day{day}};
-  if (!ymd.ok()) {
+  const CivilDate date{year, month, day};
+  if (!IsValidCivilDate(date)) {
     return kInvalidTimePoint;
   }
 
-  const std::chrono::sys_days dayPoint{ymd};
-  if (weekday != std::chrono::weekday{dayPoint}.c_encoding()) {
+  const std::int32_t epochDay = DaysOfCivilDate(date);
+  if (weekday != WeekdayOfDays(epochDay)) {
     return kInvalidTimePoint;
   }
-  return SaturatedDate(dayPoint, hourValue, minuteValue, secondValue);
+  return SaturatedDate(epochDay, hourValue, minuteValue, secondValue);
 }
 
 // rfc850-date (obsolete): "Sunday, 06-Nov-94 08:49:37 GMT", the day name being written in full.
@@ -94,7 +93,7 @@ SysTimePoint ParseRfc850Date(const char* ptr, std::size_t len) {
 
   // RFC 9110 §5.6.7: a two-digit year more than 50 years in the future is the most recent past year with these digits.
   const int currentYear =
-      static_cast<int>(std::chrono::year_month_day{std::chrono::floor<std::chrono::days>(SysClock::now())}.year());
+      CivilDateOfDays(std::chrono::floor<std::chrono::days>(SysClock::now()).time_since_epoch().count()).year;
   int year = currentYear - (currentYear % 100) + read2(tail + 9);
   if (year > currentYear + 50) {
     year -= 100;
@@ -181,19 +180,18 @@ SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr) {
     return kInvalidTimePoint;
   }
 
-  const std::chrono::year_month_day ymd{std::chrono::year{yearValue}, std::chrono::month{month},
-                                        std::chrono::day{static_cast<unsigned>(dayValue)}};
-  if (!ymd.ok()) {
+  const CivilDate date{yearValue, month, static_cast<unsigned>(dayValue)};
+  if (!IsValidCivilDate(date)) {
     return kInvalidTimePoint;
   }
 
-  const std::chrono::sys_days dayPoint{ymd};
+  const std::int32_t epochDay = DaysOfCivilDate(date);
   // The weekday token (e.g. "Sun") must be the weekday of the date: an unknown one has the index 7, never equal.
-  if (WeekdayOfAbbreviation(ptr) != std::chrono::weekday{dayPoint}.c_encoding()) {
+  if (WeekdayOfAbbreviation(ptr) != WeekdayOfDays(epochDay)) {
     return kInvalidTimePoint;
   }
 
-  return SaturatedDate(dayPoint, hourValue, minuteValue, secondValue);
+  return SaturatedDate(epochDay, hourValue, minuteValue, secondValue);
 }
 
 }  // namespace aeronet

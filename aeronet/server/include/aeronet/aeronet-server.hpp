@@ -17,6 +17,9 @@
 //    include <aeronet/aeronet.hpp>, each re-exported header line is annotated with
 //      IWYU pragma: export
 //    so that symbols they provide are treated as satisfied for direct use in user code.
+//  * Glaze and protobuf are expensive to compile: include <aeronet/http-json.hpp> (JSON / YAML body helpers),
+//    <aeronet/aeronet-config.hpp> (Glaze metadata of the configuration types) and <aeronet/http-protobuf.hpp>
+//    (protobuf body helpers) in the files that use them. The configuration loaders are included.
 //  * If you prefer more granular control (to minimize compile time), you can include the
 //    specific individual headers instead of this umbrella.
 
@@ -47,7 +50,6 @@
 #endif
 
 // HTTP primitives
-#include "aeronet/http-json.hpp"             // IWYU pragma: export (opt-in JSON/YAML body helpers; no-op without Glaze)
 #include "aeronet/http-request-view.hpp"     // IWYU pragma: export
 #include "aeronet/http-response-writer.hpp"  // IWYU pragma: export
 #include "aeronet/http-response.hpp"         // IWYU pragma: export
@@ -77,7 +79,5 @@
 #include "aeronet/version.hpp"           // IWYU pragma: export
 
 #ifdef AERONET_ENABLE_GLAZE
-#include "aeronet/aeronet-config.hpp"        // IWYU pragma: export
-#include "aeronet/json-serializer.hpp"       // IWYU pragma: export
 #include "aeronet/server-config-loader.hpp"  // IWYU pragma: export
 #endif

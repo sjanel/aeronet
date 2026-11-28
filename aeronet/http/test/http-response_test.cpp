@@ -8,7 +8,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <format>
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -22,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -36,6 +36,8 @@
 #include "aeronet/file-sys-test-support.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/flat-hash-map.hpp"
+#include "aeronet/format-lite.hpp"
+#include "aeronet/http-codec-result.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-value-reverse-tokens-iterator.hpp"
@@ -44,6 +46,7 @@
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-payload.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
@@ -57,6 +60,52 @@
 #include "aeronet/vector.hpp"
 
 namespace aeronet {
+
+#if defined(AERONET_ENABLE_GLAZE) || defined(AERONET_ENABLE_PROTOBUF)
+namespace {
+// This file includes neither <aeronet/http-json.hpp> nor <aeronet/http-protobuf.hpp>: their body helpers, which the
+// core headers only declare, are not callable here (a compile error instead of an undefined reference at link time).
+struct NotSerialized {};
+
+#ifdef AERONET_ENABLE_GLAZE
+static_assert(!HttpJsonIncluded<NotSerialized>);
+template <class T>
+constexpr bool kHttpResponseBodyJsonCallable = requires(HttpResponse& resp, const T& value) { resp.bodyJson(value); };
+static_assert(!kHttpResponseBodyJsonCallable<NotSerialized>);
+template <class T>
+constexpr bool kHttpResponseBodyYamlCallable =
+    requires(HttpResponse& resp, const T& value) { std::move(resp).bodyYaml(value); };
+static_assert(!kHttpResponseBodyYamlCallable<NotSerialized>);
+template <class T>
+constexpr bool kHttpRequestViewBodyAsCallable = requires(const HttpRequestView& request) { request.bodyAs<T>(); };
+static_assert(!kHttpRequestViewBodyAsCallable<NotSerialized>);
+template <class T>
+constexpr bool kHttpRequestViewBodyAsYamlCallable =
+    requires(const HttpRequestView& request) { request.bodyAsYaml<T>(); };
+static_assert(!kHttpRequestViewBodyAsYamlCallable<NotSerialized>);
+#endif
+
+#ifdef AERONET_ENABLE_PROTOBUF
+static_assert(!HttpProtobufIncluded<NotSerialized>);
+template <class T>
+constexpr bool kHttpResponseBodyProtoCallable = requires(HttpResponse& resp, const T& msg) { resp.bodyProto(msg); };
+static_assert(!kHttpResponseBodyProtoCallable<NotSerialized>);
+template <class T>
+constexpr bool kHttpResponseBodyAsProtoCallable = requires(const HttpResponse& resp) { resp.bodyAsProto<T>(); };
+static_assert(!kHttpResponseBodyAsProtoCallable<NotSerialized>);
+template <class T>
+constexpr bool kHttpRequestViewMakeProtoResponseCallable =
+    requires(const HttpRequestView& request, const T& msg) { request.makeProtoResponse(msg); };
+static_assert(!kHttpRequestViewMakeProtoResponseCallable<NotSerialized>);
+#ifndef AERONET_PROTOBUF_LITE
+template <class T>
+constexpr bool kHttpResponseBodyProtoJsonCallable =
+    requires(HttpResponse& resp, const T& msg) { std::move(resp).bodyProtoJson(msg); };
+static_assert(!kHttpResponseBodyProtoJsonCallable<NotSerialized>);
+#endif
+#endif
+}  // namespace
+#endif
 
 class HttpResponseTest : public ::testing::Test {
  protected:
@@ -531,17 +580,17 @@ TEST_F(HttpResponseTest, InterleavedReasonAndHeaderMutations) {
 
 TEST_F(HttpResponseTest, StatusAndReasonCanBeChangedOnceHeadersOrBodyAreSet) {
   struct Case {
-    http::StatusCode initialStatus;
     std::string_view initialReason;
-    http::StatusCode status;
     std::string_view reason;
     std::string_view statusLine;
+    http::StatusCode initialStatus;
+    http::StatusCode status;
   };
   static constexpr Case kCases[]{
-      {http::StatusCodeOK, "OK", http::StatusCodeNotFound, "Not Found", "HTTP/1.1 404 Not Found\r\n"},  // longer
-      {http::StatusCodeNotFound, "Not Found", http::StatusCodeOK, "OK", "HTTP/1.1 200 OK\r\n"},         // shorter
-      {http::StatusCodeOK, "", http::StatusCodeNotFound, "Not Found", "HTTP/1.1 404 Not Found\r\n"},    // added
-      {http::StatusCodeNotFound, "Not Found", http::StatusCodeOK, "", "HTTP/1.1 200 \r\n"},             // removed
+      {"OK", "Not Found", "HTTP/1.1 404 Not Found\r\n", http::StatusCodeOK, http::StatusCodeNotFound},  // longer
+      {"Not Found", "OK", "HTTP/1.1 200 OK\r\n", http::StatusCodeNotFound, http::StatusCodeOK},         // shorter
+      {"", "Not Found", "HTTP/1.1 404 Not Found\r\n", http::StatusCodeOK, http::StatusCodeNotFound},    // added
+      {"Not Found", "", "HTTP/1.1 200 \r\n", http::StatusCodeNotFound, http::StatusCodeOK},             // removed
   };
   enum class Content : std::uint8_t { None, Headers, Body };
   for (const Case& tc : kCases) {
@@ -778,8 +827,12 @@ TEST_F(HttpResponseTest, HeaderAppendValueIfAbsent) {
       {"vary", "accept-encoding", "accept-encoding", "accept-encoding"},
       {"vary", "Origin, Accept-Encoding", "accept-encoding", "Origin, Accept-Encoding"},
       {"vary", "accept-encoding,origin", " Origin\t", "accept-encoding,origin"},
-      {"vary", "accept-encoding-x, x-accept-encoding", "accept-encoding",
-       "accept-encoding-x, x-accept-encoding, accept-encoding"},
+      {
+          "vary",
+          "accept-encoding-x, x-accept-encoding",
+          "accept-encoding",
+          "accept-encoding-x, x-accept-encoding, accept-encoding",
+      },
       {"vary", "*", "accept-encoding", "*"},
       {"x-list", "*", "a", "*, a"},                  // '*' has every element for vary only
       {"x-list", R"("a, b")", "b", R"("a, b", b)"},  // a comma in a quoted string does not separate elements
@@ -3195,13 +3248,13 @@ TEST_F(HttpResponseTest, CopyAssignmentBetweenAllBodyKinds) {
   // The head differs in size from a case to another, to cover every alignment of the embedded payload.
   const auto makeResponse = [](const BodyCase& bodyCase, std::size_t idx) {
     HttpResponse resp(http::StatusCodeOK);
-    resp.header("x-id", std::string(idx * 5U + 1U, 'a'));
+    resp.header("x-id", std::string((idx * 5U) + 1U, 'a'));
     bodyCase.setBody(resp);
     return resp;
   };
 
   const auto checkResponse = [](const HttpResponse& resp, const BodyCase& bodyCase, std::size_t idx) {
-    EXPECT_EQ(resp.headerValueOrEmpty("x-id"), std::string(idx * 5U + 1U, 'a'));
+    EXPECT_EQ(resp.headerValueOrEmpty("x-id"), std::string((idx * 5U) + 1U, 'a'));
     EXPECT_EQ(resp.hasBody(), !bodyCase.expectedBody.empty());
     EXPECT_EQ(resp.hasBodyFile(), bodyCase.isFile);
     EXPECT_EQ(resp.bodyLength(), bodyCase.expectedBody.size());
@@ -3324,7 +3377,7 @@ TEST_F(HttpResponseTest, CopyConstructionAllocationFailure) {
   // The buffer of the copy, then the copy of the payload.
   for (int successfulAllocs : {0, 1}) {
     test::FailNextMalloc(successfulAllocs, 1);
-    EXPECT_THROW(HttpResponse copy(src), std::bad_alloc);
+    EXPECT_THROW(HttpResponse copy(src), std::bad_alloc);  // NOLINT(performance-unnecessary-copy-initialization)
     test::ResetToSysMalloc();
   }
 
@@ -4561,7 +4614,7 @@ TEST_F(HttpResponseTest, FinalizeHttp1_DirectCompression_UpdatesContentLength) {
     EXPECT_TRUE(full.starts_with("HTTP/1.1 200 \r\n"));
     // Headers use lowercase names in internal representation
     const auto contentEncodingLine =
-        std::format("{}{}{}{}", http::ContentEncoding.get(), http::HeaderSep, GetEncodingStr(enc), http::CRLF);
+        Format("{}{}{}{}", http::ContentEncoding.get(), http::HeaderSep, GetEncodingStr(enc), http::CRLF);
     EXPECT_TRUE(full.contains(contentEncodingLine));
     EXPECT_TRUE(full.contains("content-length:"));
     // The compressed body should be much smaller
@@ -5882,7 +5935,7 @@ TEST_F(HttpResponseTest, TrailersAutoChunkedPreservesOtherHeaders) {
 TEST_F(HttpResponseTest, NoTrailersNoChunkedConversion) {
   static constexpr bool kConnection[]{true, false};
 
-  for (const bool captured : {false, true})
+  for (const bool captured : {false, true}) {
     for (const bool keepAlive : kConnection) {
       // Verify that responses without trailers still use Content-Length
       const std::string result =
@@ -5898,6 +5951,7 @@ TEST_F(HttpResponseTest, NoTrailersNoChunkedConversion) {
       EXPECT_FALSE(result.contains("10\r\nno-trailers-body\r\n"));
       EXPECT_TRUE(result.ends_with("\r\n\r\nno-trailers-body"));
     }
+  }
 }
 
 TEST_F(HttpResponseTest, TrailersAutoChunkedVectorAndBytesSpanBodies) {
@@ -5971,8 +6025,9 @@ TEST_F(HttpResponseTest, TrailersAutoChunkedBodySizeEdgeCases) {
 // Date or Trailer): every header setter refuses the reserved headers, in every build, with or without a body, and
 // leaves the response unchanged.
 TEST_F(HttpResponseTest, ReservedHeadersAreRejected) {
-  static constexpr std::string_view kReserved[]{"connection", "content-length", "content-type",      "date",
-                                                "te",         "trailer",        "transfer-encoding", "upgrade"};
+  static constexpr std::string_view kReserved[]{
+      "connection", "content-length", "content-type", "date", "te", "trailer", "transfer-encoding", "upgrade",
+  };
   for (const bool withBody : {false, true}) {
     HttpResponse resp(http::StatusCodeOK);
     if (withBody) {
@@ -6008,8 +6063,9 @@ TEST_F(HttpResponseTest, ReservedHeaderErrorNamesTheHeader) {
 // The reserved headers are compared by length first: the names of the same length as one of them are set normally.
 TEST_F(HttpResponseTest, NamesOfTheLengthOfAReservedHeaderAreAccepted) {
   static constexpr std::string_view kNotReserved[]{
-      "tk",         "etag",         "vary",        "warning",        "refresh",          "keep-alive",
-      "set-cookie", "x-request-id", "x-trace-ids", "accept-charset", "if-modified-since"};
+      "tk",         "etag",         "vary",        "warning",        "refresh",           "keep-alive",
+      "set-cookie", "x-request-id", "x-trace-ids", "accept-charset", "if-modified-since",
+  };
   HttpResponse resp("hello");
   for (const std::string_view name : kNotReserved) {
     const LowerAsciiKey key{name};

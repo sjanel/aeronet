@@ -1,4 +1,8 @@
 // aeronet client Umbrella Header
+//
+// Glaze and protobuf are expensive to compile: include <aeronet/http-json.hpp> (JSON / YAML body helpers),
+// <aeronet/http-client-config-glaze.hpp> (Glaze metadata of HttpClientConfig) and <aeronet/http-protobuf.hpp>
+// (protobuf body helpers) in the files that use them. The configuration loader is included.
 
 #pragma once
 
@@ -20,6 +24,5 @@
 #endif
 
 #ifdef AERONET_ENABLE_GLAZE
-#include "aeronet/client-config-loader.hpp"      // IWYU pragma: export
-#include "aeronet/http-client-config-glaze.hpp"  // IWYU pragma: export
+#include "aeronet/client-config-loader.hpp"  // IWYU pragma: export
 #endif

@@ -12,7 +12,6 @@
 #endif
 
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <string>
@@ -20,6 +19,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"

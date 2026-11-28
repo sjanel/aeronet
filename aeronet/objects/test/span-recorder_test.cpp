@@ -19,7 +19,6 @@
 #include <opentelemetry/trace/trace_flags.h>
 #include <opentelemetry/trace/trace_id.h>
 
-#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -35,6 +34,7 @@
 #include <vector>
 
 #include "../src/otlp-span-export.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tracing/tracer.hpp"
 

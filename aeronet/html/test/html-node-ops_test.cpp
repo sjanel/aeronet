@@ -13,8 +13,6 @@
 
 #include <array>
 #include <cstddef>
-#include <format>
-#include <iterator>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -26,6 +24,7 @@
 #include "../src/html-parse.hpp"
 #include "../src/html-tree-walk.hpp"
 #include "../src/lexbor-utils.hpp"
+#include "aeronet/format-lite.hpp"
 #include "aeronet/html-document.hpp"
 #include "aeronet/html-element.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -74,7 +73,8 @@ TEST(HtmlResolveUrlTest, ResolverKeepsTheLastBase) {
   EXPECT_EQ(resolver.resolve("https://a.example/x/", "y"), "https://a.example/x/y");
   const std::string_view again = resolver.resolve("https://a.example/x/", "../z");
   EXPECT_EQ(again, "https://a.example/z");
-  EXPECT_EQ(again.data()[again.size()], '\0');
+  // The resolved URL is null-terminated: its terminator is the char after the view.
+  EXPECT_EQ(std::string_view(again.data(), again.size() + 1U).back(), '\0');
   EXPECT_EQ(resolver.resolve("https://b.example/", "y"), "https://b.example/y");
   EXPECT_EQ(resolver.resolve("not a url", "y"), "");
   EXPECT_EQ(resolver.resolve("not a url", "https://c.example"), "");
@@ -523,7 +523,7 @@ TEST(HtmlNameTableTest, NamesOfEachVariantAreFoundAfterAGrowth) {
   // Distinct names, in a fragment too small to reserve buckets first: the tables grow after its chunk.
   std::string names;
   for (std::size_t idx = 0; idx < 2 * kMaxNamesPerBucket * tagBuckets; ++idx) {
-    std::format_to(std::back_inserter(names), "<y-{} b{}>", idx, idx);
+    FormatTo(names, "<y-{} b{}>", idx, idx);
   }
   ASSERT_LT(names.size(), tagBuckets * kHtmlBytesPerNameBucket);
   doc.body().insertAdjacentHtml(HtmlInsertPosition::BeforeEnd, names);
@@ -553,20 +553,20 @@ TEST(HtmlNameTableTest, ManyDistinctNamesParseInLinearTime) {
   std::string tags;
   std::string oneTag = "<i";
   for (std::size_t idx = 0; idx < kCount; ++idx) {
-    std::format_to(std::back_inserter(attributes), "<i a{}>", idx);
-    std::format_to(std::back_inserter(tags), "<x-{}></x-{}>", idx, idx);
-    std::format_to(std::back_inserter(oneTag), " a{}", idx);
+    FormatTo(attributes, "<i a{}>", idx);
+    FormatTo(tags, "<x-{}></x-{}>", idx, idx);
+    FormatTo(oneTag, " a{}", idx);
   }
   oneTag += "><p id=after>";
   ASSERT_GT(oneTag.size(), 16 * kParseChunkSize);
   const HtmlDocument withAttributes(attributes);
   ExpectGrownTables(withAttributes);
   EXPECT_EQ(withAttributes.querySelectorAll("i").size(), kCount);
-  EXPECT_TRUE(withAttributes.querySelector(std::format("i[a{}]", kCount - 1)));
+  EXPECT_TRUE(withAttributes.querySelector(Format("i[a{}]", kCount - 1)));
   const HtmlDocument withTags(tags);
   ExpectGrownTables(withTags);
   EXPECT_EQ(test::ChildCount(withTags.body()), kCount);
-  EXPECT_TRUE(withTags.querySelector(std::format("x-{}", kCount - 1)));
+  EXPECT_TRUE(withTags.querySelector(Format("x-{}", kCount - 1)));
   const HtmlDocument withOneTag(oneTag);
   ExpectGrownTables(withOneTag);
   EXPECT_EQ(InternedNames(withOneTag).attributes, kCount);
@@ -626,8 +626,8 @@ TEST(HtmlNameTableTest, CollidingNamesStopTheParsing) {
   std::string attributes = "<p id=before>x</p><i";
   std::string tags = "<p id=before>x</p>";
   for (const std::string& name : names) {
-    std::format_to(std::back_inserter(attributes), " {}", name);
-    std::format_to(std::back_inserter(tags), "<{}></{}>", name, name);
+    FormatTo(attributes, " {}", name);
+    FormatTo(tags, "<{}></{}>", name, name);
   }
   attributes += "><p id=after>y</p>";
   tags += "<p id=after>y</p>";
@@ -640,7 +640,7 @@ TEST(HtmlNameTableTest, BucketsHoldUpToTheLimitOfCollidingNames) {
   for (const std::size_t count : {kMaxCollidingNames, kMaxCollidingNames + 1}) {
     std::string html = "<i";
     for (std::size_t idx = 0; idx < count; ++idx) {
-      std::format_to(std::back_inserter(html), " {}", names[idx]);
+      FormatTo(html, " {}", names[idx]);
     }
     // The next chunks are only parsed if the first one leaves no bucket beyond the limit.
     html += "></i>" + std::string(kParseChunkSize, 'x') + "<p id=after>";
@@ -654,7 +654,7 @@ TEST(HtmlNameTableTest, CollidingNamesStopTheParsingOfAFragment) {
   HtmlDocument doc("<div id=target></div><p id=last></p>");
   std::string html = "<p id=before>x</p><i";
   for (const std::string& name : CollidingNames(10)) {
-    std::format_to(std::back_inserter(html), " {}", name);
+    FormatTo(html, " {}", name);
   }
   html += "><p id=after>y</p>";
   doc.querySelector("#target").setInnerHtml(html);
@@ -686,7 +686,7 @@ TEST(HtmlNameTableTest, TableThatCouldNotGrowIsNotChecked) {
   static constexpr std::size_t kCount = 128 * kInitialBuckets;
   std::string html;
   for (std::size_t idx = 0; idx < kCount; ++idx) {
-    std::format_to(std::back_inserter(html), "<x-{} a{}></x-{}>", idx, idx, idx);
+    FormatTo(html, "<x-{} a{}></x-{}>", idx, idx, idx);
   }
   test::FailCallocsOfAtLeast(kMaxNamesPerBucket * kInitialBuckets * sizeof(lexbor_hash_entry_t*));  // the growths
   const HtmlDocument doc(html);
@@ -694,7 +694,7 @@ TEST(HtmlNameTableTest, TableThatCouldNotGrowIsNotChecked) {
   EXPECT_EQ(LexborDocument(doc).tags->table_size, kInitialBuckets);
   EXPECT_EQ(LexborDocument(doc).attrs->table_size, kInitialBuckets);
   EXPECT_EQ(test::ChildCount(doc.body()), kCount);
-  EXPECT_TRUE(doc.querySelector(std::format("x-{}[a{}]", kCount - 1, kCount - 1)));
+  EXPECT_TRUE(doc.querySelector(Format("x-{}[a{}]", kCount - 1, kCount - 1)));
 }
 #endif
 

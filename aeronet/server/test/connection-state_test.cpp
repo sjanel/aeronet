@@ -23,7 +23,6 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -37,6 +36,7 @@
 #include <utility>
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/chrono-lite.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-codec.hpp"

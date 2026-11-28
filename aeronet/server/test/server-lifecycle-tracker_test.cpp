@@ -3,9 +3,10 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
-#include <chrono>
 #include <future>
 #include <thread>
+
+#include "aeronet/chrono-lite.hpp"
 
 namespace aeronet {
 
