@@ -60,7 +60,9 @@ void BM_FormatLiteIntegerSpecifications(benchmark::State& state) {
   unsigned events = 0;
   int delta = -1;
   for (auto _ : state) {
-    std::string message = Format("events={:#010x} delta={:+} mask={:08b}", ++events, --delta, events & 0xFFU);
+    ++events;
+    --delta;
+    std::string message = Format("events={:#010x} delta={:+} mask={:08b}", events, delta, events & 0xFFU);
     benchmark::DoNotOptimize(message);
   }
 }
@@ -70,7 +72,9 @@ void BM_StdFormatIntegerSpecifications(benchmark::State& state) {
   unsigned events = 0;
   int delta = -1;
   for (auto _ : state) {
-    std::string message = std::format("events={:#010x} delta={:+} mask={:08b}", ++events, --delta, events & 0xFFU);
+    ++events;
+    --delta;
+    std::string message = std::format("events={:#010x} delta={:+} mask={:08b}", events, delta, events & 0xFFU);
     benchmark::DoNotOptimize(message);
   }
 }
