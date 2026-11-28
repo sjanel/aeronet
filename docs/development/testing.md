@@ -8,6 +8,8 @@ cmake --build build
 ctest --test-dir build --output-on-failure --timeout 300
 ```
 
+With GCC and Clang, the test executables reuse one precompiled `<gtest/gtest.h>`, included in front of each of their sources ([`AERONET_PRECOMPILED_HEADERS`](../reference/configuration.md#build-products-and-developer-tools)). A test source still includes `<gtest/gtest.h>` itself: MSVC and the clang-tidy builds compile it without the precompiled header.
+
 CI also runs the tests under AddressSanitizer and ThreadSanitizer, most jobs with `AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS`: buffers then grow to exactly the requested capacity, so that AddressSanitizer reports any access past it, and a loop growing a buffer by small steps copies the whole buffer at each step. Such a loop must ask for room in proportion to what it already wrote, as `HttpMessage::finalizeInlineBody()` does for the end of a compressed body. A CPU-bound single-threaded test, which has no data race for ThreadSanitizer to find, skips itself under it with `GTEST_SKIP() << test::kSkippedUnderThreadSanitizer` when `test::kThreadSanitizer` is set (`aeronet/sanitizer-test-support.hpp`): the other builds run it.
 
 ## Test coverage matrix

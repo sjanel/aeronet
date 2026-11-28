@@ -14,7 +14,8 @@ aeronet is deliberately modular. CMake options select code and dependencies at c
 | `AERONET_COMPACT_DEBUG_INFO` | ON for Debug with tests | Split DWARF (`-gsplit-dwarf`) + zstd-compressed debug sections (zlib fallback), on Linux with GCC or Clang. Divides the size of the Debug test executables by ~3.5. The `.dwo` files stay in the build tree, so keep it OFF for builds that are installed elsewhere. |
 | `AERONET_BUILD_MODULES` | OFF | Experimental C++ module build. |
 | `AERONET_UNITY_BUILD` | OFF | Build the aeronet libraries (not the tests) as CMake unity builds, in batches of 16 sources (`CMAKE_UNITY_BUILD_BATCH_SIZE` overrides it). Divides their compilation CPU time by 4 to 6 in Release, at the cost of slower incremental rebuilds: see the [unity build recipe](#unity-build). |
-| `AERONET_ENABLE_CCACHE` | top-level | Use `ccache` when it is available. |
+| `AERONET_PRECOMPILED_HEADERS` | ON | Precompile `<gtest/gtest.h>` once, in the `aeronet_test_pch` target, for all the test executables, which reuse it in front of each source: 30% less CPU to compile the tests with Clang 23, 15% with GCC 13. With GCC and Clang (not their MSVC frontends), without `AERONET_ENABLE_CLANG_TIDY`, and only with `AERONET_BUILD_TESTS`. |
+| `AERONET_ENABLE_CCACHE` | top-level | Use `ccache` when it is available. With `AERONET_PRECOMPILED_HEADERS`, ccache compiles the tests with `CCACHE_SLOPPINESS=pch_defines,time_macros` (replacing the sloppiness of its configuration for them), without which it cannot cache a compilation using a precompiled header. |
 | `AERONET_ENABLE_TEST_HOOKS` | non-Release tests | Enable transport hooks used by tests. Do not enable in production builds. |
 | `AERONET_ENABLE_ASAN` | OFF | Enable AddressSanitizer, UndefinedBehaviorSanitizer, and float-divide checks. |
 | `AERONET_ENABLE_TSAN` | OFF | Enable ThreadSanitizer. Cannot be combined with `AERONET_ENABLE_ASAN`. |

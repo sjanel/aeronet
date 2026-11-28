@@ -39,6 +39,7 @@ option(AERONET_INSTALL "Enable install & package config generation" ${PROJECT_IS
 option(AERONET_BUILD_SHARED "Build aeronet libraries as shared instead of static" OFF)
 option(AERONET_BUILD_MODULES "Build aeronet libraries as C++ module (experimental)" OFF)
 option(AERONET_UNITY_BUILD "Build the aeronet libraries as unity builds (several sources per compilation)" OFF)
+option(AERONET_PRECOMPILED_HEADERS "Precompile <gtest/gtest.h> once for all the tests (GCC and Clang, not with clang-tidy)" ON)
 
 # Tests, examples and benchmarks are only built by default as the main project (benchmarks: not in Debug).
 set(AERONET_BUILD_BENCHMARKS_DEFAULT ${PROJECT_IS_TOP_LEVEL})

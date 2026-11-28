@@ -36,6 +36,47 @@ function(_aeronet_inject_dll_path test_name)
 endfunction()
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Precompiled <gtest/gtest.h> (AERONET_PRECOMPILED_HEADERS)
+# ---------------------------------------------------------------------------
+# Parsing <gtest/gtest.h> costs ~0.6 s per test source, about a third of its compilation. aeronet_test_pch compiles it
+# once and every test executable reuses its precompiled header (REUSE_FROM), forced in front of each test source.
+# Reusing a precompiled header requires the same compile flags (-fPIE of executables included) and, for Clang, the
+# same macros or more: aeronet_test_pch is an executable with the properties and the gtest link of the test
+# executables and no aeronet library, whose compile definitions all of them add on top. The test_support libraries
+# keep their own compilation: -fPIC in shared builds.
+# Not with clang-tidy, which would read the precompiled header of the compiler (refused from another Clang version), nor
+# with the MSVC frontend, whose REUSE_FROM ties all the targets to the program database (.pdb) of the header.
+if(AERONET_PRECOMPILED_HEADERS AND AERONET_BUILD_TESTS AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU"
+   AND NOT AERONET_ENABLE_CLANG_TIDY)
+  file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/aeronet_test_pch.cpp"
+       CONTENT "// Holder of the precompiled header shared by the test executables (cmake/AddUnitTest.cmake).\n")
+  AeronetAddProjectExecutable(aeronet_test_pch "${CMAKE_BINARY_DIR}/aeronet_test_pch.cpp")
+  target_link_libraries(aeronet_test_pch PRIVATE GTest::gmock_main)
+  target_precompile_headers(aeronet_test_pch PRIVATE <gtest/gtest.h>)
+  if(AERONET_ENABLE_CCACHE AND CCACHE_PROGRAM)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+      # ccache only caches the compilations using a Clang precompiled header without the timestamp of its build.
+      target_compile_options(aeronet_test_pch PRIVATE "SHELL:-Xclang -fno-pch-timestamp")
+    endif()
+    # ccache caches a compilation using a precompiled header only with this sloppiness, as it sees neither the macros
+    # nor the time macros that the header depends on (no test uses __DATE__ / __TIME__ / __TIMESTAMP__). On the test
+    # targets only: the libraries keep all the checks of ccache.
+    set_property(TARGET aeronet_test_pch PROPERTY RULE_LAUNCH_COMPILE
+      "${CMAKE_COMMAND} -E env CCACHE_SLOPPINESS=pch_defines,time_macros ${CCACHE_PROGRAM}")
+  endif()
+endif()
+
+function(_aeronet_reuse_test_pch name)
+  if(TARGET aeronet_test_pch)
+    target_precompile_headers(${name} REUSE_FROM aeronet_test_pch)
+    get_property(_launcher TARGET aeronet_test_pch PROPERTY RULE_LAUNCH_COMPILE)
+    if(_launcher)
+      set_property(TARGET ${name} PROPERTY RULE_LAUNCH_COMPILE "${_launcher}")
+    endif()
+  endif()
+endfunction()
+
 #[[ Create an executable
 Syntax:
 AeronetAddExecutable(<name> src1 [src2 ...] [LIBRARIES lib1 lib2 ...] [DEFINITIONS def1 def2])
@@ -103,6 +144,7 @@ function(AeronetAddUnitTest name)
   if(AERONET_BUILD_TESTS)
     AeronetAddExecutable(${name} ${MY_UNPARSED_ARGUMENTS})
     target_link_libraries(${name} PRIVATE GTest::gmock_main)
+    _aeronet_reuse_test_pch(${name})
 
     target_include_directories(${name} PRIVATE include)
 
