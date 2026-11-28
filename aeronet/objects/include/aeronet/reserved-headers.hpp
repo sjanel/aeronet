@@ -47,6 +47,8 @@ AERONET_ALWAYS_INLINE constexpr bool IsReservedResponseHeader(LowerAsciiKey name
 }
 
 // Same as IsReservedResponseHeader but for request headers.
+// Server, a response field, is not refused: a request may carry it (no rule of RFC 9110 forbids it), and the Fetch
+// Standard lets scripts send it, so the requests of the JavaScript pages (aeronet_web) may too.
 constexpr bool IsReservedOrForbiddenRequestHeader(LowerAsciiKey name) noexcept {
   static constexpr LowerAsciiKey kHeaders[]{
       http::ContentLength, http::ContentType,      http::Host,    http::TE,

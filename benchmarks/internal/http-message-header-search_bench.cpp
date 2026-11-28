@@ -6,9 +6,12 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/lower-ascii-key.hpp"
+#include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/ndigits.hpp"
 
 namespace aeronet {
 namespace {
@@ -83,10 +86,61 @@ void BM_HeaderSet(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(std::size(kHandlerHeaders)));
 }
 
+// Names of the headers whose value is formatted below, as a Content-Range value.
+constexpr std::string_view kFormattedHeaders[]{
+    "content-range", "x-range-1", "x-range-2", "x-range-3", "x-range-4", "x-range-5", "x-range-6", "x-range-7",
+};
+
+constexpr std::size_t kMaxRangeLen = std::string_view("bytes ").size() + (3U * 20U) + 2U;
+
+char* WriteRange(std::uint64_t first, std::uint64_t length, std::uint64_t total, char* out) {
+  out = Append(std::string_view("bytes "), out);
+  out = WriteUInt(out, first, ndigits(first));
+  *out++ = '-';
+  const std::uint64_t last = first + length - 1U;
+  out = WriteUInt(out, last, ndigits(last));
+  *out++ = '/';
+  return WriteUInt(out, total, ndigits(total));
+}
+
+// A value formatted by the caller into a stack buffer, then copied by headerAddLine().
+void BM_HeaderAddLineFormatted(benchmark::State& state) {
+  std::uint64_t first = 0;
+  for (auto _ : state) {
+    HttpResponse response(1024, http::StatusCodeOK);
+    for (const std::string_view name : kFormattedHeaders) {
+      char buf[kMaxRangeLen];
+      const char* end = WriteRange(first, 4096U, std::uint64_t{1} << 40U, buf);
+      response.headerAddLine(LowerAsciiKey{name}, std::string_view(buf, end));
+      first += 4096U;
+    }
+    benchmark::DoNotOptimize(response);
+  }
+  state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(std::size(kFormattedHeaders)));
+}
+
+// Same value, written in place by headerInlineAddLine().
+void BM_HeaderInlineAddLineFormatted(benchmark::State& state) {
+  std::uint64_t first = 0;
+  for (auto _ : state) {
+    HttpResponse response(1024, http::StatusCodeOK);
+    for (const std::string_view name : kFormattedHeaders) {
+      response.headerInlineAddLine(LowerAsciiKey{name}, kMaxRangeLen, [first](char* out) -> std::size_t {
+        return static_cast<std::size_t>(WriteRange(first, 4096U, std::uint64_t{1} << 40U, out) - out);
+      });
+      first += 4096U;
+    }
+    benchmark::DoNotOptimize(response);
+  }
+  state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(std::size(kFormattedHeaders)));
+}
+
 BENCHMARK(BM_HeaderValuePresentAtEnd)->Arg(10)->Arg(35)->Arg(100);
 BENCHMARK(BM_HeaderValueAbsent)->Arg(10)->Arg(35)->Arg(100);
 BENCHMARK(BM_HeaderAddLine);
 BENCHMARK(BM_HeaderSet);
+BENCHMARK(BM_HeaderAddLineFormatted);
+BENCHMARK(BM_HeaderInlineAddLineFormatted);
 
 }  // namespace
 }  // namespace aeronet

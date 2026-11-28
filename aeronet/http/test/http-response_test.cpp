@@ -864,6 +864,153 @@ TEST_F(HttpResponseTest, HeaderAppendValueIfAbsentLooksAtAllTheLinesOfTheHeader)
   EXPECT_TRUE(full.contains("\r\nvary: origin, user-agent\r\nvary: accept-encoding\r\n")) << full;
 }
 
+namespace {
+
+// A writer of headerInlineAddLine() writing 'value'.
+auto ValueWriter(std::string_view value) {
+  return [value](char* out) -> std::size_t {
+    std::memcpy(out, value.data(), value.size());
+    return value.size();
+  };
+}
+
+}  // namespace
+
+// The value is written in place at the end of the head: the header is added as with headerAddLine(), and the body
+// headers set afterwards follow it.
+TEST_F(HttpResponseTest, HeaderInlineAddLine) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-a", "1").headerInlineAddLine("x-inline", 16, ValueWriter("in place"));
+  // The whole 'maxValueLen' bytes, from an rvalue.
+  resp = std::move(resp).headerInlineAddLine("x-full", 4, ValueWriter("full"));
+  resp.headerAddLine("x-b", "2");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("x-inline"), "in place");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-full"), "full");
+  EXPECT_EQ(resp.headersFlatView(), "x-a: 1\r\nx-inline: in place\r\nx-full: full\r\nx-b: 2\r\n");
+
+  resp.body("hello");
+  const auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("\r\nx-a: 1\r\nx-inline: in place\r\nx-full: full\r\nx-b: 2\r\n")) << full;
+  EXPECT_TRUE(full.contains("\r\nx-b: 2\r\ncontent-type: text/plain\r\ncontent-length: 5\r\n")) << full;
+  EXPECT_TRUE(full.ends_with("\r\n\r\nhello")) << full;
+}
+
+// Writing 0 bytes adds the header with an empty value, and the written value is trimmed as a given one.
+TEST_F(HttpResponseTest, HeaderInlineAddLineEmptyAndTrimmedValues) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerInlineAddLine("x-empty", 8, [](char*) -> std::size_t { return 0; });
+  resp.headerInlineAddLine("x-blank", 8, ValueWriter(" \t "));
+  resp.headerInlineAddLine("x-padded", 17, ValueWriter("  \tpadded value\t "));  // exactly 17 bytes
+  resp.headerInlineAddLine("x-no-room", 0, [](char*) -> std::size_t { return 0; });
+
+  EXPECT_TRUE(resp.hasHeader("x-empty"));
+  EXPECT_EQ(resp.headerValue("x-empty"), std::string_view{});
+  EXPECT_EQ(resp.headerValue("x-blank"), std::string_view{});
+  EXPECT_EQ(resp.headerValueOrEmpty("x-padded"), "padded value");
+  EXPECT_TRUE(resp.hasHeader("x-no-room"));
+  EXPECT_EQ(resp.headersFlatView(), "x-empty: \r\nx-blank: \r\nx-padded: padded value\r\nx-no-room: \r\n");
+  const auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("\r\nx-empty: \r\nx-blank: \r\nx-padded: padded value\r\nx-no-room: \r\n")) << full;
+}
+
+// The name is checked before the writer is called, the value after: the response is unchanged on any error, also when
+// the writer throws.
+TEST_F(HttpResponseTest, HeaderInlineAddLineLeavesTheResponseUnchangedOnError) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-a", "1");
+  const std::string headersBefore(resp.headersFlatView());
+  const std::size_t sizeBefore = resp.sizeInlined();
+
+  bool called = false;
+  const auto spyWriter = [&called](char* out) -> std::size_t {
+    called = true;
+    return ValueWriter("v")(out);
+  };
+  EXPECT_THROW(resp.headerInlineAddLine("invalid header", 8, spyWriter), std::invalid_argument);
+  EXPECT_THROW(resp.headerInlineAddLine(http::ContentLength, 8, spyWriter), std::invalid_argument);
+  EXPECT_THROW(resp.headerInlineAddLine(http::Date, 8, spyWriter), std::invalid_argument);
+  EXPECT_FALSE(called);
+
+  EXPECT_THROW(resp.headerInlineAddLine("x-injected", 32, ValueWriter("1\r\nx-other: 2")), std::invalid_argument);
+  EXPECT_THROW(resp.headerInlineAddLine("x-control", 8, ValueWriter("a\x7F")), std::invalid_argument);
+  EXPECT_THROW(resp.headerInlineAddLine("x-throwing", 8,
+                                        [](char* out) -> std::size_t {
+                                          std::memcpy(out, "partial", 7U);
+                                          throw std::runtime_error("writer failure");
+                                        }),
+               std::runtime_error);
+
+  EXPECT_EQ(resp.headersFlatView(), headersBefore);
+  EXPECT_EQ(resp.sizeInlined(), sizeBefore);
+  resp.headerInlineAddLine("x-b", 8, ValueWriter("2"));
+  EXPECT_EQ(resp.headersFlatView(), "x-a: 1\r\nx-b: 2\r\n");
+}
+
+// Only before the body: once a body is set (inline, captured or file), the line would have to go before the body
+// headers.
+TEST_F(HttpResponseTest, HeaderInlineAddLineThrowsOnceABodyIsSet) {
+  bool called = false;
+  const auto spyWriter = [&called](char* out) -> std::size_t {
+    called = true;
+    return ValueWriter("v")(out);
+  };
+  HttpResponse inlineBody(http::StatusCodeOK);
+  inlineBody.body("hello");
+  EXPECT_THROW(inlineBody.headerInlineAddLine("x-a", 8, spyWriter), std::logic_error);
+  // The reserved names too: the body is checked first.
+  EXPECT_THROW(inlineBody.headerInlineAddLine(http::ContentLength, 8, spyWriter), std::logic_error);
+  EXPECT_EQ(inlineBody.bodyInMemory(), "hello");
+
+  HttpResponse captured(http::StatusCodeOK);
+  captured.body(std::string(64, 'c'));
+  EXPECT_THROW(captured.headerInlineAddLine("x-a", 8, spyWriter), std::logic_error);
+  EXPECT_EQ(captured.bodyInMemory(), std::string(64, 'c'));
+
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmpFile(tmpDir, "file body");
+  HttpResponse file(http::StatusCodeOK);
+  file.file(File(tmpFile.filePath().string()));
+  EXPECT_THROW(file.headerInlineAddLine("x-a", 8, spyWriter), std::logic_error);
+  EXPECT_FALSE(called);
+
+  // Allowed again once the body is removed.
+  inlineBody.body(std::string_view{});
+  inlineBody.headerInlineAddLine("x-a", 8, spyWriter);
+  EXPECT_TRUE(called);
+  EXPECT_EQ(inlineBody.headerValueOrEmpty("x-a"), "v");
+}
+
+// A content-encoding written in place disables the automatic compression, as with headerAddLine().
+TEST_F(HttpResponseTest, HeaderInlineAddLineContentEncoding) {
+  HttpResponse resp(http::StatusCodeOK);
+  EXPECT_FALSE(resp.hasContentEncoding());
+  resp.headerInlineAddLine(http::ContentEncoding, 8, ValueWriter("gzip"));
+  EXPECT_TRUE(resp.hasContentEncoding());
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), "gzip");
+}
+
+// Values much larger than the buffer of the response, one of them written in several steps by the writer.
+TEST_F(HttpResponseTest, HeaderInlineAddLineLargeValues) {
+  HttpResponse resp(http::StatusCodeOK);
+  const std::string large(1U << 20U, 'v');
+  resp.headerInlineAddLine("x-large", large.size(), ValueWriter(large));
+  resp.headerInlineAddLine("x-chunks", 64UL * 1024UL, [](char* out) -> std::size_t {
+    for (std::size_t pos = 0; pos < 64UL * 1024UL; pos += 1024U) {
+      std::memset(out + pos, 'a' + static_cast<int>((pos / 1024U) % 26U), 1024U);
+    }
+    return 60UL * 1024UL;  // less than reserved
+  });
+  resp.body("hello");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("x-large"), large);
+  const std::string_view chunks = resp.headerValueOrEmpty("x-chunks");
+  ASSERT_EQ(chunks.size(), 60UL * 1024UL);
+  EXPECT_EQ(chunks.front(), 'a');
+  EXPECT_EQ(chunks.back(), static_cast<char>('a' + (59 % 26)));
+  EXPECT_EQ(resp.bodyInMemory(), "hello");
+}
+
 TEST_F(HttpResponseTest, SetSameReason) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
@@ -6041,6 +6188,15 @@ TEST_F(HttpResponseTest, ReservedHeadersAreRejected) {
       EXPECT_THROW(resp.headerAppendValue(key, "chunked"), std::invalid_argument) << name;
       EXPECT_THROW(resp.headerAppendValueIfAbsent(key, "chunked"), std::invalid_argument) << name;
       EXPECT_THROW(HttpResponse("hello").headerAddLine(key, "chunked"), std::invalid_argument) << name;
+      const auto writeChunked = [](char* out) -> std::size_t {
+        std::memcpy(out, "chunked", 7U);
+        return 7U;
+      };
+      if (withBody) {
+        EXPECT_THROW(resp.headerInlineAddLine(key, 7U, writeChunked), std::logic_error) << name;
+      } else {
+        EXPECT_THROW(resp.headerInlineAddLine(key, 7U, writeChunked), std::invalid_argument) << name;
+      }
     }
     const std::string full = concatenated(std::move(resp));  // kKeepAlive is false: the server closes
     EXPECT_FALSE(full.contains("chunked")) << full;

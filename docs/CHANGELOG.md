@@ -48,7 +48,7 @@ The most important changes. Upgrade especially if one of these applies to you:
 - **JavaScript pages**, experimental (`AERONET_ENABLE_JS`, QuickJS-ng; vcpkg `js`, not in Conan): `WebClient::navigate()` loads a page and runs its scripts over browser-like DOM bindings, enough for a React production build to render, with bounded resources and Local Network Access protection. New `HttpClient::requestUpdating()` and `CookieJar::setDocumentCookie()`. See [JavaScript pages](modules/web.md).
 - **Protocol Buffers bodies** (`AERONET_ENABLE_PROTOBUF`, header-only; vcpkg `protobuf`, Conan `with_protobuf`): `bodyProto()`, `bodyAsProto<T>()` (binary or ProtoJSON) and `makeProtoResponse()` negotiating with `Accept`. See [Protocol Buffers](modules/protobuf.md).
 - **Strict SNI** (`TLSConfig::sniMustMatch`, off by default): the handshake fails for an unknown or missing server name. See [Strict SNI](protocols/tls.md#strict-sni).
-- **Other additions**: `HttpServerConfig::socketSendBufferBytes`, `CompressionConfig::addVaryAcceptEncodingToUncompressed`, `headerAppendValueIfAbsent()`, `Router::supportedMethods()`, `HttpRequest::IsValidUrl()`, `HttpRequestView::bodyCompressionOutlook()`, `File::isRegularFile()`, `ServerStats::tlsIdleBufferReleases` and new `aeronet.connections.*` and `aeronet.http2.streams.*` counters. See [Server configuration](reference/server-configuration.md#event-loop-buffering-and-performance-controls) and [Status and headers](guides/responses.md#status-and-headers).
+- **Other additions**: `HttpServerConfig::socketSendBufferBytes`, `CompressionConfig::addVaryAcceptEncodingToUncompressed`, `headerAppendValueIfAbsent()`, `headerInlineAddLine()` (a header value written in place), `Router::supportedMethods()`, `HttpRequest::IsValidUrl()`, `HttpRequestView::bodyCompressionOutlook()`, `File::isRegularFile()`, `ServerStats::tlsIdleBufferReleases` and new `aeronet.connections.*` and `aeronet.http2.streams.*` counters. See [Server configuration](reference/server-configuration.md#event-loop-buffering-and-performance-controls) and [Status and headers](guides/responses.md#status-and-headers).
 
 ### 1.8.0 Bug fixes
 
@@ -93,6 +93,7 @@ The most important changes. Upgrade especially if one of these applies to you:
 - **Early responses** stop the upload, and `Expect: 100-continue` is supported (`expectContinueTimeout`). See [Early responses and `Expect: 100-continue`](modules/http-client.md#early-responses-and-expect-100-continue).
 - **URLs and redirects**: hosts are checked (CR LF injected headers; now invalid URLs), query-only and `?q=1` URLs are resolved correctly, redirects through a cleartext proxy no longer corrupt the request head, and redirected cached requests are now served from the cache, without reading freed memory. See [Requests](modules/http-client.md#requests) and [Redirects](modules/http-client.md#redirects).
 - **Timeouts**: `max()` for `requestTimeout` or `inactivityTimeout` no longer fails the request at once. See [Timeouts](modules/http-client.md#timeouts).
+- **Request headers**: `headerAppendValue()` throws `std::invalid_argument` for `host` (it appended a second host to the header), and a `server` header no longer asserts in debug builds. See [Requests](modules/http-client.md#requests).
 
 #### TLS, server and build
 

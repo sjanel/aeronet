@@ -42,6 +42,7 @@ For the best performance, fill a response in order: status and reason, then head
 | Method | Cost | Use it to |
 | --- | --- | --- |
 | `headerAddLine(name, value)` | No scan | Add a header. Duplicates are allowed: the cheapest way to add headers you know are not present yet. |
+| `headerInlineAddLine(name, maxLen, writer)` | No scan | Add a header whose value is written in place by a callback, without copy, before the body. |
 | `header(name, value)` | Scans existing headers | Set a header, replacing an existing one. |
 | `headerAppendValue(name, value, sep)` | Scans existing headers | Append to a list header (`vary`, `cache-control`). |
 | `headerAppendValueIfAbsent(name, value)` | Scans existing headers | Append an element to a comma-separated list header, unless one of its lines lists it already (compared case-insensitively, `*` of `vary` listing every element). |
@@ -54,7 +55,7 @@ Some headers belong to the server and cannot be set by handlers: `content-type` 
 
 ### Reserved headers
 
-The library reserves a small set of response headers that handlers cannot set directly on an `HttpResponse` (fixed responses) or on an `HttpResponseWriter` (streaming), because aeronet manages them itself, or a user-supplied value would be ambiguous or contradict what is actually sent: a `transfer-encoding` next to the `content-length` of the body, or a second framing, which RFC 9112 §6.1 forbids. `headerAddLine()`, `header()`, `headerAppendValue()` and `headerAppendValueIfAbsent()` throw `std::invalid_argument` for them, in every build, and leave the response unchanged, as do the constructors taking concatenated headers (`HttpResponse(capacity, status, "name: value\r\n...", body)`). A `content-encoding` given to those constructors disables the automatic compression, as with `headerAddLine()`. A name built at runtime must be in lower case: `LowerAsciiKey` only asserts it in debug builds, and the setters throw `std::invalid_argument` for an upper-case one in release builds:
+The library reserves a small set of response headers that handlers cannot set directly on an `HttpResponse` (fixed responses) or on an `HttpResponseWriter` (streaming), because aeronet manages them itself, or a user-supplied value would be ambiguous or contradict what is actually sent: a `transfer-encoding` next to the `content-length` of the body, or a second framing, which RFC 9112 §6.1 forbids. `headerAddLine()`, `headerInlineAddLine()`, `header()`, `headerAppendValue()` and `headerAppendValueIfAbsent()` throw `std::invalid_argument` for them, in every build, and leave the response unchanged (once a body is set, `headerInlineAddLine()` throws `std::logic_error` instead, the body being checked first), as do the constructors taking concatenated headers (`HttpResponse(capacity, status, "name: value\r\n...", body)`). A `content-encoding` given to those constructors disables the automatic compression, as with `headerAddLine()`. A name built at runtime must be in lower case: `LowerAsciiKey` only asserts it in debug builds, and the setters throw `std::invalid_argument` for an upper-case one in release builds:
 
 - `date` - injected automatically: the second in which the response is generated (RFC 9110 §6.6.1), also after a slow handler, and for a streamed response the second in which its headers are sent. It is formatted at most once per second.
 - `content-length` - computed from the body (fixed responses) or set through `contentLength()` (streaming). This prevents inconsistencies between the declared and the actual size.
@@ -142,6 +143,7 @@ The methods that build an `HttpResponse` edit a single contiguous buffer holding
 | `reason()` | O(trailing) | One tail `memmove` if the size changes. |
 | `header()` | O(headers + bodyLen) | Linear scan, and maybe one shift. |
 | `headerAddLine()` | O(bodyLen) | Shifts the tail once; no scan. |
+| `headerInlineAddLine()` | O(1) + realloc | Appends at the end of the head; no scan (only before the body). |
 | `headerAppendValueIfAbsent()` | O(headers + bodyLen) | Linear scan of all the header lines, and maybe one shift. |
 | `headerRemoveLine()` | O(headers + bodyLen) | Linear scan (in reverse), and maybe one shift. |
 | `headerRemoveValue()` | O(headers + bodyLen) | Linear scan (in reverse), and maybe one shift. |
@@ -186,6 +188,7 @@ An exception escaping a handler is caught by the server, logged with its message
 
 - Response building, headers, bodies, and trailers: [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp).
 - An element appended to a list header once, whatever its case and the line listing it (`HttpResponseTest.HeaderAppendValueIfAbsent*`): [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp); for a client request (`HttpRequestTest.HeaderAppendValueIfAbsent`): [http-request_test.cpp](../../aeronet/client/test/http-request_test.cpp).
+- A header value written in place, empty or trimmed, large, refused once a body is set, and leaving the response unchanged when the name, the value or the writer fails (`HttpResponseTest.HeaderInlineAddLine*`): [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp); for a client request (`HttpRequestTest.HeaderInlineAddLine`): [http-request_test.cpp](../../aeronet/client/test/http-request_test.cpp).
 - Reserved headers refused by every header setter, names of the same length accepted, and the `trailer` header of a `HEAD` response (`HttpResponseTest.ReservedHeaders*`, `HttpResponseTest.NamesOfTheLengthOfAReservedHeaderAreAccepted`, `HttpResponseTest.TrailerHeaderOfAHeadResponseCannotBeModified`), by the concatenated headers constructors (`HttpResponseTest.ConcatenatedHeadersConstructorRejectsReservedHeaders`, `HttpResponseTest.ContentEncodingOfConcatenatedHeadersDisablesCompression`), forbidden trailers and upper-case names (`HttpResponseTest.ForbiddenTrailersAreRejected`, `HttpResponseTest.UpperCaseDynamicNamesAreRejectedInRelease`): [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp); by the streaming writer, chunked and with `contentLength()` (`HttpStreaming.ReservedHeadersAreRejected`): [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - `makeResponse()`, including moved bodies and `HEAD` requests: [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp).
 - End-to-end responses, keep-alive, and empty bodies: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
